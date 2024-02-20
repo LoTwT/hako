@@ -1,13 +1,55 @@
+import { URL, fileURLToPath } from "node:url"
 import { defineConfig } from "vite"
-import vue from "@vitejs/plugin-vue"
+import Vue from "@vitejs/plugin-vue"
 import { internalIpV4 } from "internal-ip"
+import Unocss from "unocss/vite"
+import Components from "unplugin-vue-components/vite"
+import AutoImport from "unplugin-auto-import/vite"
+import VueRouter from "unplugin-vue-router/vite"
+import { VueRouterAutoImports } from "unplugin-vue-router"
+import VueMacros from "unplugin-vue-macros/vite"
 
-// @ts-expect-error process is a nodejs global
 const mobile = !!/android|ios/.test(process.env.TAURI_ENV_PLATFORM)
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
-  plugins: [vue()],
+  plugins: [
+    VueMacros({
+      plugins: {
+        vue: Vue(),
+      },
+    }),
+    VueRouter({
+      extensions: [".vue"],
+      dts: "src/typed-router.d.ts",
+    }),
+    Unocss(),
+    AutoImport({
+      imports: [
+        "vue",
+        "@vueuse/core",
+        VueRouterAutoImports,
+        {
+          // add any other imports you were relying on
+          "vue-router/auto": ["useLink"],
+        },
+      ],
+      dts: "src/auto-imports.d.ts",
+      dirs: ["src/composables"],
+      vueTemplate: true,
+    }),
+    Components({
+      extensions: ["vue"],
+      include: [/\.vue$/, /\.vue\?vue/],
+      dts: "src/components.d.ts",
+    }),
+  ],
+
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

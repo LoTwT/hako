@@ -4,11 +4,18 @@
     "jsx": "preserve",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "useDefineForClassFields": true,
+
+    "baseUrl": ".",
     "module": "ESNext",
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
     "resolveJsonModule": true,
+
+    "types": ["unplugin-vue-macros/macros-global"],
     "allowImportingTsExtensions": true,
 
     /* Linting */

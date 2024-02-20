@@ -2,9 +2,19 @@
 
 import { defineFlatConfig } from "@ayingott/eslint-config"
 
-export default defineFlatConfig([{ ignores: ["**/src-tauri/**"] }], {
-  prettier: true,
-  vue: true,
-  unocss: false,
-  react: false,
-})
+export default defineFlatConfig(
+  [
+    {
+      rules: {
+        "eslint-comments/no-unlimited-disable": "off",
+      },
+    },
+    { ignores: ["**/src-tauri/**"] },
+  ],
+  {
+    prettier: true,
+    vue: true,
+    unocss: true,
+    react: false,
+  },
+)
