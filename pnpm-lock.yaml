@@ -26,8 +26,8 @@ devDependencies:
     specifier: ^0.7.9
     version: 0.7.9(eslint@8.56.0)(typescript@5.3.3)
   '@ayingott/prettier-config':
-    specifier: ^0.1.6
-    version: 0.1.6
+    specifier: ^0.1.7
+    version: 0.1.7
   '@tauri-apps/cli':
     specifier: ^2.0.0-beta.0
     version: 2.0.0-beta.1
@@ -213,8 +213,8 @@ packages:
       - typescript
     dev: true
 
-  /@ayingott/prettier-config@0.1.6:
-    resolution: {integrity: sha512-RvZiQexHKUxt9Jbm6dNUcBrB5TWUTjEqJMFUfUoe167yPINMtLrt8WREN5yWOhAuNtXIZONffcr7wVFLMnEItw==}
+  /@ayingott/prettier-config@0.1.7:
+    resolution: {integrity: sha512-AoLj+4xDCK6wXbdswDB2ePxoA3zLquOUSgVX1UbUh0tym7OekovDV3gJGwggSMXu+ksH2/24VOl7+xrDCRJWew==}
     dependencies:
       '@sxzz/prettier-config': 2.0.0
     dev: true
