@@ -4,5 +4,9 @@
   "editor.codeActionsOnSave": {
     "source.fixAll": "explicit"
   },
-  "typescript.preferences.autoImportFileExcludePatterns": ["vue-router"]
+  "typescript.preferences.autoImportFileExcludePatterns": ["vue-router"],
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "vite-env.d.ts": "auto-imports.d.ts, components.d.ts, typed-router.d.ts"
+  }
 }
