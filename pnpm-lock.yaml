@@ -5,6 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 dependencies:
+  '@ayingott/sucrose':
+    specifier: ^0.0.36
+    version: 0.0.36
   '@tauri-apps/api':
     specifier: ^2.0.0-beta.0
     version: 2.0.0-beta.0
@@ -222,6 +225,13 @@ packages:
       dotenv: 16.4.4
       dotenv-expand: 10.0.0
     dev: true
+
+  /@ayingott/sucrose@0.0.36:
+    resolution: {integrity: sha512-AcmHk6FaYPJkzbpXkuRfxXaU/jK7GVSqHPa9nX7jezn+DlS8IKjt9rIP3vDVm7Q8ImmWdtEIjobZfuouSW8bwQ==}
+    dependencies:
+      dotenv: 16.4.4
+      dotenv-expand: 11.0.6
+    dev: false
 
   /@babel/code-frame@7.23.5:
     resolution: {integrity: sha512-CgH3s1a96LipHCmSUmYFPwY7MNx8C3avkq7i4Wl3cfa662ldtUe4VM1TPXX70pfmrlWTb6jLqTYrZyT2ZTJBgA==}
@@ -2892,10 +2902,16 @@ packages:
     engines: {node: '>=12'}
     dev: true
 
+  /dotenv-expand@11.0.6:
+    resolution: {integrity: sha512-8NHi73otpWsZGBSZwwknTXS5pqMOrk9+Ssrna8xCaxkzEpU9OTf9R5ArQGVw03//Zmk9MOwLPng9WwndvpAJ5g==}
+    engines: {node: '>=12'}
+    dependencies:
+      dotenv: 16.4.4
+    dev: false
+
   /dotenv@16.4.4:
     resolution: {integrity: sha512-XvPXc8XAQThSjAbY6cQ/9PcBXmFoWuw1sQ3b8HqUCR6ziGXjkTi//kB9SWa2UwqlgdAIuRqAa/9hVljzPehbYg==}
     engines: {node: '>=12'}
-    dev: true
 
   /duplexer@0.1.2:
     resolution: {integrity: sha512-jtD6YG370ZCIi/9GTaJKQxWTZD045+4R4hTk/x1UyoqadyJ9x9CgSi1RlVDQF8U2sxLLSnFkCaMihqljHIWgMg==}
