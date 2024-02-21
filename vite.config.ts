@@ -8,6 +8,7 @@ import AutoImport from "unplugin-auto-import/vite"
 import VueRouter from "unplugin-vue-router/vite"
 import { VueRouterAutoImports } from "unplugin-vue-router"
 import VueMacros from "unplugin-vue-macros/vite"
+import { VarletImportResolver } from "@varlet/import-resolver"
 
 const mobile = !!/android|ios/.test(process.env.TAURI_ENV_PLATFORM)
 
@@ -37,11 +38,13 @@ export default defineConfig(async () => ({
       dts: "src/auto-imports.d.ts",
       dirs: ["src/composables"],
       vueTemplate: true,
+      resolvers: [VarletImportResolver({ autoImport: true })],
     }),
     Components({
       extensions: ["vue"],
       include: [/\.vue$/, /\.vue\?vue/],
       dts: "src/components.d.ts",
+      resolvers: [VarletImportResolver()],
     }),
   ],
 
