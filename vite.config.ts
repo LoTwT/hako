@@ -6,7 +6,10 @@ import Unocss from "unocss/vite"
 import Components from "unplugin-vue-components/vite"
 import AutoImport from "unplugin-auto-import/vite"
 import VueRouter from "unplugin-vue-router/vite"
-import { VueRouterAutoImports } from "unplugin-vue-router"
+import {
+  VueRouterAutoImports,
+  getPascalCaseRouteName,
+} from "unplugin-vue-router"
 import VueMacros from "unplugin-vue-macros/vite"
 import { VarletImportResolver } from "@varlet/import-resolver"
 
@@ -23,6 +26,10 @@ export default defineConfig(async () => ({
     VueRouter({
       extensions: [".vue"],
       dts: "src/typed-router.d.ts",
+      getRouteName: (routeNode) => {
+        const name = getPascalCaseRouteName(routeNode)
+        return name === "Root" ? "Home" : name
+      },
     }),
     Unocss(),
     AutoImport({

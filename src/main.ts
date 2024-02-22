@@ -1,14 +1,11 @@
 import { createApp } from "vue"
-import { createRouter, createWebHistory } from "vue-router/auto"
+import { router } from "./router"
 import App from "./App.vue"
 import "uno.css"
 import "@varlet/touch-emulator"
 
 const app = createApp(App)
 
-const router = createRouter({
-  history: createWebHistory(),
-})
 app.use(router)
 
 app.mount("#app")
