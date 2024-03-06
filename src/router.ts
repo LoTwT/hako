@@ -4,16 +4,8 @@ export const router = createRouter({
   history: createWebHistory(),
 })
 
-router.beforeResolve(() => {
-  LoadingBar.start()
-})
+router.beforeResolve(() => {})
 
-router.afterEach(() => {
-  setTimeout(() => {
-    LoadingBar.finish()
-  }, 200)
-})
+router.afterEach(() => {})
 
-router.onError(() => {
-  LoadingBar.error()
-})
+router.onError(() => {})
