@@ -17,7 +17,8 @@
 
     "types": [
       "unplugin-vue-macros/macros-global",
-      "unplugin-vue-router/client"
+      "unplugin-vue-router/client",
+      "vite-plugin-vue-layouts/client"
     ],
     "allowImportingTsExtensions": true,
 

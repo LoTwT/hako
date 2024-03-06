@@ -1,15 +1,3 @@
-<script setup lang="ts">
-import LayoutDefault from "./layouts/default.vue"
-</script>
-
 <template>
-  <LayoutDefault>
-    <RouterView />
-  </LayoutDefault>
+  <RouterView />
 </template>
-
-<style>
-#app {
-  position: relative;
-}
-</style>

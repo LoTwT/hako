@@ -11,6 +11,7 @@ import {
   getPascalCaseRouteName,
 } from "unplugin-vue-router"
 import VueMacros from "unplugin-vue-macros/vite"
+import Layouts from "vite-plugin-vue-layouts"
 
 const mobile = !!/android|ios/.test(process.env.TAURI_ENV_PLATFORM)
 
@@ -25,12 +26,17 @@ export default defineConfig(async () => ({
         return name === "Root" ? "Home" : name
       },
     }),
+
+    Layouts(),
+
     VueMacros({
       plugins: {
         vue: Vue(),
       },
     }),
+
     Unocss(),
+
     AutoImport({
       imports: [
         "vue",
@@ -45,6 +51,7 @@ export default defineConfig(async () => ({
       dirs: ["src/composables"],
       vueTemplate: true,
     }),
+
     Components({
       extensions: ["vue"],
       include: [/\.vue$/, /\.vue\?vue/],
