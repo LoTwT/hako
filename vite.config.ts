@@ -18,17 +18,17 @@ const mobile = !!/android|ios/.test(process.env.TAURI_ENV_PLATFORM)
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [
-    VueMacros({
-      plugins: {
-        vue: Vue(),
-      },
-    }),
     VueRouter({
       extensions: [".vue"],
       dts: "src/typed-router.d.ts",
       getRouteName: (routeNode) => {
         const name = getPascalCaseRouteName(routeNode)
         return name === "Root" ? "Home" : name
+      },
+    }),
+    VueMacros({
+      plugins: {
+        vue: Vue(),
       },
     }),
     Unocss(),

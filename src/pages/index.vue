@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { routes } from "vue-router/auto/routes"
+import { routes } from "vue-router/auto-routes"
 </script>
 
 <template>

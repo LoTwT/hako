@@ -15,7 +15,10 @@
     },
     "resolveJsonModule": true,
 
-    "types": ["unplugin-vue-macros/macros-global"],
+    "types": [
+      "unplugin-vue-macros/macros-global",
+      "unplugin-vue-router/client"
+    ],
     "allowImportingTsExtensions": true,
 
     /* Linting */
