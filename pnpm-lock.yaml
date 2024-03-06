@@ -14,6 +14,9 @@ dependencies:
   '@tauri-apps/plugin-shell':
     specifier: ^2.0.0-beta.1
     version: 2.0.0-beta.1
+  '@unocss/reset':
+    specifier: ^0.58.5
+    version: 0.58.5
   radix-vue:
     specifier: ^1.4.9
     version: 1.4.9(vue@3.4.21)
@@ -31,6 +34,9 @@ devDependencies:
   '@ayingott/prettier-config':
     specifier: ^0.2.1
     version: 0.2.1
+  '@iconify-json/carbon':
+    specifier: ^1.1.31
+    version: 1.1.31
   '@tauri-apps/cli':
     specifier: ^2.0.0-beta.0
     version: 2.0.0-beta.3
@@ -55,9 +61,6 @@ devDependencies:
   lint-staged:
     specifier: ^15.2.2
     version: 15.2.2
-  postcss-px-to-viewport:
-    specifier: ^1.1.1
-    version: 1.1.1
   prettier:
     specifier: ^3.2.5
     version: 3.2.5
@@ -860,6 +863,12 @@ packages:
 
   /@humanwhocodes/object-schema@2.0.2:
     resolution: {integrity: sha512-6EwiSjwWYP7pTckG6I5eyFANjPhmPjUX9JRLUSfNPC7FX7zK9gyZAfUEaECL6ALTpGX5AjnBq3C9XmVWPitNpw==}
+    dev: true
+
+  /@iconify-json/carbon@1.1.31:
+    resolution: {integrity: sha512-CAvECFfiwGyZmlcuM2JLMRDEN3VsIEZv6lml7Xf+3giQ5oXloADm0b5wiVPFZmONKM5jXERmx+E7YSvAtFJIbw==}
+    dependencies:
+      '@iconify/types': 2.0.0
     dev: true
 
   /@iconify/types@2.0.0:
@@ -1818,7 +1827,6 @@ packages:
 
   /@unocss/reset@0.58.5:
     resolution: {integrity: sha512-2wMrkCj3SSb5hrx9TKs5jZa34QIRkHv9FotbJutAPo7o8hx+XXn56ogzdoUrcFPJZJUx2R2nyOVbSlGMIjtFtw==}
-    dev: true
 
   /@unocss/rule-utils@0.58.5:
     resolution: {integrity: sha512-w0sGJoeUGwMWLVFLEE9PDiv/fQcQqZnTIIQLYNCjTdqXDRlwTp9ACW0h47x/hAAIXdOtEOOBuTfjGD79GznUmA==}
@@ -5461,13 +5469,6 @@ packages:
   /possible-typed-array-names@1.0.0:
     resolution: {integrity: sha512-d7Uw+eZoloe0EHDIYoe+bQ5WXnGMOpmiZFTuMWCwpjzzkL2nTjcKiAk4hh8TjnGye2TwWOk3UXucZ+3rbmBa8Q==}
     engines: {node: '>= 0.4'}
-    dev: true
-
-  /postcss-px-to-viewport@1.1.1:
-    resolution: {integrity: sha512-2x9oGnBms+e0cYtBJOZdlwrFg/mLR4P1g2IFu7jYKvnqnH/HLhoKyareW2Q/x4sg0BgklHlP1qeWo2oCyPm8FQ==}
-    dependencies:
-      object-assign: 4.1.1
-      postcss: 8.4.35
     dev: true
 
   /postcss-selector-parser@6.0.15:
