@@ -1,7 +1,6 @@
 import { URL, fileURLToPath } from "node:url"
 import { defineConfig } from "vite"
 import vue from "@vitejs/plugin-vue"
-import { internalIpV4 } from "internal-ip"
 import Unocss from "unocss/vite"
 import Components from "unplugin-vue-components/vite"
 import AutoImport from "unplugin-auto-import/vite"
@@ -11,7 +10,7 @@ import Layouts from "vite-plugin-vue-layouts"
 const mobile = !!/android|ios/.test(process.env.TAURI_ENV_PLATFORM)
 
 // https://vitejs.dev/config/
-export default defineConfig(async () => ({
+export default defineConfig(() => ({
   plugins: [
     vue(),
     Unocss(),
@@ -48,8 +47,10 @@ export default defineConfig(async () => ({
     hmr: mobile
       ? {
           protocol: "ws",
-          host: await internalIpV4(),
+          // host: await internalIpV4(),
+          host: "172.16.70.34",
           port: 1421,
+          overlay: false,
         }
       : undefined,
     watch: {

@@ -19,6 +19,7 @@ const route = useRoute()
   <main mb-60px pb-4>
     <RouterView />
   </main>
+
   <nav fixed bottom-0 left-0 w-full flex bg-white p-2 shadow="2xl gray-500">
     <RouterLink
       v-for="n in navs"
