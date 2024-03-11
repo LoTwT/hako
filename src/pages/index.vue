@@ -1,20 +1,24 @@
 <script setup lang="ts">
-import { routes } from "vue-router/auto-routes"
+import { setupLayouts } from "virtual:generated-layouts"
+import generatedRoutes from "~pages"
 
-const appsRoutes = routes.find((r) => r.path === "/apps")
+const routes = setupLayouts(generatedRoutes)
 
-const formatName = (path: string) =>
-  path
+const appsRoutes = routes.filter((r) => r.path.startsWith("/apps"))
+
+const formatName = (p: string) =>
+  p
+    .replace("/apps/", "")
     .split("-")
-    .map((p) => p[0].toUpperCase() + p.slice(1))
+    .map((s) => s[0].toUpperCase() + s.slice(1))
     .join(" ")
 </script>
 
 <template>
   <div flex p-4>
-    <template v-for="app in appsRoutes?.children" :key="app.name">
+    <template v-for="app in appsRoutes" :key="app.path">
       <RouterLink
-        :to="`/apps/${app.path}`"
+        :to="app.path"
         w-full
         border-1
         rounded-full

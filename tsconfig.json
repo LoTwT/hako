@@ -4,7 +4,6 @@
     "jsx": "preserve",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "useDefineForClassFields": true,
-
     "baseUrl": ".",
     "module": "ESNext",
 
@@ -15,11 +14,7 @@
     },
     "resolveJsonModule": true,
 
-    "types": [
-      "unplugin-vue-macros/macros-global",
-      "unplugin-vue-router/client",
-      "vite-plugin-vue-layouts/client"
-    ],
+    "types": ["vite-plugin-vue-layouts/client"],
     "allowImportingTsExtensions": true,
 
     /* Linting */

@@ -1,16 +1,11 @@
 import { URL, fileURLToPath } from "node:url"
 import { defineConfig } from "vite"
-import Vue from "@vitejs/plugin-vue"
+import vue from "@vitejs/plugin-vue"
 import { internalIpV4 } from "internal-ip"
 import Unocss from "unocss/vite"
 import Components from "unplugin-vue-components/vite"
 import AutoImport from "unplugin-auto-import/vite"
-import VueRouter from "unplugin-vue-router/vite"
-import {
-  VueRouterAutoImports,
-  getPascalCaseRouteName,
-} from "unplugin-vue-router"
-import VueMacros from "unplugin-vue-macros/vite"
+import Pages from "vite-plugin-pages"
 import Layouts from "vite-plugin-vue-layouts"
 
 const mobile = !!/android|ios/.test(process.env.TAURI_ENV_PLATFORM)
@@ -18,45 +13,21 @@ const mobile = !!/android|ios/.test(process.env.TAURI_ENV_PLATFORM)
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [
-    VueRouter({
-      extensions: [".vue"],
-      dts: "src/typed-router.d.ts",
-      getRouteName: (routeNode) => {
-        const name = getPascalCaseRouteName(routeNode)
-        return name === "Root" ? "Home" : name
-      },
-    }),
-
-    Layouts(),
-
-    VueMacros({
-      plugins: {
-        vue: Vue(),
-      },
-    }),
-
+    vue(),
     Unocss(),
-
-    AutoImport({
-      imports: [
-        "vue",
-        "@vueuse/core",
-        VueRouterAutoImports,
-        {
-          // add any other imports you were relying on
-          "vue-router/auto": ["useLink"],
-        },
-      ],
-      dts: "src/auto-imports.d.ts",
-      dirs: ["src/composables"],
-      vueTemplate: true,
-    }),
-
     Components({
       extensions: ["vue"],
       include: [/\.vue$/, /\.vue\?vue/],
       dts: "src/components.d.ts",
     }),
+    AutoImport({
+      imports: ["vue", "@vueuse/core", "vue-router"],
+      dts: "src/auto-imports.d.ts",
+      dirs: ["src/composables"],
+      vueTemplate: true,
+    }),
+    Pages(),
+    Layouts(),
   ],
 
   resolve: {

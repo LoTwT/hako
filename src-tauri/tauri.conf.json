@@ -1,7 +1,7 @@
 {
   "productName": "hako",
   "version": "0.0.0",
-  "identifier": "com.example.myapp",
+  "identifier": "com.example.hako",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -11,8 +11,6 @@
   "app": {
     "windows": [
       {
-        "fullscreen": false,
-        "resizable": true,
         "title": "hako",
         "width": 800,
         "height": 600

@@ -1,13 +1,10 @@
-import { createRouter, createWebHistory } from "vue-router/auto"
+import { createRouter, createWebHistory } from "vue-router"
 import { setupLayouts } from "virtual:generated-layouts"
+import generatedRoutes from "~pages"
+
+const routes = setupLayouts(generatedRoutes)
 
 export const router = createRouter({
   history: createWebHistory(),
-  extendRoutes: (routes) => setupLayouts(routes),
+  routes,
 })
-
-router.beforeResolve(() => {})
-
-router.afterEach(() => {})
-
-router.onError(() => {})
