@@ -1,20 +1,10 @@
 // @ts-check
 
-import { defineFlatConfig } from "@ayingott/eslint-config"
+import { defineConfig } from "@ayingott/eslint-config"
 
-export default defineFlatConfig(
-  [
-    {
-      rules: {
-        "eslint-comments/no-unlimited-disable": "off",
-      },
-    },
-    { ignores: ["**/src-tauri/**"] },
-  ],
-  {
-    prettier: true,
-    vue: true,
-    unocss: true,
-    react: false,
-  },
-)
+export default defineConfig({
+  typescript: true,
+  vue: true,
+
+  ignores: ["**/src-tauri/**"],
+})
