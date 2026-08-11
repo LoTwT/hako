@@ -33,7 +33,7 @@ Fuel 向客户端静态注册表提供：
 | `moduleKey` | `fuel` |
 | `displayName` | `加油统计` |
 | `routePath` | `/tools/fuel` |
-| `persistence` | 原生 `hako-fuel.db`；Web IndexedDB `hako-fuel` |
+| `persistence` | production 原生 `hako-fuel.db`；preview/local 命名与全部 Web IndexedDB 由[客户端模块 store 规格](./hako-client-foundation.md#72-模块-store)维护 |
 | `syncAdapter` | 阶段一为 `null`；阶段二注册 `FuelSyncAdapter` |
 | `archiveAdapter` | `FuelArchiveCodecV1` |
 
@@ -92,6 +92,8 @@ Fuel 首页是工具内部入口，不替代 Hako 工具首页。注册、初始
 | `note` | `null` 或去除首尾空白后的 1 至 500 个字符 |
 | `createdAt` | RFC 3339 UTC 时间，创建后不变 |
 | `updatedAt` | RFC 3339 UTC 时间 |
+
+首版每辆 active 车辆最多保存 1000 条 active `FuelEntry`；本地创建、归档导入和服务端 create 都执行同一限制，tombstone 不计入。达到上限时必须先删除不需要的记录，不能生成一个服务端必然拒绝的本地 intent。该上限使完整重算和车辆级联删除具有可验证的工作量上界。
 
 同一车辆按 `fueledAtEpochMs`、`createdAt` 解析后的 UTC instant、`id` 升序处理，禁止按带时区偏移的 RFC 3339 字符串做字典序排序。
 
@@ -190,7 +192,7 @@ Fuel 路由内包含：
 | --- | --- |
 | `vehicles` | 车辆 active 投影及持久化 metadata |
 | `fuel_entries` | 加油记录 active 投影及持久化 metadata |
-| `pending_cascade_deletions` | 车辆远端删除 barrier 完成前的快照、远端 shadow 及暂停 intent |
+| `pending_cascade_deletions` | 车辆远端删除 barrier 完成前的快照、按 epoch 分区的远端 shadow、历史证据及暂停 intent |
 
 通用 outbox、cursor、conflict、recovery shadow 和 Web lease 由 Core contract 定义，但物理存放在 Fuel store 内。
 
@@ -198,12 +200,14 @@ Fuel 路由内包含：
 
 删除已同步或存在 in-flight 的车辆使用 Fuel 远端发送 barrier，但本地删除立即完成：
 
-1. 在一个本地事务中保存删除前快照、把同车既有 Fuel conflict shadow 合并进远端 shadow、隐藏 active 车辆和子记录、建立必要 tombstone，并把同车未冻结 intent 移入 `pending_cascade_deletions`；此步骤不等待 in-flight 或网络。
-2. 已冻结 in-flight 保持原样直到取得 `applied`、`conflict` 或 `rejected` 终态；`applied` 只更新删除快照中的已确认 revision，携带服务端 snapshot 或 tombstone 的 `conflict` 原子并入远端 shadow，`rejected` 保留原 intent 和错误证据，三者都不把实体重新显示到 UI。
-3. barrier 存在期间，pull 到该车辆或其任一子记录的 change 都写入删除快照的远端 shadow，不写回 active 投影；change、shadow 和 cursor 必须在同一个 Fuel store 事务中提交。服务端车辆 tombstone 只设置 `remoteDeleteConfirmed` 并取消未冻结的 vehicle delete successor，不能提前丢弃仍需取得终态的冻结 mutation。
-4. 同车全部 in-flight 已终结后，若 `remoteDeleteConfirmed=false`，才用最新 vehicle revision 冻结并发送尚未冻结的 vehicle delete successor；子记录不另发 delete，由服务端级联。
+每个 barrier 保存 `barrierEpoch`、`currentEpochShadow` 和只读 `historicalEvidence`。shadow 项固定包含 `sourceEpoch`、服务端 revision、可用时的 change seq，以及 snapshot、tombstone 或显式 missing marker。发生 epoch reset 时，原 `currentEpochShadow` 整体移入历史证据；Fuel adapter 只能用通用 recovery shadow 为候选新 epoch 重建新的 current shadow，并为恢复日志中缺失但 barrier 已知的实体写 missing marker。不同 epoch 的 revision 永远不能比较或互相补值。
+
+1. 在一个本地事务中保存删除前快照、按 `sourceEpoch` 把同车既有 Fuel conflict shadow 合并进 current shadow 或历史证据、隐藏 active 车辆和子记录、建立必要 tombstone，并把同车未冻结 intent 移入 `pending_cascade_deletions`；此步骤不等待 in-flight 或网络。
+2. 已冻结 in-flight 保持原样直到取得 `applied`、`conflict` 或 `rejected` 终态；`applied` 只更新同一当前 epoch 删除快照中的已确认 revision，携带服务端 snapshot 或 tombstone 的 `conflict` 按响应顶层 epoch 原子写入对应 shadow 分区，`rejected` 保留原 intent 和错误证据，三者都不把实体重新显示到 UI。
+3. barrier 存在期间，pull 到该车辆或其任一子记录的 change 按响应顶层 epoch 和 change seq 写入对应 shadow 分区，不写回 active 投影；change、shadow 和 cursor 必须在同一个 Fuel store 事务中提交。当前 epoch 的服务端车辆 tombstone 或 recovery missing marker 只设置该 epoch 的 `remoteDeleteConfirmed` 并取消未冻结的 vehicle delete successor，不能提前丢弃仍需取得终态的冻结 mutation。
+4. 同车全部 in-flight 已终结后，若当前 epoch 的 `remoteDeleteConfirmed=false`，才用 current shadow 中最新 vehicle revision 冻结并发送尚未冻结的 vehicle delete successor；子记录不另发 delete，由服务端级联。current shadow 尚无车辆 snapshot、tombstone 或 missing marker 时必须先完成 recovery reconciliation，不能使用历史证据的 revision。
 5. 本端 vehicle delete 取得 `applied`，或 `remoteDeleteConfirmed=true` 且全部冻结 mutation 已取得终态后，才丢弃远端 shadow 并清理快照；revision conflict 时继续保留。
-6. 用户选择服务端版本时，在一个事务中以每个实体最高 revision 的远端 shadow 更新删除前快照，按车辆在前、子记录在后的顺序恢复仍 active 的内容，重新校验被暂停 intent，再基于最新 revision 同步。
+6. 用户选择服务端版本时，只读取已经提交为模块当前 epoch 的 current shadow；同一 epoch 内先按每个实体的服务端 revision 选择终态，较高 revision 不能被带有 change seq 的较低 revision 覆盖。revision 相同且内容相同则合并，并保留较大的可用 change seq 作为观察顺序；revision 相同但内容不同则保持显式冲突。随后在一个事务中按车辆在前、子记录在后的顺序恢复仍 active 的内容，应用 missing marker，重新校验被暂停 intent。任何新 mutation 的 epoch 与 base revision 必须来自同一 current shadow，historical evidence 永远不能成为提交基线。
 
 这是通用 outbox 冲突处理的 Fuel 级联删除特例：用户已确认删除整个车辆时，既有 update/子记录终态只用于完成 barrier。若尚未确认的 vehicle create 返回 `conflict` 或 `rejected`，客户端没有权力删除碰巧使用同一 ID 的服务端车辆，必须停止 delete 并把快照转入显式冲突。
 
@@ -238,11 +242,14 @@ Fuel 实现客户端 `SyncModuleAdapter` 和服务端 `FuelSyncHandler`，使用
 
 Fuel 服务端 registry 首版固定为 `supportedChangeSchemaVersions={1}`、`supportedPushSchemaVersions={1}`；FUEL_DB metadata 固定为 `activeChangeSchemaVersion=1`、`acceptedPushSchemaVersions={1}`、`requiredReadableChangeSchemaVersions={1}`。以后按共享服务端的版本升级契约分阶段扩展和激活。
 
+Fuel v1 把通用 push 上限进一步收紧为每批最多 10 条 mutation；包含 vehicle delete 的批次必须只有该一条 mutation。客户端冻结批次时遵守此限制，服务端在业务预读前校验，超出时整批返回请求级 422 且零写入。
+
 Fuel 稳定业务错误码：
 
 - `parent_vehicle_deleted`
 - `mileage_order_violation`
-- `invalid_fuel_payload`
+- `invalid_fuel_payload`：wire codec 已成功解码，但字段值或领域组合不满足 Fuel 业务约束；JSON、公共字段或 codec 结构错误仍由通用协议作为请求级 400/422 处理
+- `vehicle_entry_limit_reached`
 
 ### 9.2 Fuel D1
 
@@ -256,17 +263,17 @@ Fuel 稳定业务错误码：
 
 纯 TypeScript validator 只负责使用同一份 fixture 做预检；D1 最终仲裁使用每车 constraint CAS：
 
-1. handler 读取目标车辆的 constraint revision、目标实体 revision 和完整 active 记录序列，再运行共享 validator。
+1. handler 读取目标车辆的 constraint revision、目标实体 revision 和最多 1000 条的完整 active 记录序列，再运行共享 validator；FuelEntry create 同时以事务内 active count 守卫 1000 条上限。
 2. 为本次尝试生成随机 write nonce；`D1Database.batch()` 的第一条条件 DML 仅在 constraint revision 未变化时将其递增并写入 nonce。
-3. 此后的实体、tombstone、change 与 receipt 语句全部以该 nonce 和预读 entity revision 为条件；CAS 未命中时这些语句必须零写入，不能留下 receipt。
-4. batch 完成后检查 guard、目标实体、change 与 receipt 的 affected rows；任一不符合预期即不报告成功。CAS 竞争最多重新读取并校验三次，仍竞争则本次 HTTP push 请求返回 503 `constraint_contention`、`retryable=true`，客户端原样重试冻结批次；同批此前已提交的 mutation 不回滚，并由通用 receipt 重放保护。
+3. 此后的实体、tombstone 与 change 语句全部以该 nonce 和预读 entity revision 为条件。`SyncRuntime` 在末尾追加同样受 nonce 保护的严格 receipt insert；CAS 未命中时所有业务语句和 receipt 必须零写入。
+4. `SyncRuntime` 检查 guard、目标实体、change 与 receipt 的 affected rows，并按共享服务端规格处理 receipt 唯一约束竞争；任一不符合预期即不报告成功。没有 winner receipt 的 CAS 竞争最多重新读取并校验三次，仍竞争则本次 HTTP push 请求返回 503 `constraint_contention`、`retryable=true`，客户端原样重试冻结批次；同批此前已提交的 mutation 不回滚，并由通用 receipt 重放保护。
 5. 所有 FuelEntry create/update/delete 和 vehicle delete 都必须经过该 guard；vehicle create 在同一 batch 初始化 guard。这样两个设备修改不同记录也不能绕过跨记录里程约束。
 
 在上述原子边界内，Fuel handler 还必须：
 
 - 验证父车辆存在且未删除。
 - 模拟 create、update 或 delete 后同车 active 序列，校验里程、reset 和同里程加满规则。
-- 删除车辆时 tombstone 车辆及全部子记录，先按稳定 ID 顺序写子记录 delete change，最后写车辆 delete change。
+- 删除车辆时 tombstone 车辆及最多 1000 条子记录。子记录 change 必须用有稳定 ID 排序的 set-based `INSERT ... SELECT` 生成，再用 set-based 条件 `UPDATE` 写 tombstone，最后写车辆 delete change；禁止为每个子记录生成独立 D1 statement 或子 mutation。
 - 使用 first-committer-wins；只有 `baseRevision == currentRevision` 的 update/delete 接受。
 - 子记录先更新、车辆后删除时删除覆盖子记录；车辆先删除时后续子 mutation 返回 `parent_vehicle_deleted`。
 
@@ -274,13 +281,14 @@ Fuel 业务 validator 的纯规则实现放在 `shared/modules/fuel/`，客户�
 
 ### 9.3 Fuel 冲突
 
-- 不同实体在不破坏父子、里程和 reset 规则时自动合并。
+- 不同实体在不破坏父子、里程、reset 和每车 1000 条 active 记录上限时自动合并。
 - 同一实体并发修改时保留本地尝试值与服务端完整值，停止该实体后续 push。
 - “使用服务端版本”丢弃本地 intent 并应用服务端值。
 - “保留此设备版本”基于最新 revision 使用新 mutation ID 重交本地完整值。
 - 服务端已删除时删除优先；如需内容必须以新 ID 创建，不能复活 tombstone。
 - pull 遇到同一实体 pending/in-flight 时不覆盖本地值，保存为 Fuel conflict shadow；子记录的父车辆存在 pending cascade 时，按第 7 节写入该删除快照的远端 shadow。
 - 跨记录业务约束失败时保留 intent，并在 Fuel UI 指出具体相邻记录和修正动作。
+- FuelEntry create 收到 `vehicle_entry_limit_reached` 时，在同一个 Fuel store 事务中把未获服务端确认的本地实体移出 active 投影，保留完整 payload 和 intent 为容量冲突，再正常应用后续 pull change 并推进 cursor；统计不包含该冲突实体。用户先删除并同步确认另一条 active 记录后，可以重新校验该 payload，并用新 mutation ID 重交尚未被服务端使用的原 entity ID，也可以显式丢弃。
 
 ## 10. 可独立合并的实施阶段
 
@@ -319,6 +327,7 @@ tests/fixtures/fuel/            # 六端和服务端共享的固定样例
 - 编辑/删除基线、中间加油和结束加满后正确重算或失效。
 - reset、同里程加满和删除 reset 的合法/非法序列符合第 4、5 节。
 - 多车隔离、最大整数、非法小数位、负数、零油量和无效父车辆正确处理。
+- 第 1000 条记录仍可写入，第 1001 条在本地、归档和服务端都稳定拒绝；车辆删除在 1000 条满载数据下仍以有界 statement 数完成，并按稳定 ID 生成子 change。
 - 8.325 与 0.0625 使用 `ROUND_HALF_UP` 显示 8.33 和 0.063。
 
 仓储与 UI 测试：
@@ -338,10 +347,12 @@ tests/fixtures/fuel/            # 六端和服务端共享的固定样例
 - 本地存在 in-flight 且离线时删除车辆立即从 UI 完成，远端 vehicle delete 只在 barrier 就绪后发送。
 - 本地车辆删除处于 barrier 或 revision conflict 时，另一设备新建的子记录进入远端 shadow，cursor 正常推进；确认删除后丢弃，选择服务端版本后随快照恢复。
 - 已有 Fuel conflict shadow 后删除车辆，或 vehicle delete conflict 后立即选择服务端版本时，恢复使用最新服务端 snapshot，而不是删除前的旧快照。
+- 旧 epoch shadow 为 revision 10 / payload A、回档后新 epoch 同实体也为 revision 10 / payload B 时，选择服务端版本只能恢复 B；任何 successor 使用新 epoch 与 B 的 revision，不能把 A 当作提交基线。
 - 冻结 mutation 的响应丢失且先 pull 到远端 vehicle tombstone 时，保留删除快照直到重试取得全部终态，再完成清理。
 - 两个并发 mutation 分别把相邻里程改成单独合法、合并非法的值时，每车 constraint CAS 最多接受一个；失败方重读后被拒绝或重试。
 - 删除发生 conflict 并选择服务端版本时，快照和暂停 intent 完整恢复。
 - 业务 rejected 回执丢失后重试仍返回首次终态。
+- 两台设备从同一 999 条基线各离线新增不同记录时，先同步者占满服务端；后同步者把被拒绝记录移入容量冲突，仍能应用第 1000 条远端 change 并推进 cursor，本地 active 投影不超过 1000 条。
 - Fuel D1 epoch 轮换只触发 Fuel recovery，不影响身份和其他模块。
 
 手工验收：

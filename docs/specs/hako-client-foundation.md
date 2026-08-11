@@ -131,7 +131,7 @@ Hako 是供个人使用的跨平台工具箱，不是单一加油应用。客户
 | bootstrap version | 模块仓储 | 首次把既有本地实体转成 intent 的算法 |
 | archive version | 模块 `archiveAdapter` | 用户导入导出的文件格式 |
 
-纯本地模块不声明 module payload schema。模块新增 payload 版本时只能迁移尚未冻结的 pending intent；已冻结 mutation 必须保留原版本和内容，由适配器继续原样编码。
+纯本地模块不声明 module payload schema。同步模块的 payload 升级仍须遵守[第 8.2 节 outbox 不变量](#82-outbox-不变量)，本节不重复定义冻结与迁移行为。
 
 ## 6. 应用级状态
 
@@ -147,7 +147,7 @@ Pinia 不保存业务实体、outbox 内容、credential 原文或数据库对�
 
 ### 7.1 Core store
 
-- 原生端：`hako-core.db`；Web：IndexedDB `hako-core`。
+- 原生端：production 在 `com.ayingott.hako` 的应用数据目录使用 `hako-core.db`，preview/local 分别在自身应用目录使用 `hako-preview-core.db` / `hako-local-core.db`；Web 在当前 origin 下使用 IndexedDB `hako-core`。
 - 只保存非秘密 `installationId`、应用设置、已知模块状态和本地 migration metadata。
 - `installationId` 使用 UUID v4，首次成功打开 Core store 时创建；它不是服务端凭据，也不用于授权。
 - Core store 不保存设备 secret、vault passphrase、恢复密钥或业务实体。
@@ -156,8 +156,9 @@ Core store 无法打开时，应用壳以默认设置进入降级模式，并明
 
 ### 7.2 模块 store
 
-- 每个持久化模块拥有独立物理数据库：原生 `hako-<moduleKey>.db`，Web IndexedDB `hako-<moduleKey>`。
+- 每个持久化模块拥有独立物理数据库：原生 production 使用 `hako-<moduleKey>.db`，preview/local 分别使用 `hako-preview-<moduleKey>.db` / `hako-local-<moduleKey>.db`，且三者位于各自 identifier 的应用数据目录；Web 在当前 origin 下使用 IndexedDB `hako-<moduleKey>`。
 - 业务实体、该模块 outbox、cursor、epoch、冲突、recovery shadow 和 bootstrap 标记必须位于同一模块 store，以便单事务提交。
+- 所有服务端 conflict、模块专用远端 shadow 和 recovery shadow 都保存 `sourceEpoch`、服务端 revision，以及存在时的 change seq；revision 只能在同一 epoch 内比较，旧 epoch shadow 只能作为不可提交的历史证据。
 - 模块独立维护单调递增、不可变的 migration 序列；数据库版本与 module payload schema version 分开演进。
 - 不允许跨 store 外键或假装跨 store 原子事务。跨模块流程只能通过应用服务和显式、可重放事件编排。
 - migration 失败只把该模块置为 `unavailable`，应用壳和其他模块继续启动；不执行自动 down migration。
@@ -199,7 +200,7 @@ Core Sync Engine 只负责调度、认证传输、通用信封、退避和生命
 
 同一模块任何时刻最多运行一轮同步：原生端使用进程内 mutex，Web 使用第 8.5 节的 lease。Windows、macOS 和 Linux 首版同时使用 Tauri Single Instance 插件，将它作为第一个 plugin 注册，并且在打开任何 store 前完成单实例仲裁；第二次启动只聚焦既有窗口并退出。持有执行权后按以下顺序运行：
 
-1. 若本地没有该模块 epoch，以空 cursor 发起 bootstrap pull，并声明客户端可读取的 payload schema 版本；持续拉取到 `hasMore=false`，在每页事务中应用 changes、顶层 epoch 和 cursor。首次 bootstrap 完成前不得 push。
+1. 若本地没有该模块 epoch，省略 `after` 参数发起 bootstrap pull，禁止发送空字符串 cursor，并声明客户端可读取的 payload schema 版本；持续拉取到 `hasMore=false`，在每页事务中应用 changes、顶层 epoch 和 cursor。首次 bootstrap 完成前不得 push。
 2. 从最旧 pending 中冻结一个有界批次；不同 payload schema 版本分别成批，已冻结旧版本 mutation 不升级。
 3. push 一个批次并声明该适配器可读取的 payload 版本，在模块事务中按 `mutationId` 应用每项 receipt：确认 revision、重建 successor base revision、保存 rejected intent，或按结果声明的 payload 版本保存 conflict。
 4. 从本地 cursor pull，逐页处理到 `hasMore=false`；即使 push 响应成功也不能用它推进 cursor。
@@ -228,6 +229,7 @@ Core 身份失效或 credential 锁定暂停全部远程同步；模块数据库
 | 401 | 身份转为 `credentialInvalid`，暂停全部远程同步并保留所有 intent |
 | 404 `module_not_found` | 暂停对应模块，保留 intent，等待服务端配置修复 |
 | 409 `cursor_reset_required` | 进入第 8.6 节 cursor/epoch recovery，不直接重试 push |
+| 409 `module_version_not_accepted` / `module_version_unsupported_by_server` | 仅暂停对应模块，保留 intent，并提示等待服务端完成版本部署；按服务端 `Retry-After` 自动探测，应用持续处于前台也不能无限暂停，不提示升级客户端 |
 | 413 | 多 mutation 批次减小后重试；单条仍超限则暂停模块并保留 intent |
 | 400/422 请求级错误 | 视为客户端或数据缺陷，暂停模块且不自动重试，保留冻结 mutation 供修复 |
 | push 逐项 `applied` | 提交 revision、移除已确认 mutation，并按第 8.2 节重建 successor |
@@ -235,6 +237,8 @@ Core 身份失效或 credential 锁定暂停全部远程同步；模块数据库
 | 426 `client_upgrade_required` | 暂停全部远程同步并提示升级，保留 intent |
 | 426 `module_upgrade_required` | 只暂停对应模块并提示升级，保留 intent |
 | 429 | 遵守 `Retry-After`，之后进入退避 |
+| 503 `auth_maintenance` | 暂停全部远程同步并保留 intent，遵守 `Retry-After` 后重新探测身份状态 |
+| 503 `module_maintenance` | 仅暂停对应模块并保留 intent，遵守 `Retry-After` 后原样重试 |
 | `retryable=true` 的 5xx 或网络错误 | 保留原冻结 mutation，按退避原样重试 |
 | `retryable=false` 的其他请求错误 | 暂停相应范围，不自动重试并保留 intent |
 
@@ -249,12 +253,12 @@ Core 身份失效或 credential 锁定暂停全部远程同步；模块数据库
 服务端报告 `cursor_reset_required` 时（包括 cursor 无效、MAC key 轮换或模块 epoch 不匹配）：
 
 1. 只暂停该模块 push，保留实体、tombstone、outbox 和冲突。
-2. 从空 cursor 拉取该模块完整日志到独立 recovery shadow，不覆盖当前实体。
-3. 核对必须同时读取 recovery shadow、实体最后确认的服务端 revision、tombstone 是否已确认以及既有 outbox，不能只比较当前 active 投影。
+2. 省略 `after` 参数，从 seq `0` 拉取该模块完整日志到独立 recovery shadow，不覆盖当前实体；首次响应确定候选新 epoch，每条记录保存该 `sourceEpoch` 和 change seq。
+3. 核对必须同时读取 recovery shadow、实体最后确认的服务端 revision、tombstone 是否已确认以及既有 outbox，不能只比较当前 active 投影。既有 conflict 和模块专用 shadow 保留原 `sourceEpoch`，与旧 epoch revision 一起降级为历史证据，禁止和候选新 epoch 按 revision 大小合并。
 4. 双方内容相同则接受新 revision。仅服务端存在且本地从未保存该 ID 时导入；本地存在 tombstone 或历史确认记录时不能按新实体导入，差异进入 `epoch_reset_reconciliation` 冲突。
 5. 仅本地 active 且从未取得服务端 revision 时，复用尚未发送的 create intent；只有不存在该 intent 时才生成一条 create。曾取得服务端 revision 的 active 在服务端缺失时进入 `server_missing_after_epoch_reset` 冲突，不能自动用原 ID create。仅本地 tombstone 原样保留。
-6. 旧 epoch 的 in-flight mutation 若能由 shadow 中的相同实体内容或 tombstone 确认终态，则按该服务端 revision 收敛；否则连同 successor 保留为冲突证据并停止调度。恢复过程不得改写冻结 mutation，也不得为同一 intent 再生成第二条 mutation；用户解决冲突后才按新 epoch 和当前 revision 建立新 mutation。
-7. 全部核对完成后，才提交新 epoch/cursor 并恢复该模块同步。
+6. 旧 epoch 的 in-flight mutation 只有能由候选新 epoch recovery shadow 中的相同实体内容或 tombstone 确认终态时，才按该服务端 revision 收敛；否则连同 successor 保留为冲突证据并停止调度。恢复过程不得改写冻结 mutation，也不得为同一 intent 再生成第二条 mutation。
+7. 全部核对完成后，才提交新 epoch/cursor，并把模块专用 current shadow 切换到该 epoch。用户解决冲突或恢复 successor 时，epoch 与 base revision 必须来自同一个当前 epoch snapshot；服务端缺失也要保存显式 missing marker，不能从旧 epoch shadow 补值。
 
 HTTP 路径、信封、revision、cursor 编码和请求级错误由[服务端同步协议](./hako-sync-server.md#7-模块同步协议-v1)唯一维护。
 
@@ -263,11 +267,13 @@ HTTP 路径、信封、revision、cursor 编码和请求级错误由[服务端�
 Hako 首版没有传统账号登录页，只有一个本地个人工作区和可选的全局同步身份。
 
 - 初次启动直接进入工具首页，状态为 `localOnly`；用户可在设置中启用同步。
-- 原生端由 Rust credential service 使用 Stronghold 保存 `deviceId.secret`。首次配对时用户创建至少 12 个字符的 vault passphrase，并使用 Stronghold Argon2 初始化。
+- 原生端由 Rust credential service 使用 Stronghold 保存 `{ environmentId, canonicalOrigin, opaqueCredential }`，其中 credential 是服务端返回的完整值，例如 `hako_d_<deviceId>.<secret>`，不得解析、裁剪或自行重建。vault 文件和 record key 都必须包含编译期环境 ID；Rust HTTP client 每次请求前用编译期环境与 origin 精确读取，任一不匹配即 fail closed，credential 不得离开 service。首次配对时用户创建至少 12 个字符的 vault passphrase，并使用 Stronghold Argon2 初始化。
 - passphrase 不写入文件、Core store、模块 store、日志或 Pinia；每次进程冷启动后需要解锁才启动同步。
 - Vue 只能调用注册、解锁、锁定和同步等窄 command；Stronghold 内容和解锁后的 device credential 永不返回 WebView。passphrase 只作为一次 command 输入进入 Rust，并在使用后清零可清零的内存副本。
 - 忘记 passphrase 时允许删除本地 vault 并重新配对，但不得删除任一模块数据、outbox 或冲突。
 - 注册或配对在响应丢失、进程崩溃或 credential 持久化失败后属于结果不确定，不能自动重试一次性交付接口。Web 先调用 session API 判断 Cookie 是否已经生效，原生先检查 credential service；仍没有可用 credential 时保持 `unpaired`，由用户发起新的注册或配对，并在取得授权后撤销设备列表中的孤立设备。
+- 使用恢复密钥注册可能触发服务端 recovery reset，客户端必须先明确提示其他设备会被撤销；正常增加设备只走配对流程。
+- 设备设置允许撤销当前或其他设备。撤销最后一台设备需要二次确认；当前设备被撤销或 Web logout 成功后，本机立即进入 `unpaired`，停止远程同步但保留全部本地模块数据和 intent。
 - Web 端长期 credential 只存在同源 HttpOnly Cookie；JavaScript 只读取会话状态 API 的结果。
 - 模块只能调用 `AuthenticatedTransport`，不能读取 credential、Cookie、Stronghold 或认证 header。
 
@@ -278,7 +284,9 @@ Hako 首版没有传统账号登录页，只有一个本地个人工作区和可
 - `build:web` 输出 `dist/web`，使用 Web adapter、HTML5 history 和同源 `fetch`。
 - `build:native` 输出 `dist/native`，使用 Tauri adapter、hash history 和窄 Rust command。
 - Web bundle 不得导入或条件包含可执行的 `@tauri-apps/*` 调用；平台差异通过构建 alias 选择。
-- 原生已认证传输由 Rust HTTP client 实现，只从构建期 `HAKO_SYNC_BASE_URL` 构造固定 API 地址，不接受 Vue 传入完整 origin；production 只允许 HTTPS，开发额外允许 `http://127.0.0.1:8787`，并拒绝跨源重定向。
+- 构建期 `HAKO_BUILD_ENVIRONMENT` 只允许 `production`、`preview` 或 `local`，并与 Tauri identifier、应用数据目录、Stronghold namespace 和 `HAKO_SYNC_BASE_URL` 组成不可拆分的受测映射：production 使用 `com.ayingott.hako`，preview 使用 `com.ayingott.hako.preview`，local 使用 `com.ayingott.hako.local`。构建脚本发现任一值不匹配时失败，运行时不能由 Vue、用户设置或远端配置切换环境。
+- 原生已认证传输由 Rust HTTP client 实现，只从上述环境映射构造固定 API 地址，不接受 Vue 传入完整 origin；production 和 preview 只允许各自固定的 HTTPS origin，local 额外允许 `http://127.0.0.1:8787`，并拒绝跨源重定向。production 值必须等于服务端的 canonical origin；更换该 origin 需要保留旧兼容入口或发布显式客户端迁移，不能静默替换。
+- Web 的 origin 天然隔离 Cookie 与 IndexedDB；原生依靠不同 identifier、应用数据目录和 Stronghold namespace 隔离。preview/local 构建不得打开 production store、读取 production credential 或把 production bearer 发往非 production origin；跨环境移动数据只能通过用户确认的模块归档导出和导入。
 - Tauri capability 只开放已注册的业务、archive、credential 和 sync command，不开放 shell、通用 SQL、通用 HTTP 或任意文件系统范围。
 - production 必须把当前 `csp: null` 替换为仅允许本地资源、Tauri IPC 和明确网络目标的 CSP；不加载远程脚本或 frame。
 - PWA 只预缓存版本化应用壳和静态资源；`/api/`、认证和同步响应永不进入 Service Worker cache。
@@ -336,16 +344,19 @@ shared/
 - 桌面第二实例不能打开 store 或启动第二轮同步；Web 旧标签收到 `versionchange` 后关闭连接，升级端从 `blocked` 恢复。
 - 未冻结 create→delete 取消远端 mutation，已同步 update→delete 合并为正确 base revision 的 delete；成功回执正确重建 successor。
 - 一个模块 migration、解码、422/426 或数据库失败不停止其他模块。
+- 应用持续处于前台时，两个服务端版本 409 都按 `Retry-After` 自动探测并在服务端开放后恢复；`auth_maintenance` 暂停全部远程同步，`module_maintenance` 只暂停目标模块。
 - 多标签 lease 过期后，旧 fencing generation 不能提交网络响应。
 - in-flight mutation 重启后原样重试，successor 不被旧回执覆盖。
-- 新模块先从空 cursor 完整 pull 并取得 epoch，再 push；正常轮次 pull 到 `hasMore=false`。
+- 新模块先省略 `after` 从 seq `0` 完整 pull 并取得 epoch，再 push；正常轮次 pull 到 `hasMore=false`。
 - 新客户端能原样重试旧 payload 版本的冻结 mutation，按 `mutationId` 关联逐项结果，并读取混合版本 change/conflict snapshot；纯本地模块不伪造 payload 版本。
 - epoch reset 不重复 create intent，不自动重交曾被服务端确认但在回档后缺失的实体；旧设备不能复活其他设备已确认删除的数据。
+- 回档前后两个 epoch 出现相同 entity revision 但不同 payload 时，旧 shadow 只保留为证据；当前投影、冲突决策和 successor 只使用新 epoch snapshot 或 missing marker。
 - vault 锁定、401、Worker 不可用和离线时本地工具正常使用。
 - 注册或配对响应丢失时不自动重复创建设备；Web 能识别已经生效的 session，原生没有持久化 credential 时保持 `unpaired` 并允许重新发起。
 - 原生 credential 在注册、解锁和同步过程中从不返回 WebView，Web 响应从不暴露 Cookie 内容。
 - PWA 离线冷启动成功，API/认证响应不在 Cache Storage 中。
 - production bundle 不包含错误平台 adapter，Tauri capability 与 CSP 不开放通用特权。
+- production、preview 和 local 构建的 identifier、数据目录、Stronghold record 与固定 origin 精确匹配；把 production vault/store 放到 preview 路径时，preview 仍不能读取或发送其中的 credential，构建参数混搭必须失败。
 
 实施后至少提供并通过：
 
