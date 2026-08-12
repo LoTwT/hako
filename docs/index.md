@@ -5,7 +5,7 @@
 以下三份文档共同组成一个临时规格组，当前均为“待确认”。先确认两份共享基建，再审阅具体模块；编号表示审阅重点，不表示文档只能单向引用。
 
 1. [Hako 客户端共享基建](./specs/hako-client-foundation.md)
-2. [Hako 共享同步服务端](./specs/hako-sync-server.md)
+2. [Hako 服务端共享基建](./specs/hako-server-foundation.md)
 3. [加油统计模块](./specs/fuel-tracking.md)
 
 清理门禁：只有当三份规格全部实现并通过验收、实际架构与运维知识已经写入长期文档、全部入站链接已在同一变更中更新后，才一起删除这三份临时规格及本节入口；不得提前单独删除其中一份。

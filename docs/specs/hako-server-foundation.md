@@ -1,4 +1,4 @@
-# 临时规格：Hako 共享同步服务端
+# 临时规格：Hako 服务端共享基建
 
 > 状态：待确认
 >
@@ -18,7 +18,7 @@
 
 - Cloudflare Worker 就是 Hako 的独立服务端部署单元。
 - Web SPA 和 `/api/v1` 由同一个 Worker、同一个 origin 提供。
-- 服务端代码位于当前仓库的 `server/`，使用同一个 pnpm lockfile，但拥有独立 Wrangler 配置、构建验证和发布流程。
+- 服务端代码位于当前仓库的 `server/`，作为独立 pnpm workspace package，拥有自己的 `package.json`、TypeScript 配置、Wrangler 配置、构建验证和发布流程；整个仓库只维护根目录的一份 pnpm lockfile。
 - 首版只有一个 Worker；认证和模块同步通过内部代码边界隔离，不拆成多个 Worker 或独立仓库。
 - 身份认证使用独立 Core D1；首个同步模块 Fuel 使用独立业务 D1。后续按事务与恢复边界决定是否新增 D1，不按模块名称机械分库；必须原子提交的跨模块数据必须位于同一业务 D1 或重新设计边界。第 7 至 9 节首版假定一个业务 D1 只承载一个同步恢复域；多个模块共享物理 D1 前，必须另写 D1 级 maintenance、全部受影响模块 epoch 轮换和联合 reconciliation 规格，在此之前禁止共享。
 
@@ -80,9 +80,9 @@ Web SPA / 五个 Tauri 原生平台
 - Zod 与 `@hono/zod-validator` 负责请求边界校验；服务端不信任客户端生成的 TypeScript 类型。
 - Wrangler 负责本地运行、bindings、migrations、类型生成、dry-run 和部署。
 - `@cloudflare/vitest-pool-workers` 在 Workers runtime 中运行集成测试。
-- 根 pnpm 管理依赖和唯一 lockfile；`server/` 不创建第二个包管理器或独立仓库。
+- 根 `pnpm-workspace.yaml` 管理客户端与 `server/` package，整个仓库只维护根 `pnpm-lock.yaml`。`server/` 独立声明依赖和 scripts，不创建第二份 lockfile、使用其他包管理器或拆成独立仓库。
 
-共享传输信封放在根目录 `shared/sync/`，是客户端和服务端唯一的 TypeScript 契约实现。模块 wire schema 放在 `shared/modules/<moduleKey>/`，由对应模块规格拥有；客户端和服务端都不得复制常量或字段表。
+共享传输信封放在根目录 `shared/sync/`，是客户端和服务端唯一的 TypeScript 契约实现。模块 wire schema 放在 `shared/modules/<moduleKey>/`，由对应模块规格拥有；客户端和服务端都不得复制常量或字段表。`shared/` 只能依赖与平台无关的 TypeScript 代码，不得导入浏览器、Vue、Tauri、Workers runtime、D1 或 Node.js 专用 API。
 
 ## 5. 环境与 Cloudflare 资源
 
@@ -412,7 +412,9 @@ D1 Time Travel 只覆盖指定数据库并取消恢复时正在执行的查询�
 ## 12. 计划文件边界
 
 ```text
+pnpm-workspace.yaml             # 根 workspace：客户端与 server package
 server/
+  package.json                 # 服务端独立依赖与 scripts，不生成独立 lockfile
   wrangler.jsonc
   tsconfig.json
   src/

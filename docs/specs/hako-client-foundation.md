@@ -6,7 +6,7 @@
 >
 > 适用版本：Hako `0.0.0` 之后的首个应用基建版本
 >
-> 单一事实来源：本文只定义客户端应用壳、模块契约、本地平台能力、身份状态和同步客户端；HTTP、认证及云端协议由[共享同步服务端规格](./hako-sync-server.md)定义，业务语义由各模块规格定义。
+> 单一事实来源：本文只定义客户端应用壳、模块契约、本地平台能力、身份状态和同步客户端；HTTP、认证及云端协议由[服务端共享基建规格](./hako-server-foundation.md)定义，业务语义由各模块规格定义。
 >
 > 临时性：属于同一临时规格组，统一清理门禁见[文档索引](../index.md#临时规格)。
 
@@ -260,7 +260,7 @@ Core 身份失效或 credential 锁定暂停全部远程同步；模块数据库
 6. 旧 epoch 的 in-flight mutation 只有能由候选新 epoch recovery shadow 中的相同实体内容或 tombstone 确认终态时，才按该服务端 revision 收敛；否则连同 successor 保留为冲突证据并停止调度。恢复过程不得改写冻结 mutation，也不得为同一 intent 再生成第二条 mutation。
 7. 全部核对完成后，才提交新 epoch/cursor，并把模块专用 current shadow 切换到该 epoch。用户解决冲突或恢复 successor 时，epoch 与 base revision 必须来自同一个当前 epoch snapshot；服务端缺失也要保存显式 missing marker，不能从旧 epoch shadow 补值。
 
-HTTP 路径、信封、revision、cursor 编码和请求级错误由[服务端同步协议](./hako-sync-server.md#7-模块同步协议-v1)唯一维护。
+HTTP 路径、信封、revision、cursor 编码和请求级错误由[服务端同步协议](./hako-server-foundation.md#7-模块同步协议-v1)唯一维护。
 
 ## 9. 全局身份与凭据
 
@@ -277,7 +277,7 @@ Hako 首版没有传统账号登录页，只有一个本地个人工作区和可
 - Web 端长期 credential 只存在同源 HttpOnly Cookie；JavaScript 只读取会话状态 API 的结果。
 - 模块只能调用 `AuthenticatedTransport`，不能读取 credential、Cookie、Stronghold 或认证 header。
 
-恢复密钥、设备 credential、配对 token 和撤销的服务端格式由[服务端身份认证](./hako-sync-server.md#6-身份认证与设备管理)维护。
+恢复密钥、设备 credential、配对 token 和撤销的服务端格式由[服务端身份认证](./hako-server-foundation.md#6-身份认证与设备管理)维护。
 
 ## 10. 平台、安全与构建
 
@@ -318,7 +318,7 @@ shared/
   modules/<moduleKey>/         # 模块拥有的 wire schema 与纯 validator
 ```
 
-项目继续使用同一仓库、根 `package.json`、pnpm 和单一 lockfile；服务端使用独立目录但不创建独立仓库。客户端计划新增 Vue Router、Pinia、Tauri Stronghold/Dialog/Single Instance 的 Rust 侧能力、Rust `sqlx` 与 HTTP client、`idb`、PWA、Vitest、Vue Test Utils 和 IndexedDB 测试实现，实际版本由 lockfile 固定。Vue 侧不新增 SQL、HTTP 或 Stronghold 的通用 guest API。
+客户端继续使用根 `package.json`；仓库 workspace、服务端 package 和 lockfile 边界由[服务端技术栈与部署边界](./hako-server-foundation.md#4-服务端技术栈与部署边界)维护。客户端计划新增 Vue Router、Pinia、Tauri Stronghold/Dialog/Single Instance 的 Rust 侧能力、Rust `sqlx` 与 HTTP client、`idb`、PWA、Vitest、Vue Test Utils 和 IndexedDB 测试实现，实际版本由根 lockfile 固定。Vue 侧不新增 SQL、HTTP 或 Stronghold 的通用 guest API。
 
 ## 12. 可独立合并的实施阶段
 
@@ -328,7 +328,7 @@ shared/
 
 ### 阶段二：身份与同步客户端 Core
 
-交付 Stronghold/Web session adapter、已认证 transport、outbox contract、调度器、lease、epoch recovery、同步设置与状态。缺少服务端地址时同步入口明确显示“未配置”，本地工具仍完整可用；只有在[共享同步服务端规格](./hako-sync-server.md)对应端点部署后才开放配对操作。
+交付 Stronghold/Web session adapter、已认证 transport、outbox contract、调度器、lease、epoch recovery、同步设置与状态。缺少服务端地址时同步入口明确显示“未配置”，本地工具仍完整可用；只有在[服务端共享基建规格](./hako-server-foundation.md)对应端点部署后才开放配对操作。
 
 阶段一不依赖阶段二；阶段二不改变任何既有模块业务数据。
 

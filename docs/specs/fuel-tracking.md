@@ -6,7 +6,7 @@
 >
 > 适用版本：Hako `0.0.0` 之后的首个业务模块
 >
-> 前置规格：[客户端共享基建](./hako-client-foundation.md)与[共享同步服务端](./hako-sync-server.md)
+> 前置规格：[客户端共享基建](./hako-client-foundation.md)与[服务端共享基建](./hako-server-foundation.md)
 >
 > 单一事实来源：本文只定义 Fuel 业务、模块 UI、模块数据、归档和 Fuel 同步适配器；平台、本地同步算法、认证、HTTP 和 Cloudflare 运维不在本文重复定义。
 >
@@ -229,7 +229,7 @@ Fuel 只实现 `FuelArchiveCodecV1`；文件读取、保存位置和权限以客
 
 ## 9. Fuel 同步接入
 
-Fuel 实现客户端 `SyncModuleAdapter` 和服务端 `FuelSyncHandler`，使用[通用模块同步协议](./hako-sync-server.md#7-模块同步协议-v1)，不自建 transport 或身份认证。
+Fuel 实现客户端 `SyncModuleAdapter` 和服务端 `FuelSyncHandler`，使用[通用模块同步协议](./hako-server-foundation.md#7-模块同步协议-v1)，不自建 transport 或身份认证。
 
 ### 9.1 wire schema
 
@@ -374,4 +374,4 @@ tests/fixtures/fuel/            # 六端和服务端共享的固定样例
 ## 14. 参考资料
 
 - [客户端共享基建](./hako-client-foundation.md)
-- [共享同步服务端](./hako-sync-server.md)
+- [服务端共享基建](./hako-server-foundation.md)
