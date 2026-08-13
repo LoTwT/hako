@@ -17,7 +17,7 @@ Hako 是供个人使用的跨平台工具箱，不是单一加油应用。客户
 成功标准：
 
 - 默认入口是工具首页，而不是任何具体工具。
-- 未注册、未解锁、离线或服务端故障时，本地工具仍可完整使用。
+- 未登录、凭据保险库未解锁、离线或服务端故障时，本地工具仍可完整使用。
 - 一个工具初始化、迁移或同步失败时，应用壳和其他工具仍可使用。
 - 新增第二个工具时，不需要修改既有工具的领域模型、数据库或同步状态机。
 - Web 和五个 Tauri 原生平台复用 Vue 组件及纯 TypeScript 逻辑，但平台能力通过明确适配器隔离。
@@ -31,14 +31,14 @@ Hako 是供个人使用的跨平台工具箱，不是单一加油应用。客户
 - 模块生命周期、能力声明、初始化失败隔离和按需加载。
 - Core 与各业务模块的本地数据库边界及 migration 规则。
 - 原生 SQLite、Web IndexedDB、文件选择、PWA 和平台安全边界。
-- 全局同步身份状态、原生凭据保险库和 Web 不透明会话状态。
+- 全局同步身份状态、OAuth/Passkey 登录入口、原生凭据保险库和 Web 不透明会话状态。
 - 通用同步调度、outbox、cursor、epoch reset、冲突和 Web lease 机制。
 - Web/native 独立构建产物及六端验证入口。
 
 ### 2.2 不包含
 
 - 可下载插件、第三方脚本、运行时动态安装工具或插件市场。
-- 多用户、公开注册、账号切换、共享数据或角色权限。
+- 多用户、公开注册、账号切换、共享数据、角色权限或把 Hako 作为通用 OAuth Provider。
 - 业务模块的领域字段、计算公式、页面细节和归档内容格式。
 - 服务端路由、认证 token 格式、D1 表和 Cloudflare 运维。
 - 跨模块数据库事务、跨模块外键或隐式读取其他模块数据。
@@ -71,9 +71,9 @@ Hako 是供个人使用的跨平台工具箱，不是单一加油应用。客户
 - 工具模块可以依赖 Core 公开契约，但不能导入其他工具模块。
 - 领域层不得导入 Vue、Pinia、Tauri、浏览器 API、数据库驱动或网络客户端。
 - 平台适配器实现 Core 或模块端口，不得反向包含业务决策。
-- 模块不能读取 credential、构造任意服务端 origin 或直接调用未认证网络接口。
+- 模块不能读取 session/token、构造任意服务端 origin 或直接调用未认证网络接口。
 
-隔离结论：身份不是某个工具的“登录功能”，而是 App Shell 拥有的可选同步能力；未启用身份时所有本地工具照常使用。应用设置进入 Core store，credential 进入独立保险库，各工具业务数据进入各自物理 store；同步 Core 只通过端口调度，不拥有业务表。这个边界同时隔离代码、持久化、同步故障和后续模块演进。
+隔离结论：身份不是某个工具的“登录功能”，而是 App Shell 拥有的可选同步能力；未启用身份时所有本地工具照常使用。应用设置进入 Core store，Web session 只存在 HttpOnly Cookie，原生 token 进入独立保险库，各工具业务数据进入各自物理 store；同步 Core 只通过 `IdentityPort` 和 `AuthenticatedTransport` 调度，不拥有业务表。这个边界同时隔离代码、持久化、同步故障和后续模块演进。
 
 ## 4. 应用入口与导航
 
@@ -84,14 +84,16 @@ Hako 是供个人使用的跨平台工具箱，不是单一加油应用。客户
 | `/` | App Shell | 工具首页，展示编译进当前版本且可用的工具 |
 | `/tools/<moduleKey>` | 工具注册表 | 具体路径由模块 manifest 唯一声明 |
 | `/settings` | App Shell | 全局设置首页 |
-| `/settings/sync` | Core Identity/Sync | 同步启用、配对、解锁和状态 |
+| `/settings/sync` | Core Identity/Sync | 同步启用、登录、保险库解锁和状态 |
 | `/settings/devices` | Core Identity | 已授权设备列表与撤销 |
+| `/auth/sign-in` | Core Identity（Web） | OAuth/Passkey 登录与安全 return path |
+| `/auth/device` | Core Identity（Web） | 原生设备授权 code 验证、批准或拒绝 |
 | `/:pathMatch(.*)*` | App Shell | 明确的未找到页面 |
 
 - Web 构建使用 HTML5 history，并由服务端 SPA fallback 支持刷新和深链接。
 - Tauri 原生构建使用 hash history，避免本地协议刷新子路径时依赖服务端回退。
 - `App.vue` 只装配全局样式、应用壳和 `RouterView`；任何完整业务页面不得写入根组件。
-- 路由不以“已登录”为前置条件。未配对或 vault 未解锁只影响远程同步，不得重定向或阻止本地工具页面。
+- 工具路由不以“已登录”为前置条件。未登录或原生 vault 未解锁只影响远程同步，不得重定向或阻止本地工具页面；只有 `/auth/*` 和同步设置能主动进入认证流程。
 
 ### 4.2 响应式入口
 
@@ -138,10 +140,10 @@ Hako 是供个人使用的跨平台工具箱，不是单一加油应用。客户
 使用 Pinia Setup Stores，仅承载跨路由的界面和编排状态：
 
 - `appSettings`：主题、界面偏好和非秘密安装标识的已加载状态。
-- `identity`：`localOnly`、`unpaired`、`locked`、`ready`、`credentialInvalid` 状态及明确动作。
+- `identity`：`localOnly`、`signedOut`、`authenticating`、`locked`、`ready`、`reauthenticationRequired` 状态及明确动作。
 - `syncSummary`：每个模块的 `idle`、`syncing`、`offline`、`authBlocked`、`conflict`、`failed` 聚合结果。
 
-Pinia 不保存业务实体、outbox 内容、credential 原文或数据库对象。业务仓储是持久数据的唯一事实来源；Store 只持有可重建的视图状态。Store 之间不得在 setup 阶段循环读取，跨 Store 协调只发生在 action 中。
+Pinia 不保存业务实体、outbox 内容、session/token 原文或数据库对象。业务仓储是持久数据的唯一事实来源；Store 只持有可重建的视图状态。Store 之间不得在 setup 阶段循环读取，跨 Store 协调只发生在 action 中。
 
 ## 7. 本地持久化边界
 
@@ -150,7 +152,7 @@ Pinia 不保存业务实体、outbox 内容、credential 原文或数据库对�
 - 原生端：production 在 `com.ayingott.hako` 的应用数据目录使用 `hako-core.db`，preview/local 分别在自身应用目录使用 `hako-preview-core.db` / `hako-local-core.db`；Web 在当前 origin 下使用 IndexedDB `hako-core`。
 - 只保存非秘密 `installationId`、应用设置、已知模块状态和本地 migration metadata。
 - `installationId` 使用 UUID v4，首次成功打开 Core store 时创建；它不是服务端凭据，也不用于授权。
-- Core store 不保存设备 secret、vault passphrase、恢复密钥或业务实体。
+- Core store 不保存 OAuth token、Better Auth session token、秘密 `device_code`、Passkey 私钥、vault passphrase 或业务实体。
 
 Core store 无法打开时，应用壳以默认设置进入降级模式，并明确显示设置不可保存；不得继续尝试初始化远程同步。
 
@@ -201,7 +203,7 @@ Core Sync Engine 只负责调度、认证传输、通用信封、退避和生命
 同一模块任何时刻最多运行一轮同步：原生端使用进程内 mutex，Web 使用第 8.5 节的 lease。Windows、macOS 和 Linux 首版同时使用 Tauri Single Instance 插件，将它作为第一个 plugin 注册，并且在打开任何 store 前完成单实例仲裁；第二次启动只聚焦既有窗口并退出。持有执行权后按以下顺序运行：
 
 1. 若本地没有该模块 epoch，省略 `after` 参数发起 bootstrap pull，禁止发送空字符串 cursor，并声明客户端可读取的 payload schema 版本；持续拉取到 `hasMore=false`，在每页事务中应用 changes、顶层 epoch 和 cursor。首次 bootstrap 完成前不得 push。
-2. 从最旧 pending 中冻结一个有界批次；不同 payload schema 版本分别成批，已冻结旧版本 mutation 不升级。
+2. 从最旧 pending 中冻结一个有界批次；private sync beta 每批最多 5 条，不同 payload schema 版本分别成批，已冻结旧版本 mutation 不升级。
 3. push 一个批次并声明该适配器可读取的 payload 版本，在模块事务中按 `mutationId` 应用每项 receipt：确认 revision、重建 successor base revision、保存 rejected intent，或按结果声明的 payload 版本保存 conflict。
 4. 从本地 cursor pull，逐页处理到 `hasMore=false`；即使 push 响应成功也不能用它推进 cursor。
 5. 若运行期间产生新 successor 或触发器，只合并成下一轮；当前轮释放 mutex/lease 后再调度。
@@ -220,13 +222,13 @@ Core Sync Engine 只负责调度、认证传输、通用信封、退避和生命
 
 Core 采用单并发、轮询各 ready 模块的调度器；一个模块失败后记录自己的退避时间并继续下一个模块。网络错误使用 1、2、4、8、16、30、60 秒指数退避并加入 ±20% jitter，单次成功后重置。重复触发合并为一次后续运行。
 
-Core 身份失效或 credential 锁定暂停全部远程同步；模块数据库、payload 或协议错误只暂停该模块。本地 CRUD 不依赖任何同步状态。自动同步只承诺应用运行或恢复前台后的最终追平，不承诺进程终止后的后台执行。
+Core 身份失效或原生 token vault 锁定暂停全部远程同步；模块数据库、payload 或协议错误只暂停该模块。本地 CRUD 不依赖任何同步状态。自动同步只承诺应用运行且原生 vault 已解锁，或应用恢复前台后的最终追平，不承诺进程终止后的后台执行。
 
 服务端结果的客户端处理由下表唯一规定：
 
 | 服务端结果 | 客户端动作 |
 | --- | --- |
-| 401 | 身份转为 `credentialInvalid`，暂停全部远程同步并保留所有 intent |
+| 401 | 身份转为 `reauthenticationRequired`，暂停全部远程同步并保留所有 intent；重新登录或设备授权不得重建 intent |
 | 404 `module_not_found` | 暂停对应模块，保留 intent，等待服务端配置修复 |
 | 409 `cursor_reset_required` | 进入第 8.6 节 cursor/epoch recovery，不直接重试 push |
 | 409 `module_version_not_accepted` / `module_version_unsupported_by_server` | 仅暂停对应模块，保留 intent，并提示等待服务端完成版本部署；按服务端 `Retry-After` 自动探测，应用持续处于前台也不能无限暂停，不提示升级客户端 |
@@ -236,7 +238,7 @@ Core 身份失效或 credential 锁定暂停全部远程同步；模块数据库
 | push 逐项 `conflict` 或 `rejected` | 把服务端结果和本地 intent 写入模块冲突；不以同一 mutation 自动重试 |
 | 426 `client_upgrade_required` | 暂停全部远程同步并提示升级，保留 intent |
 | 426 `module_upgrade_required` | 只暂停对应模块并提示升级，保留 intent |
-| 429 | 遵守 `Retry-After`，之后进入退避 |
+| 429 | 有可信 `Retry-After` 时遵守；前置 WAF 响应没有该 header 或 Hako JSON 信封时至少等待服务端规定的十秒，再进入退避 |
 | 503 `auth_maintenance` | 暂停全部远程同步并保留 intent，遵守 `Retry-After` 后重新探测身份状态 |
 | 503 `module_maintenance` | 仅暂停对应模块并保留 intent，遵守 `Retry-After` 后原样重试 |
 | `retryable=true` 的 5xx 或网络错误 | 保留原冻结 mutation，按退避原样重试 |
@@ -264,30 +266,30 @@ HTTP 路径、信封、revision、cursor 编码和请求级错误由[服务端�
 
 ## 9. 全局身份与凭据
 
-Hako 首版没有传统账号登录页，只有一个本地个人工作区和可选的全局同步身份。
+Hako 首版仍可完全无账号离线使用；只有用户在设置中启用远端同步时才进入单 owner 账户认证。OAuth、Passkey、session、Device Authorization 与设备 API 的服务端格式由[服务端身份认证](./hako-server-foundation.md#6-身份认证passkey-与设备管理)唯一维护。
 
-- 初次启动直接进入工具首页，状态为 `localOnly`；用户可在设置中启用同步。
-- 原生端由 Rust credential service 使用 Stronghold 保存 `{ environmentId, canonicalOrigin, opaqueCredential }`，其中 credential 是服务端返回的完整值，例如 `hako_d_<deviceId>.<secret>`，不得解析、裁剪或自行重建。vault 文件和 record key 都必须包含编译期环境 ID；Rust HTTP client 每次请求前用编译期环境与 origin 精确读取，任一不匹配即 fail closed，credential 不得离开 service。首次配对时用户创建至少 12 个字符的 vault passphrase，并使用 Stronghold Argon2 初始化。
-- passphrase 不写入文件、Core store、模块 store、日志或 Pinia；每次进程冷启动后需要解锁才启动同步。
-- Vue 只能调用注册、解锁、锁定和同步等窄 command；Stronghold 内容和解锁后的 device credential 永不返回 WebView。passphrase 只作为一次 command 输入进入 Rust，并在使用后清零可清零的内存副本。
-- 忘记 passphrase 时允许删除本地 vault 并重新配对，但不得删除任一模块数据、outbox 或冲突。
-- 注册或配对在响应丢失、进程崩溃或 credential 持久化失败后属于结果不确定，不能自动重试一次性交付接口。Web 先调用 session API 判断 Cookie 是否已经生效，原生先检查 credential service；仍没有可用 credential 时保持 `unpaired`，由用户发起新的注册或配对，并在取得授权后撤销设备列表中的孤立设备。
-- 使用恢复密钥注册可能触发服务端 recovery reset，客户端必须先明确提示其他设备会被撤销；正常增加设备只走配对流程。
-- 设备设置允许撤销当前或其他设备。撤销最后一台设备需要二次确认；当前设备被撤销或 Web logout 成功后，本机立即进入 `unpaired`，停止远程同步但保留全部本地模块数据和 intent。
-- Web 端长期 credential 只存在同源 HttpOnly Cookie；JavaScript 只读取会话状态 API 的结果。
-- 模块只能调用 `AuthenticatedTransport`，不能读取 credential、Cookie、Stronghold 或认证 header。
-
-恢复密钥、设备 credential、配对 token 和撤销的服务端格式由[服务端身份认证](./hako-server-foundation.md#6-身份认证与设备管理)维护。
+- 初次启动直接进入工具首页，状态为 `localOnly`。选择“启用同步”后转为 `signedOut` 并显示登录动作，不把工具页变成登录墙。
+- Web 在同源 `/auth/sign-in` 使用[服务端固定的 GitHub OAuth](./hako-server-foundation.md#61-owner-与账户边界)或已经登记的 Passkey；成功 session 只存在 HttpOnly Cookie。Vue 通过会话状态 API 判断是否登录，不能读取 Cookie 或把 token 复制到 localStorage、IndexedDB、Pinia 或模块 store。
+- Passkey 登记前必须重新完成 owner GitHub OAuth step-up；服务端只有在该 OAuth 登录不超过十分钟且同一 session 的一次性 proof 仍有效时才允许开始和完成 ceremony。客户端不持久化或自行伪造 proof，过期或已消费时重新发起 OAuth step-up。Passkey 私钥由系统 authenticator 保存，Hako 客户端、Stronghold、Core store 和导出文件都不得保存或导出私钥。WebAuthn ceremony 只在固定认证 origin 执行。operator recovery 会撤销该稳定账户历次身份留下的全部 Passkey；恢复后必须以当前 GitHub 身份重新登录并重新登记，旧 Passkey 不得再次成为登录候选。
+- 五个原生平台统一由 Rust identity service 请求 Hako RFC 8628 device/user code，经 Tauri Opener 打开系统浏览器。用户在托管页面以 GitHub OAuth 或 Passkey 登录并明确批准后，Rust 按服务端 interval 轮询；`authorization_pending` 继续等待，`slow_down` 增加间隔，retryable 503 遵守 `Retry-After` 并在当前进程的易失内存中保留 `device_code` 后重试。收到 429 时同样保留本次易失 `device_code`：有可信 `Retry-After` 就遵守，没有时至少等待服务端 WAF 规定的 10 秒，再在原十分钟 expiry 内继续轮询。`expired_token`、`access_denied` 或 `invalid_grant` 结束本次流程并保留本地数据；进程退出后不持久化 `device_code`，只能重新发起。
+- 原生登录不在 Tauri WebView 执行，也不依赖 deep link。系统浏览器页面完成身份验证和批准，opaque access/session token 只返回 Rust identity service。
+- Rust identity service 使用 Stronghold 保存 `{ environmentId, canonicalOrigin, opaqueAccessToken }`。vault 文件和 record key 都包含编译期环境 ID；Rust HTTP client 每次请求前用编译期环境与 origin 精确读取，任一不匹配即 fail closed，token 不得离开 service。首个原生认证切片仍使用用户创建的至少 12 字符 vault passphrase 和 Stronghold Argon2；每次冷启动解锁后才自动同步。以后若要免输入解锁，必须另写各平台系统安全存储封装规格，不能把 vault key 明文写入 Core store。
+- passphrase 不写入文件、Core store、模块 store、日志或 Pinia。Vue 只能调用开始设备授权、查询脱敏状态、解锁、锁定、退出和同步等窄 command；只有 `user_code` 与 verification URL 可短暂返回给 Vue，秘密 `device_code` 仅保存在 Rust 易失内存中，不进入 IPC、WebView、URL、日志、Core store 或 Stronghold。access token、Stronghold 内容和解锁后的认证 header 永不返回 WebView。
+- 忘记 passphrase 时可以删除本地 vault 并重新进行 Device Authorization；不得删除任一模块实体、outbox、cursor 或冲突。重新认证后沿用原 `installationId` 并调用服务端绑定接口，不能改写既有 mutation ID。
+- Web 登录完成或原生取得 token 后，客户端调用设备绑定 API，把 Core store 的非秘密 `installationId`、用户确认的设备名和平台关联到服务端生成的 `deviceId`。首次收到 `device_rebind_confirmation_required` 时显示该安装曾被撤销并取得用户明确确认，再以 `confirmRebind=true` 重试；已确认的重试仍得到同一错误，表示当前 session 早于最近撤销，必须重新认证并在新 session 中再次确认，不能无限重放旧 session。收到 `device_limit_reached` 时保持未绑定，展示 16 台上限并引导用户先撤销已有设备；原生 Device Authorization 的未绑定 session 成功撤销任一设备后会随服务端 generation 一同失效，Rust 必须删除这枚 bearer、保留 `installationId` 与全部本地数据，重新完成 Device Authorization 后再绑定，不能用旧 token 直接重试；Web 未绑定 session 仅在会话状态仍有效时可直接重试。收到 `session_device_mismatch` 时退出这次远端 session 并重新认证，不能替换本地 `installationId` 规避守卫。未绑定设备不启动同步；`installationId` 本身不能当 token。
+- Device Authorization 或 OAuth 初始化收到 `auth_capacity_limited` 时保持 `signedOut`，遵守 `Retry-After` 后才允许重新发起并提示服务暂时繁忙；不得清除本地业务数据、outbox 或已有 vault。
+- 设备设置允许撤销当前或其他设备。logout 只在服务端 204 确认无有效 session 或撤销已提交后才过期 Web Cookie/删除 Stronghold token；retryable 503、网络错误或结果无法确定时保留凭据并提示重试，不宣称已退出。当前 session 已确认退出或设备被撤销后，本机进入 `signedOut` 或 `reauthenticationRequired`，停止远程同步但保留全部本地模块数据和 intent；重新登录不是新建本地工作区。
+- 模块只能调用 `AuthenticatedTransport`，不能读取 OAuth provider token、Better Auth session、Cookie、Bearer、Stronghold 或认证 header。
 
 ## 10. 平台、安全与构建
 
 - `build:web` 输出 `dist/web`，使用 Web adapter、HTML5 history 和同源 `fetch`。
 - `build:native` 输出 `dist/native`，使用 Tauri adapter、hash history 和窄 Rust command。
 - Web bundle 不得导入或条件包含可执行的 `@tauri-apps/*` 调用；平台差异通过构建 alias 选择。
-- 构建期 `HAKO_BUILD_ENVIRONMENT` 只允许 `production`、`preview` 或 `local`，并与 Tauri identifier、应用数据目录、Stronghold namespace 和 `HAKO_SYNC_BASE_URL` 组成不可拆分的受测映射：production 使用 `com.ayingott.hako`，preview 使用 `com.ayingott.hako.preview`，local 使用 `com.ayingott.hako.local`。构建脚本发现任一值不匹配时失败，运行时不能由 Vue、用户设置或远端配置切换环境。
-- 原生已认证传输由 Rust HTTP client 实现，只从上述环境映射构造固定 API 地址，不接受 Vue 传入完整 origin；production 和 preview 只允许各自固定的 HTTPS origin，local 额外允许 `http://127.0.0.1:8787`，并拒绝跨源重定向。production 值必须等于服务端的 canonical origin；更换该 origin 需要保留旧兼容入口或发布显式客户端迁移，不能静默替换。
-- Web 的 origin 天然隔离 Cookie 与 IndexedDB；原生依靠不同 identifier、应用数据目录和 Stronghold namespace 隔离。preview/local 构建不得打开 production store、读取 production credential 或把 production bearer 发往非 production origin；跨环境移动数据只能通过用户确认的模块归档导出和导入。
-- Tauri capability 只开放已注册的业务、archive、credential 和 sync command，不开放 shell、通用 SQL、通用 HTTP 或任意文件系统范围。
+- 构建期 `HAKO_BUILD_ENVIRONMENT` 只允许 `production`、`preview` 或 `local`，并与 Tauri identifier、应用数据目录、Stronghold namespace、Device Authorization client ID 和 `HAKO_SYNC_BASE_URL` 组成不可拆分的受测映射：production 使用 `com.ayingott.hako`，preview 使用 `com.ayingott.hako.preview`，local 使用 `com.ayingott.hako.local`。构建脚本发现任一值不匹配时失败，运行时不能由 Vue、用户设置或远端配置切换环境。
+- 原生已认证传输由 Rust HTTP client 实现，只从上述环境映射构造固定 API 地址，不接受 Vue 传入完整 origin；production 和 preview 只允许各自固定的 HTTPS origin，local 只允许服务端环境映射规定的 `http://localhost:8787`，并拒绝跨源重定向。production 值必须等于服务端的 canonical origin；更换该 origin 需要保留旧兼容入口或发布显式客户端迁移，不能静默替换。
+- Web 的 origin 天然隔离 Cookie、Passkey ceremony 与 IndexedDB；原生依靠不同 identifier、应用数据目录、Device Authorization client ID 和 Stronghold namespace 隔离。preview/local 构建不得打开 production store、读取 production token 或把 production bearer 发往非 production origin；跨环境移动数据只能通过用户确认的模块归档导出和导入。
+- Tauri capability 只开放已注册的业务、archive、identity、sync command 和当前构建环境的固定 canonical origin；Opener 在 production/preview 只允许对应 HTTPS URL，在 local 只允许精确的 `http://localhost:8787`，不开放其他 HTTP URL、shell、通用 SQL、通用 HTTP、任意 URL 或任意文件系统范围。首版 Device Authorization 不需要 Deep Link capability。
 - production 必须把当前 `csp: null` 替换为仅允许本地资源、Tauri IPC 和明确网络目标的 CSP；不加载远程脚本或 frame。
 - PWA 只预缓存版本化应用壳和静态资源；`/api/`、认证和同步响应永不进入 Service Worker cache。
 - Web 首次成功持久化业务数据后申请 `navigator.storage.persist()`；拒绝不阻塞使用，但设置页提示模块导出备份。
@@ -299,7 +301,7 @@ Hako 首版没有传统账号登录页，只有一个本地个人工作区和可
 src/
   app/                         # App.vue、layouts、routes、工具首页
   core/
-    identity/                  # Pinia identity store 与客户端用例
+    identity/                  # Pinia identity store、OAuth/Passkey 状态与设备授权用例
     settings/                  # Core store 与设置
     sync/                      # 调度器、通用状态机、信封客户端
     modules/                   # ToolModuleDefinition 与静态注册表
@@ -308,36 +310,45 @@ src/
     native/                    # Tauri adapter
     web/                       # Browser adapter
 src-tauri/
-  src/core/                    # Core store、credential、transport、archive command
+  src/core/                    # Core store、identity/Stronghold、transport、archive command
   src/modules/<moduleKey>/     # 模块专属 repository command
   migrations/core/            # Core SQLite migrations
   migrations/<moduleKey>/     # 模块 SQLite migrations
   capabilities/               # 最小权限
 shared/
+  auth/                        # 不含 Better Auth 类型的 Hako auth/device DTO
   sync/                        # 客户端与服务端共用的通用 wire contract
   modules/<moduleKey>/         # 模块拥有的 wire schema 与纯 validator
 ```
 
-客户端继续使用根 `package.json`；仓库 workspace、服务端 package 和 lockfile 边界由[服务端技术栈与部署边界](./hako-server-foundation.md#4-服务端技术栈与部署边界)维护。客户端计划新增 Vue Router、Pinia、Tauri Stronghold/Dialog/Single Instance 的 Rust 侧能力、Rust `sqlx` 与 HTTP client、`idb`、PWA、Vitest、Vue Test Utils 和 IndexedDB 测试实现，实际版本由根 lockfile 固定。Vue 侧不新增 SQL、HTTP 或 Stronghold 的通用 guest API。
+客户端继续使用根 `package.json`；仓库 workspace、服务端 package 和 lockfile 边界由[服务端技术栈与部署边界](./hako-server-foundation.md#4-服务端技术栈与部署边界)维护。客户端计划新增 Vue Router、Pinia、Better Auth Web client/Passkey client、Tauri Stronghold/Opener/Dialog/Single Instance 的 Rust 侧能力、Rust `sqlx` 与 HTTP client、`idb`、PWA、Vitest、Vue Test Utils 和 IndexedDB 测试实现，实际版本由根 lockfile 固定。Vue 侧不新增 SQL、任意 HTTP 或 Stronghold 的通用 guest API。
 
 ## 12. 可独立合并的实施阶段
 
-### 阶段一：应用壳与本地模块平台
+### 阶段零：应用壳与本地模块平台
 
 交付 Router、Pinia、工具首页、设置页、静态模块注册表、Core store、模块 store contract、Web/native 构建分流、PWA 和失败隔离。合并后 Hako 已是可离线运行的工具箱壳，Fuel 等模块可独立接入。
 
-### 阶段二：身份与同步客户端 Core
+### 阶段一：认证客户端纵向切片
 
-交付 Stronghold/Web session adapter、已认证 transport、outbox contract、调度器、lease、epoch recovery、同步设置与状态。缺少服务端地址时同步入口明确显示“未配置”，本地工具仍完整可用；只有在[服务端共享基建规格](./hako-server-foundation.md)对应端点部署后才开放配对操作。
+交付 Web GitHub OAuth session adapter、原生 Hako Device Authorization + Stronghold、系统浏览器 Opener、`IdentityPort`、设备绑定/撤销、同步设置与状态。缺少服务端地址时同步入口明确显示“未配置”，本地工具仍完整可用；只有在[服务端认证纵向切片](./hako-server-foundation.md#阶段一认证纵向切片)部署后才开放登录。
 
-阶段一不依赖阶段二；阶段二不改变任何既有模块业务数据。
+### 阶段二：Passkey
+
+交付 Web 端“最近十分钟内一次性 owner GitHub OAuth step-up → Passkey 登记”的完整流程、Passkey 删除/登录和原生系统浏览器批准流程。Passkey 失败或 GitHub 不可用时不得影响本地工具。
+
+### 阶段三：同步客户端 Core
+
+交付 `AuthenticatedTransport`、outbox contract、最多 5 条的 private beta batch、调度器、Web lease、epoch recovery 和模块同步状态；只有服务端 Fuel private sync beta 可用后才开放远程开关。
+
+阶段零不依赖后续阶段；认证、Passkey 和同步阶段都不得迁移或删除既有模块业务数据。preview、后台免解锁、跨模块通用化和完整发布 hardening 属后续独立阶段。
 
 ## 13. 验证与验收
 
-自动化测试必须覆盖：
+自动化测试按已进入的实施阶段递增；阶段三固定 Fuel payload v1，不要求提前通过下列多版本测试，两个版本 409、旧 payload 重放和混合版本 change 只在首次真实 payload v2 前成为门禁。最终目标自动化测试必须覆盖：
 
 - 注册表拒绝重复 key、route 和 store；一个模块初始化失败不阻止 Router、设置和其他模块。
-- App 启动不等待网络、credential 或所有模块数据库。
+- App 启动不等待网络、登录、vault 解锁或所有模块数据库。
 - Web/native 使用相同 route name；Web 深链接刷新成功，原生 hash 路由重启成功。
 - Core、Identity、Sync Pinia Store 不保存业务实体或 secret，Store action 无循环依赖。
 - SQLite 与 IndexedDB 模块 store contract 一致；业务写入和 outbox 同时提交或回滚。
@@ -351,12 +362,13 @@ shared/
 - 新客户端能原样重试旧 payload 版本的冻结 mutation，按 `mutationId` 关联逐项结果，并读取混合版本 change/conflict snapshot；纯本地模块不伪造 payload 版本。
 - epoch reset 不重复 create intent，不自动重交曾被服务端确认但在回档后缺失的实体；旧设备不能复活其他设备已确认删除的数据。
 - 回档前后两个 epoch 出现相同 entity revision 但不同 payload 时，旧 shadow 只保留为证据；当前投影、冲突决策和 successor 只使用新 epoch snapshot 或 missing marker。
-- vault 锁定、401、Worker 不可用和离线时本地工具正常使用。
-- 注册或配对响应丢失时不自动重复创建设备；Web 能识别已经生效的 session，原生没有持久化 credential 时保持 `unpaired` 并允许重新发起。
-- 原生 credential 在注册、解锁和同步过程中从不返回 WebView，Web 响应从不暴露 Cookie 内容。
+- vault 锁定、401、GitHub OAuth/Worker 不可用和离线时本地工具正常使用。
+- Web OAuth callback 重放或响应丢失后能通过 session 状态收敛；`identity_not_allowed` 返回 `signedOut` 并显示身份不被允许，不进入同步重试。原生 Device Authorization 正确处理 pending、slow-down、WAF/binding 429、过期、拒绝和 token 交付失败；429 在原 expiry 内保留易失 `device_code` 并按 header 或十秒 fallback 重试，其他终态失败后可重新发起且不重复生成本地 intent。
+- Passkey 登记只在十分钟内完成的 OAuth step-up 后进行；普通 Passkey session、原生 Bearer、过期或已消费 proof、错误 origin/RP ID/challenge 全部失败，Passkey 私钥从不进入 Hako store。operator recovery 后历史 subject 的全部 Passkey 都失效，只能由当前 GitHub owner 重新登记。
+- 原生秘密 `device_code` 和 access token 在授权、解锁和同步过程中从不返回 WebView，Vue 只取得 `user_code` 与 verification URL；除 Rust 轮询的 `/device/token` 标准 JSON 外，Web 认证响应的 header/body 既不暴露 Cookie 内容、`set-auth-token`、顶层 `token` 或 `session.token`，Vue 只从 Hako 会话摘要取得脱敏状态。
 - PWA 离线冷启动成功，API/认证响应不在 Cache Storage 中。
 - production bundle 不包含错误平台 adapter，Tauri capability 与 CSP 不开放通用特权。
-- production、preview 和 local 构建的 identifier、数据目录、Stronghold record 与固定 origin 精确匹配；把 production vault/store 放到 preview 路径时，preview 仍不能读取或发送其中的 credential，构建参数混搭必须失败。
+- production、preview 和 local 构建的 identifier、数据目录、Device Authorization client ID、Stronghold record 与固定 origin 精确匹配；local Opener 必须端到端打开服务端映射中的 `http://localhost:8787` Device Authorization verification URL，`127.0.0.1`、其他 HTTP URL 或任意跨环境 origin/RP ID 组合必须在打开前失败。把 production vault/store 放到 preview 路径时，preview 仍不能读取或发送其中的 token，构建参数混搭必须失败。
 
 实施后至少提供并通过：
 
@@ -375,13 +387,18 @@ macOS、iOS 模拟器和 Android 模拟器在本机 smoke test；Windows 与 Lin
 - 同步客户端可以关闭全局入口回滚，但必须保留 outbox、冲突和模块实体。
 - migration 只向前修复；旧版本遇到新 schema 进入只读或拒绝打开，不自动 down migration。
 
-本方案假设 Hako 保持个人单用户工具。若未来需要公开注册、多账号或共享工作区，身份模型、所有服务端表和模块数据所有权都必须重新设计，不能只在现有设备凭据上增加登录页面。
+本方案假设 Hako 保持单 owner 个人工具，[服务端定义的 GitHub owner identity](./hako-server-foundation.md#61-owner-与账户边界)、production canonical origin 和 Passkey RP ID 能长期保持稳定。若未来需要公开注册、多账号或共享工作区，必须先重写身份上下文、所有服务端表、cursor 和模块数据所有权规格，不能只开放注册页面；是否拆仓仍只按[服务端拆分门禁](./hako-server-foundation.md#1-决策需要服务端但暂不拆仓)判断。
 
 ## 15. 参考资料
 
 - [Vue Router](https://router.vuejs.org/)
 - [Pinia](https://pinia.vuejs.org/)
 - [Tauri Stronghold 插件](https://v2.tauri.app/plugin/stronghold/)
+- [Tauri Opener 插件](https://v2.tauri.app/plugin/opener/)
 - [Tauri Dialog 插件](https://v2.tauri.app/plugin/dialog/)
 - [Tauri Single Instance 插件](https://v2.tauri.app/plugin/single-instance/)
 - [Indexed Database API 3.0](https://www.w3.org/TR/IndexedDB/)
+- [Better Auth Passkey](https://better-auth.com/docs/plugins/passkey)
+- [Better Auth Device Authorization](https://better-auth.com/docs/plugins/device-authorization)
+- [RFC 8628 OAuth 2.0 Device Authorization Grant](https://www.rfc-editor.org/rfc/rfc8628)
+- [Web Authentication Level 3](https://www.w3.org/TR/webauthn-3/)

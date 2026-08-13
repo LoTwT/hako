@@ -34,7 +34,7 @@ Fuel 向客户端静态注册表提供：
 | `displayName` | `加油统计` |
 | `routePath` | `/tools/fuel` |
 | `persistence` | production 原生 `hako-fuel.db`；preview/local 命名与全部 Web IndexedDB 由[客户端模块 store 规格](./hako-client-foundation.md#72-模块-store)维护 |
-| `syncAdapter` | 阶段一为 `null`；阶段二注册 `FuelSyncAdapter` |
+| `syncAdapter` | 阶段零为 `null`；阶段三注册 `FuelSyncAdapter` |
 | `archiveAdapter` | `FuelArchiveCodecV1` |
 
 Fuel 首页是工具内部入口，不替代 Hako 工具首页。注册、初始化和路由规则以[客户端模块契约](./hako-client-foundation.md#5-编译期工具注册表)为准。
@@ -58,7 +58,7 @@ Fuel 首页是工具内部入口，不替代 Hako 工具首页。注册、初始
 - 已删除车辆或记录的恢复；需要时使用新 ID 重新创建。
 - 共享车辆、协作编辑和用户权限。
 - 内置二维码、Deep Link 或设备管理。
-- Fuel 自己实现 credential、网络 transport、同步调度或云端部署。
+- Fuel 自己实现账户/session、OAuth/Passkey、网络 transport、同步调度或云端部署。
 
 ## 4. 领域模型与校验
 
@@ -159,7 +159,7 @@ Fuel 路由内包含：
 - “添加加油记录”主操作。
 - 时间倒序记录列表，显示时间、里程、油量、金额、加满/部分加油和断链状态。
 - 记录编辑、删除入口。
-- Fuel 待同步数量和冲突 badge；认证、配对和设备管理跳转全局设置。
+- Fuel 待同步数量和冲突 badge；登录、Passkey 和设备管理跳转全局设置。
 
 桌面宽屏在模块内显示车辆侧栏，窄屏和移动端使用顶部车辆选择器；能力一致。模块 route view 只负责组合，表单、汇总和记录列表分别为聚焦组件。
 
@@ -172,7 +172,7 @@ Fuel 路由内包含：
 - “重置油耗计算链”默认关闭，并解释漏记和里程表重置用途。
 - 校验或持久化失败时保留输入且不关闭表单。
 
-必须覆盖：无车辆、车辆无记录、只有一个加满基线、未闭合部分加油、正常统计、数据加载失败、保存失败、Fuel 待同步、Fuel 同步中、Fuel 已同步、Fuel 离线、Fuel 冲突和 Fuel 暂时失败。全局 `unpaired`、`locked`、`credentialInvalid` 由 App Shell 显示，Fuel 不复制身份状态机。
+必须覆盖：无车辆、车辆无记录、只有一个加满基线、未闭合部分加油、正常统计、数据加载失败、保存失败、Fuel 待同步、Fuel 同步中、Fuel 已同步、Fuel 离线、Fuel 冲突和 Fuel 暂时失败。全局 `signedOut`、`authenticating`、`locked`、`reauthenticationRequired` 由 App Shell 显示，Fuel 不复制身份状态机。
 
 ## 7. Fuel Repository 与本地数据
 
@@ -221,7 +221,7 @@ Fuel 路由内包含：
 - `vehicles`: active 车辆完整领域字段
 - `fuelEntries`: active 加油记录完整领域字段
 
-归档不含持久化 metadata、credential、vault、outbox、cursor、冲突或服务端审计字段。导出前等待 Fuel 当前事务结束，并提示尚未同步的本地修改也包含在归档中。
+归档不含持久化 metadata、account/session/token、Passkey、vault、outbox、cursor、冲突或服务端审计字段。导出前等待 Fuel 当前事务结束，并提示尚未同步的本地修改也包含在归档中。
 
 导入只允许 Fuel 模块不存在 active/tombstone、待同步 intent、pending cascade 或冲突；其他 Hako 模块是否有数据不影响。先完整验证格式、版本、ID、引用和字段，全部有效后在一个 Fuel store 事务中写入；任一错误零写入。启用同步时，导入实体按正常 create intent 进入 outbox，不能直写服务端。
 
@@ -242,7 +242,7 @@ Fuel 实现客户端 `SyncModuleAdapter` 和服务端 `FuelSyncHandler`，使用
 
 Fuel 服务端 registry 首版固定为 `supportedChangeSchemaVersions={1}`、`supportedPushSchemaVersions={1}`；FUEL_DB metadata 固定为 `activeChangeSchemaVersion=1`、`acceptedPushSchemaVersions={1}`、`requiredReadableChangeSchemaVersions={1}`。以后按共享服务端的版本升级契约分阶段扩展和激活。
 
-Fuel v1 把通用 push 上限进一步收紧为每批最多 10 条 mutation；包含 vehicle delete 的批次必须只有该一条 mutation。客户端冻结批次时遵守此限制，服务端在业务预读前校验，超出时整批返回请求级 422 且零写入。
+Fuel v1 private sync beta 与通用 Free-first 上限一致，每批最多 5 条 mutation；包含 vehicle delete 的批次必须只有该一条 mutation。客户端冻结批次时遵守此限制，服务端在业务预读前校验，超出时整批返回请求级 422 且零写入。以后只有共享服务端 benchmark 通过后才能提高上限。
 
 Fuel 稳定业务错误码：
 
@@ -257,13 +257,15 @@ Fuel 稳定业务错误码：
 
 | 表 | 关键数据 |
 | --- | --- |
-| `vehicles` | 完整车辆字段、revision、tombstone、审计时间和最后 mutation ID |
-| `fuel_entries` | 完整记录字段、vehicle ID、revision、tombstone、审计时间和最后 mutation ID |
-| `vehicle_constraint_versions` | 每辆车的约束 revision 和最近 write nonce，用于串行化会影响里程序列的 mutation |
+| `vehicles` | account ID、完整车辆字段、revision、tombstone、审计时间和最后 mutation ID |
+| `fuel_entries` | account ID、完整记录字段、vehicle ID、revision、tombstone、审计时间和最后 mutation ID |
+| `vehicle_constraint_versions` | account ID、每辆车的约束 revision 和最近 write nonce，用于串行化会影响里程序列的 mutation |
+
+Fuel 的实体键、父子引用、每车记录计数和 constraint guard 全部以 `account_id` 为第一作用域；任何唯一约束、读取或 DML 都不能只按客户端提供的实体 ID 命中其他 account 的行。
 
 纯 TypeScript validator 只负责使用同一份 fixture 做预检；D1 最终仲裁使用每车 constraint CAS：
 
-1. handler 读取目标车辆的 constraint revision、目标实体 revision 和最多 1000 条的完整 active 记录序列，再运行共享 validator；FuelEntry create 同时以事务内 active count 守卫 1000 条上限。
+1. handler 只在 `AuthenticatedPrincipal.accountId` 下读取目标车辆的 constraint revision、目标实体 revision 和最多 1000 条的完整 active 记录序列，再运行共享 validator；FuelEntry create 同时以事务内 active count 守卫 1000 条上限。wire payload 不含、也不能覆盖 account ID。
 2. 为本次尝试生成随机 write nonce；`D1Database.batch()` 的第一条条件 DML 仅在 constraint revision 未变化时将其递增并写入 nonce。
 3. 此后的实体、tombstone 与 change 语句全部以该 nonce 和预读 entity revision 为条件。`SyncRuntime` 在末尾追加同样受 nonce 保护的严格 receipt insert；CAS 未命中时所有业务语句和 receipt 必须零写入。
 4. `SyncRuntime` 检查 guard、目标实体、change 与 receipt 的 affected rows，并按共享服务端规格处理 receipt 唯一约束竞争；任一不符合预期即不报告成功。没有 winner receipt 的 CAS 竞争最多重新读取并校验三次，仍竞争则本次 HTTP push 请求返回 503 `constraint_contention`、`retryable=true`，客户端原样重试冻结批次；同批此前已提交的 mutation 不回滚，并由通用 receipt 重放保护。
@@ -292,13 +294,13 @@ Fuel 业务 validator 的纯规则实现放在 `shared/modules/fuel/`，客户�
 
 ## 10. 可独立合并的实施阶段
 
-### 阶段一：离线 Fuel 模块
+### 阶段零：离线 Fuel 模块
 
 交付模块注册、车辆/记录 CRUD、计算、Fuel Repository、SQLite/IndexedDB adapter、模块 UI、JSON 归档和自动化测试。合并后六端均可完整离线使用，不依赖服务端。
 
-### 阶段二：Fuel 同步接入
+### 阶段三：Fuel private sync beta
 
-在客户端共享同步 Core 和服务端通用协议可用后，交付 Fuel adapter、Fuel handler、FUEL_DB migrations、级联删除 barrier、冲突 UI 和端到端测试。同步不可用时阶段一能力不降级。
+在客户端身份/同步 Core、服务端 OAuth/Passkey 认证和通用协议可用后，交付 Fuel adapter、Fuel handler、production FUEL_DB migrations、级联删除 barrier、冲突 UI 和端到端测试。同步不可用时阶段零能力不降级；preview、通用多版本 bridge 和完整恢复自动化属于后续 hardening。
 
 ## 11. 计划文件边界
 
@@ -361,7 +363,7 @@ tests/fixtures/fuel/            # 六端和服务端共享的固定样例
 - 断网完成 CRUD，联网后无需手工点击即可同步。
 - 两台设备修改不同记录自动合并；修改同一记录出现对比并能收敛。
 - 一端删除车辆、另一端离线编辑子记录时车辆和子记录不复活。
-- JSON 导出不含 credential，空 Fuel store 导入后统计一致。
+- JSON 导出不含 account、session、token、Passkey 或其他身份信息，空 Fuel store 导入后统计一致。
 
 ## 13. 回滚与最脆弱假设
 
