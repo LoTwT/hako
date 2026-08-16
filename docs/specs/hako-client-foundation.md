@@ -71,7 +71,7 @@ Hako 是供个人使用的跨平台工具箱，不是单一加油应用。客户
 - 工具模块可以依赖 Core 公开契约，但不能导入其他工具模块。
 - 领域层不得导入 Vue、Pinia、Tauri、浏览器 API、数据库驱动或网络客户端。
 - 平台适配器实现 Core 或模块端口，不得反向包含业务决策。
-- 模块不能读取 session/token、构造任意服务端 origin 或直接调用未认证网络接口。
+- 模块不能读取 session/token、构造任意服务端 origin 或直接调用未认证网络接口。`AuthenticatedTransport` 和模块 wire payload 都不接受 `applicationId`、`accountId` 或当前会话的 `deviceId` 作为身份作用域；这些值只能由服务端根据部署配置与权威会话推导。`IdentityPort` 可以把设备列表返回的 `DeviceSummary.id` 作为显式撤销目标，但不能用它替换当前身份或模块账户作用域。
 
 隔离结论：身份不是某个工具的“登录功能”，而是 App Shell 拥有的可选同步能力；未启用身份时所有本地工具照常使用。应用设置进入 Core store，Web session 只存在 HttpOnly Cookie，原生 token 进入独立保险库，各工具业务数据进入各自物理 store；同步 Core 只通过 `IdentityPort` 和 `AuthenticatedTransport` 调度，不拥有业务表。这个边界同时隔离代码、持久化、同步故障和后续模块演进。
 
@@ -266,12 +266,12 @@ HTTP 路径、信封、revision、cursor 编码和请求级错误由[服务端�
 
 ## 9. 全局身份与凭据
 
-Hako 首版仍可完全无账号离线使用；只有用户在设置中启用远端同步时才进入单 owner 账户认证。OAuth、Passkey、session、Device Authorization 与设备 API 的服务端格式由[服务端身份认证](./hako-server-foundation.md#6-身份认证passkey-与设备管理)唯一维护。
+Hako 首版仍可完全无账号离线使用；只有用户在设置中启用远端同步时才进入单 owner 账户认证。OAuth、Passkey、session、Device Authorization 与设备 API 的服务端格式由[服务端身份认证](./hako-server-foundation.md#6-身份认证passkey-与设备管理)唯一维护。客户端只持有脱敏会话/设备状态和已认证传输能力，不知道、不保存、不发送远端 `accountId`。
 
 - 初次启动直接进入工具首页，状态为 `localOnly`。选择“启用同步”后转为 `signedOut` 并显示登录动作，不把工具页变成登录墙。
 - Web 在同源 `/auth/sign-in` 使用[服务端固定的 GitHub OAuth](./hako-server-foundation.md#61-owner-与账户边界)或已经登记的 Passkey；成功 session 只存在 HttpOnly Cookie。Vue 通过会话状态 API 判断是否登录，不能读取 Cookie 或把 token 复制到 localStorage、IndexedDB、Pinia 或模块 store。
-- Passkey 登记前必须重新完成 owner GitHub OAuth step-up；服务端只有在该 OAuth 登录不超过十分钟且同一 session 的一次性 proof 仍有效时才允许开始和完成 ceremony。客户端不持久化或自行伪造 proof，过期或已消费时重新发起 OAuth step-up。Passkey 私钥由系统 authenticator 保存，Hako 客户端、Stronghold、Core store 和导出文件都不得保存或导出私钥。WebAuthn ceremony 只在固定认证 origin 执行。operator recovery 会撤销该稳定账户历次身份留下的全部 Passkey；恢复后必须以当前 GitHub 身份重新登录并重新登记，旧 Passkey 不得再次成为登录候选。
-- 五个原生平台统一由 Rust identity service 请求 Hako RFC 8628 device/user code，经 Tauri Opener 打开系统浏览器。用户在托管页面以 GitHub OAuth 或 Passkey 登录并明确批准后，Rust 按服务端 interval 轮询；`authorization_pending` 继续等待，`slow_down` 增加间隔，retryable 503 遵守 `Retry-After` 并在当前进程的易失内存中保留 `device_code` 后重试。收到 429 时同样保留本次易失 `device_code`：有可信 `Retry-After` 就遵守，没有时至少等待服务端 WAF 规定的 10 秒，再在原十分钟 expiry 内继续轮询。`expired_token`、`access_denied` 或 `invalid_grant` 结束本次流程并保留本地数据；进程退出后不持久化 `device_code`，只能重新发起。
+- Passkey 登记前必须重新完成 owner GitHub OAuth 身份确认；服务端只有在 callback 后签发、有效期不超过十分钟并绑定同一 session 与 ceremony 的一次性 action proof 仍有效时，才允许开始和完成 ceremony。GitHub OAuth 只确认固定 owner subject，不表示密码、2FA 或 UV 在最近十分钟内重新执行。客户端不持久化或自行伪造 proof，过期或已消费时重新发起 GitHub owner 身份确认。Passkey 私钥由系统 authenticator 保存，Hako 客户端、Stronghold、Core store 和导出文件都不得保存或导出私钥。WebAuthn ceremony 只在固定认证 origin 执行。operator recovery 会撤销该稳定账户历次身份留下的全部 Passkey；恢复后必须以当前 GitHub 身份重新登录并重新登记，旧 Passkey 不得再次成为登录候选。
+- 五个原生平台统一由 Rust identity service 请求 Hako RFC 8628 device/user code，经 Tauri Opener 打开系统浏览器。批准页只有在当前 owner 会话取得服务端要求、十分钟内签发且绑定当前 attempt 的一次性 action proof 后才可确认；proof 缺失或过期时，浏览器先重新完成 GitHub owner 身份确认，阶段二之后也可使用 UV Passkey，再返回同一 `user_code` 的批准页。只有 UV Passkey 提供近期强认证；有可用 Passkey 时界面默认使用它，GitHub OAuth 仍是个人版 fallback。批准浏览器不需要先绑定为 Hako 同步设备。Rust 在此期间保留易失 `device_code` 并继续按服务端 interval 轮询，不因浏览器确认身份生成第二个本地授权流程。`authorization_pending` 继续等待，`slow_down` 增加间隔，retryable 503 遵守 `Retry-After` 并在当前进程的易失内存中保留 `device_code` 后重试。收到 429 时同样保留本次易失 `device_code`：有可信 `Retry-After` 就遵守，没有时至少等待服务端 WAF 规定的 10 秒，再在原十分钟 expiry 内继续轮询。`expired_token`、`access_denied` 或 `invalid_grant` 结束本次流程并保留本地数据；进程退出后不持久化 `device_code`，只能重新发起。
 - 原生登录不在 Tauri WebView 执行，也不依赖 deep link。系统浏览器页面完成身份验证和批准，opaque access/session token 只返回 Rust identity service。
 - Rust identity service 使用 Stronghold 保存 `{ environmentId, canonicalOrigin, opaqueAccessToken }`。vault 文件和 record key 都包含编译期环境 ID；Rust HTTP client 每次请求前用编译期环境与 origin 精确读取，任一不匹配即 fail closed，token 不得离开 service。首个原生认证切片仍使用用户创建的至少 12 字符 vault passphrase 和 Stronghold Argon2；每次冷启动解锁后才自动同步。以后若要免输入解锁，必须另写各平台系统安全存储封装规格，不能把 vault key 明文写入 Core store。
 - passphrase 不写入文件、Core store、模块 store、日志或 Pinia。Vue 只能调用开始设备授权、查询脱敏状态、解锁、锁定、退出和同步等窄 command；只有 `user_code` 与 verification URL 可短暂返回给 Vue，秘密 `device_code` 仅保存在 Rust 易失内存中，不进入 IPC、WebView、URL、日志、Core store 或 Stronghold。access token、Stronghold 内容和解锁后的认证 header 永不返回 WebView。
@@ -331,11 +331,11 @@ shared/
 
 ### 阶段一：认证客户端纵向切片
 
-交付 Web GitHub OAuth session adapter、原生 Hako Device Authorization + Stronghold、系统浏览器 Opener、`IdentityPort`、设备绑定/撤销、同步设置与状态。缺少服务端地址时同步入口明确显示“未配置”，本地工具仍完整可用；只有在[服务端认证纵向切片](./hako-server-foundation.md#阶段一认证纵向切片)部署后才开放登录。
+交付 Web GitHub OAuth session adapter、原生 Hako Device Authorization + Stronghold、系统浏览器 Opener、“GitHub owner 身份确认 → 明确批准原生设备”流程、`IdentityPort`、设备绑定/撤销、同步设置与状态。GitHub OAuth 不标记为近期强认证。缺少服务端地址时同步入口明确显示“未配置”，本地工具仍完整可用；只有在[服务端认证纵向切片](./hako-server-foundation.md#阶段一认证纵向切片)部署后才开放登录。
 
 ### 阶段二：Passkey
 
-交付 Web 端“最近十分钟内一次性 owner GitHub OAuth step-up → Passkey 登记”的完整流程、Passkey 删除/登录和原生系统浏览器批准流程。Passkey 失败或 GitHub 不可用时不得影响本地工具。
+交付 Web 端“十分钟内签发的一次性 GitHub owner 身份确认 proof → Passkey 登记”的完整流程与 Passkey 删除/登录；经服务端确认 UV 的 Passkey 可作为原生设备批准的近期强认证，并在可用时作为默认批准方法。Passkey 失败或 GitHub 不可用时不得影响本地工具。
 
 ### 阶段三：同步客户端 Core
 
@@ -364,7 +364,9 @@ shared/
 - 回档前后两个 epoch 出现相同 entity revision 但不同 payload 时，旧 shadow 只保留为证据；当前投影、冲突决策和 successor 只使用新 epoch snapshot 或 missing marker。
 - vault 锁定、401、GitHub OAuth/Worker 不可用和离线时本地工具正常使用。
 - Web OAuth callback 重放或响应丢失后能通过 session 状态收敛；`identity_not_allowed` 返回 `signedOut` 并显示身份不被允许，不进入同步重试。原生 Device Authorization 正确处理 pending、slow-down、WAF/binding 429、过期、拒绝和 token 交付失败；429 在原 expiry 内保留易失 `device_code` 并按 header 或十秒 fallback 重试，其他终态失败后可重新发起且不重复生成本地 intent。
-- Passkey 登记只在十分钟内完成的 OAuth step-up 后进行；普通 Passkey session、原生 Bearer、过期或已消费 proof、错误 origin/RP ID/challenge 全部失败，Passkey 私钥从不进入 Hako store。operator recovery 后历史 subject 的全部 Passkey 都失效，只能由当前 GitHub owner 重新登记。
+- 原生设备批准缺少十分钟内签发的 action proof，或 proof 已过期、消费过、属于其他 session/purpose/attempt 时，不改变 code/attempt；没有 Hako Cookie 的全新浏览器也能从同一 `user_code` 完成 GitHub owner 身份确认，阶段二后已有 owner Passkey 时也可完成 UV Passkey，再返回同一批准页。两种方法在界面与状态中不得都标为强认证。Rust 沿用同一份易失 `device_code` 继续轮询，不创建第二个授权流程。
+- Passkey 登记只在十分钟内签发的 `github_oauth_identity` action proof 后进行；该 proof 不宣称 GitHub credential 刚刚重新验证。普通 Passkey session、原生 Bearer、过期或已消费 proof、错误 origin/RP ID/challenge 全部失败，Passkey 私钥从不进入 Hako store。operator recovery 后历史 subject 的全部 Passkey 都失效，只能由当前 GitHub owner 重新登记。
+- `AuthenticatedTransport` 和模块 wire DTO 均没有可写的 `applicationId`、`accountId` 或当前会话 `deviceId`；Web Cookie 与原生 Bearer 得到的账户身份只能由服务端会话推导，客户端伪造同名 JSON 字段也不能改变远端账户作用域。`IdentityPort` 只允许把服务端 `DeviceSummary.id` 用作设备列表或撤销的资源 ID，并验证它从不进入同步 DTO 或 principal 派生。
 - 原生秘密 `device_code` 和 access token 在授权、解锁和同步过程中从不返回 WebView，Vue 只取得 `user_code` 与 verification URL；除 Rust 轮询的 `/device/token` 标准 JSON 外，Web 认证响应的 header/body 既不暴露 Cookie 内容、`set-auth-token`、顶层 `token` 或 `session.token`，Vue 只从 Hako 会话摘要取得脱敏状态。
 - PWA 离线冷启动成功，API/认证响应不在 Cache Storage 中。
 - production bundle 不包含错误平台 adapter，Tauri capability 与 CSP 不开放通用特权。
