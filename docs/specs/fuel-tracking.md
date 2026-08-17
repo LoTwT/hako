@@ -22,7 +22,7 @@
 - 相同记录在六端得到完全相同的统计结果。
 - 没有网络或同步身份时，车辆及记录 CRUD 完整可用。
 - 同步不同记录可自动合并，同一记录并发修改不静默覆盖。
-- Fuel 失败、停用或清空不登出 Hako，也不影响其他工具。
+- Fuel 模块级失败、停用或逻辑数据清空不登出 Hako，也不影响其他工具；共享本地数据库无法打开或全局 migration 失败属于应用级持久化故障，按[客户端单一本地数据库](./hako-client-foundation.md#71-单一本地数据库)处理。
 
 ## 2. 模块注册
 
@@ -33,7 +33,7 @@ Fuel 向客户端静态注册表提供：
 | `moduleKey` | `fuel` |
 | `displayName` | `加油统计` |
 | `routePath` | `/tools/fuel` |
-| `persistence` | production 原生 `hako-fuel.db`；preview/local 命名与全部 Web IndexedDB 由[客户端模块 store 规格](./hako-client-foundation.md#72-模块-store)维护 |
+| `persistence` | `fuel` 逻辑 namespace 与 `FuelRepository`；物理数据库由[客户端模块 store 规格](./hako-client-foundation.md#72-模块-store)统一维护 |
 | `syncAdapter` | 阶段零为 `null`；阶段三注册 `FuelSyncAdapter` |
 | `archiveAdapter` | `FuelArchiveCodecV1` |
 
@@ -62,7 +62,7 @@ Fuel 首页是工具内部入口，不替代 Hako 工具首页。注册、初始
 
 ## 4. 领域模型与校验
 
-所有实体 ID 使用客户端生成的 UUID v4，使用后不得复用。持久化数值使用整数，权威计算不得使用二进制浮点数。`serverRevision`、tombstone、outbox 状态等属于同步投影，不进入纯领域对象或归档。
+所有实体 ID 使用客户端生成、带连字符的小写 UUID v4 canonical string，使用后不得复用。持久化数值使用整数，权威计算不得使用二进制浮点数。`serverRevision`、tombstone、outbox 状态等属于同步投影，不进入纯领域对象或归档。
 
 ### 4.1 `Vehicle`
 
@@ -184,27 +184,27 @@ Fuel 路由内包含：
 - 获取用于统计的稳定排序快照。
 - Fuel store 是否为空、归档导入和同步 bootstrap。
 
-每次会影响里程序列的本地写入都必须在同一个 SQLite/IndexedDB read-write transaction 中读取该车稳定序列、运行校验并提交实体与 outbox；不能在事务外预读后再写。这样同进程或 Web 多标签的两个操作也只能基于先后提交的序列裁决。
+每次会影响里程序列的本地写入都必须在同一个 SQLite/IndexedDB read-write transaction 中读取该车稳定序列、运行校验并提交实体；不能在事务外预读后再写。阶段三代码还必须在该事务内读取 Fuel 的持久 bootstrap 状态：`localOnly` 只提交实体；`bootstrapping` 为新增或编辑后的 active 实体幂等创建或合并 create intent，新增或编辑 FuelEntry 时先确保其 active 父车辆也有未冻结 create intent，删除从未取得服务端 revision 的实体时同步取消其未冻结 create intent，车辆级联删除同时取消全部子记录的未冻结 create intent；`enabled` 按正常规则提交 outbox。这样同进程或 Web 多标签的两个操作只能基于先后提交的序列裁决，也不会在 bootstrap 切换期间漏掉 intent；阶段零不需要提前创建同步对象。
 
-平台实现遵循[客户端本地持久化边界](./hako-client-foundation.md#7-本地持久化边界)。Fuel store 的业务表固定为：
+平台实现遵循[客户端本地持久化边界](./hako-client-foundation.md#7-本地持久化边界)。Fuel store 是共享本地 Hako 数据库中的逻辑分区，其业务表或 object store 固定为：
 
-| 表或 object store | 用途 |
-| --- | --- |
-| `vehicles` | 车辆 active 投影及持久化 metadata |
-| `fuel_entries` | 加油记录 active 投影及持久化 metadata |
-| `pending_cascade_deletions` | 车辆远端删除 barrier 完成前的快照、按 epoch 分区的远端 shadow、历史证据及暂停 intent |
+| 表或 object store | 引入阶段 | 用途 |
+| --- | --- | --- |
+| `fuel_vehicles` | 阶段零 | 车辆 active 投影及持久化 metadata |
+| `fuel_entries` | 阶段零 | 加油记录 active 投影及持久化 metadata |
+| `fuel_pending_cascade_deletions` | 阶段三 | 车辆远端删除 barrier 完成前的快照、按 epoch 分区的远端 shadow、历史证据及暂停 intent |
 
-通用 outbox、cursor、conflict、recovery shadow 和 Web lease 由 Core contract 定义，但物理存放在 Fuel store 内。
+通用 outbox、cursor、conflict、recovery shadow 和 Web lease 由 Core contract 定义，阶段三才以 `sync_` namespace 加入同一本地数据库，并按 `moduleKey = fuel` 分区；Fuel 不复制这些通用对象。
 
-首次启用 Fuel 同步时，按“车辆在前、加油记录在后”为全部 active 实体生成 create intent；bootstrap 和版本标记处于一个 Fuel store 事务，失败可完整重试。bootstrap version 与 module payload schema version 分开保存，不使用全局布尔值。
+客户端第一次打开阶段三版本时，全局 migration 加入通用 `sync_` 对象和 `fuel_pending_cascade_deletions`，并把 Fuel 初始化为 `localOnly`。Fuel bootstrap version 1 固定使用 `vehicles`、`fuelEntries` 两个 phase，各 phase 按小写 UUID 的 ASCII 升序扫描，checkpoint 为 `{ phase, lastStableId }`。首次启用 Fuel 同步时，以事务切为 `bootstrapping`；每批遵守客户端规定的实体数与 payload 字节上限，以预期 bootstrap state/revision 作条件提交，幂等创建或合并 create intent，并提交 bootstrap version、phase、`lastStableId` 与递增 revision。失败保留已完成批次并从 checkpoint 重试，不改写业务数据；两个 phase 完成后以条件小事务切为 `enabled`，此后才能启动远端 pull 或 push。bootstrap version 与 module payload schema version 分开保存，不使用全局布尔值。
 
 删除已同步或存在 in-flight 的车辆使用 Fuel 远端发送 barrier，但本地删除立即完成：
 
 每个 barrier 保存 `barrierEpoch`、`currentEpochShadow` 和只读 `historicalEvidence`。shadow 项固定包含 `sourceEpoch`、服务端 revision、可用时的 change seq，以及 snapshot、tombstone 或显式 missing marker。发生 epoch reset 时，原 `currentEpochShadow` 整体移入历史证据；Fuel adapter 只能用通用 recovery shadow 为候选新 epoch 重建新的 current shadow，并为恢复日志中缺失但 barrier 已知的实体写 missing marker。不同 epoch 的 revision 永远不能比较或互相补值。
 
-1. 在一个本地事务中保存删除前快照、按 `sourceEpoch` 把同车既有 Fuel conflict shadow 合并进 current shadow 或历史证据、隐藏 active 车辆和子记录、建立必要 tombstone，并把同车未冻结 intent 移入 `pending_cascade_deletions`；此步骤不等待 in-flight 或网络。
+1. 在一个本地事务中保存删除前快照、按 `sourceEpoch` 把同车既有 Fuel conflict shadow 合并进 current shadow 或历史证据、隐藏 active 车辆和子记录、建立必要 tombstone，并把同车未冻结 intent 移入 `fuel_pending_cascade_deletions`；此步骤不等待 in-flight 或网络。
 2. 已冻结 in-flight 保持原样直到取得 `applied`、`conflict` 或 `rejected` 终态；`applied` 只更新同一当前 epoch 删除快照中的已确认 revision，携带服务端 snapshot 或 tombstone 的 `conflict` 按响应顶层 epoch 原子写入对应 shadow 分区，`rejected` 保留原 intent 和错误证据，三者都不把实体重新显示到 UI。
-3. barrier 存在期间，pull 到该车辆或其任一子记录的 change 按响应顶层 epoch 和 change seq 写入对应 shadow 分区，不写回 active 投影；change、shadow 和 cursor 必须在同一个 Fuel store 事务中提交。当前 epoch 的服务端车辆 tombstone 或 recovery missing marker 只设置该 epoch 的 `remoteDeleteConfirmed` 并取消未冻结的 vehicle delete successor，不能提前丢弃仍需取得终态的冻结 mutation。
+3. barrier 存在期间，pull 到该车辆或其任一子记录的 change 按响应顶层 epoch 和 change seq 写入对应 shadow 分区，不写回 active 投影；change、shadow 和 cursor 必须在同一个本地数据库事务中提交。当前 epoch 的服务端车辆 tombstone 或 recovery missing marker 只设置该 epoch 的 `remoteDeleteConfirmed` 并取消未冻结的 vehicle delete successor，不能提前丢弃仍需取得终态的冻结 mutation。
 4. 同车全部 in-flight 已终结后，若当前 epoch 的 `remoteDeleteConfirmed=false`，才用 current shadow 中最新 vehicle revision 冻结并发送尚未冻结的 vehicle delete successor；子记录不另发 delete，由服务端级联。current shadow 尚无车辆 snapshot、tombstone 或 missing marker 时必须先完成 recovery reconciliation，不能使用历史证据的 revision。
 5. 本端 vehicle delete 取得 `applied`，或 `remoteDeleteConfirmed=true` 且全部冻结 mutation 已取得终态后，才丢弃远端 shadow 并清理快照；revision conflict 时继续保留。
 6. 用户选择服务端版本时，只读取已经提交为模块当前 epoch 的 current shadow；同一 epoch 内先按每个实体的服务端 revision 选择终态，较高 revision 不能被带有 change seq 的较低 revision 覆盖。revision 相同且内容相同则合并，并保留较大的可用 change seq 作为观察顺序；revision 相同但内容不同则保持显式冲突。随后在一个事务中按车辆在前、子记录在后的顺序恢复仍 active 的内容，应用 missing marker，重新校验被暂停 intent。任何新 mutation 的 epoch 与 base revision 必须来自同一 current shadow，historical evidence 永远不能成为提交基线。
@@ -223,7 +223,7 @@ Fuel 路由内包含：
 
 归档不含持久化 metadata、account/session/token、Passkey、vault、outbox、cursor、冲突或服务端审计字段。导出前等待 Fuel 当前事务结束，并提示尚未同步的本地修改也包含在归档中。
 
-导入只允许 Fuel 模块不存在 active/tombstone、待同步 intent、pending cascade 或冲突；其他 Hako 模块是否有数据不影响。先完整验证格式、版本、ID、引用和字段，全部有效后在一个 Fuel store 事务中写入；任一错误零写入。启用同步时，导入实体按正常 create intent 进入 outbox，不能直写服务端。
+导入只允许 Fuel 模块不存在 active/tombstone、待同步 intent、pending cascade 或冲突；其他 Hako 模块是否有数据不影响。先完整验证格式、版本、ID、引用和字段，全部有效后在一个本地数据库事务中只写 Fuel 逻辑分区；任一错误零写入。启用同步时，导入实体按正常 create intent 进入 outbox，不能直写服务端。
 
 Fuel 只实现 `FuelArchiveCodecV1`；文件读取、保存位置和权限以客户端 `ArchiveFilePort` 为准。
 
@@ -243,6 +243,8 @@ Fuel 实现客户端 `SyncModuleAdapter` 和服务端 `FuelSyncHandler`，使用
 Fuel 服务端 registry 首版固定为 `supportedChangeSchemaVersions={1}`、`supportedPushSchemaVersions={1}`；FUEL_DB metadata 固定为 `activeChangeSchemaVersion=1`、`acceptedPushSchemaVersions={1}`、`requiredReadableChangeSchemaVersions={1}`。以后按共享服务端的版本升级契约分阶段扩展和激活。
 
 Fuel v1 private sync beta 与通用 Free-first 上限一致，每批最多 5 条 mutation；包含 vehicle delete 的批次必须只有该一条 mutation。客户端冻结批次时遵守此限制，服务端在业务预读前校验，超出时整批返回请求级 422 且零写入。以后只有共享服务端 benchmark 通过后才能提高上限。
+
+客户端必须先冻结并确认 vehicle create，取得该车辆的服务端 revision 后，才能冻结其 FuelEntry create；父车辆仍为 pending/in-flight create 时，子记录只保留未冻结 intent。vehicle create 返回 conflict 或 rejected 时，相关子记录 intent 一并进入显式冲突，不能向服务端发送一个必然得到 `parent_vehicle_deleted` 的子 create。
 
 Fuel 稳定业务错误码：
 
@@ -290,7 +292,7 @@ Fuel 业务 validator 的纯规则实现放在 `shared/modules/fuel/`，客户�
 - 服务端已删除时删除优先；如需内容必须以新 ID 创建，不能复活 tombstone。
 - pull 遇到同一实体 pending/in-flight 时不覆盖本地值，保存为 Fuel conflict shadow；子记录的父车辆存在 pending cascade 时，按第 7 节写入该删除快照的远端 shadow。
 - 跨记录业务约束失败时保留 intent，并在 Fuel UI 指出具体相邻记录和修正动作。
-- FuelEntry create 收到 `vehicle_entry_limit_reached` 时，在同一个 Fuel store 事务中把未获服务端确认的本地实体移出 active 投影，保留完整 payload 和 intent 为容量冲突，再正常应用后续 pull change 并推进 cursor；统计不包含该冲突实体。用户先删除并同步确认另一条 active 记录后，可以重新校验该 payload，并用新 mutation ID 重交尚未被服务端使用的原 entity ID，也可以显式丢弃。
+- FuelEntry create 收到 `vehicle_entry_limit_reached` 时，在同一个本地数据库事务中把未获服务端确认的本地实体移出 active 投影，保留完整 payload 和 intent 为容量冲突，再正常应用后续 pull change 并推进 cursor；统计不包含该冲突实体。用户先删除并同步确认另一条 active 记录后，可以重新校验该 payload，并用新 mutation ID 重交尚未被服务端使用的原 entity ID，也可以显式丢弃。
 
 ## 10. 可独立合并的实施阶段
 
@@ -300,7 +302,7 @@ Fuel 业务 validator 的纯规则实现放在 `shared/modules/fuel/`，客户�
 
 ### 阶段三：Fuel private sync beta
 
-在客户端身份/同步 Core、服务端 OAuth/Passkey 认证和通用协议可用后，交付 Fuel adapter、Fuel handler、production FUEL_DB migrations、级联删除 barrier、冲突 UI 和端到端测试。同步不可用时阶段零能力不降级；preview、通用多版本 bridge 和完整恢复自动化属于后续 hardening。
+在客户端身份/同步 Core、服务端 OAuth/Passkey 认证和通用协议可用后，向客户端全局 migration 序列追加 Fuel 同步对象，以持久状态和有界批次 bootstrap 既有业务数据，再交付 Fuel adapter、Fuel handler、production FUEL_DB migrations、级联删除 barrier、冲突 UI 和端到端测试。同步不可用时阶段零能力不降级；preview、通用多版本 bridge 和完整恢复自动化属于后续 hardening。
 
 ## 11. 计划文件边界
 
@@ -309,11 +311,11 @@ src/features/fuel/
   domain/                       # 模型、校验、计算；纯 TypeScript
   application/                  # 用例和 view model
   ports/                        # FuelRepository、FuelArchiveCodec
-  persistence/                  # 模块 store schema 与 bootstrap
+  persistence/                  # Fuel 逻辑仓储契约与 bootstrap
   sync/                         # FuelSyncAdapter、冲突 renderer
   ui/                           # route view、表单、汇总、列表
 src-tauri/src/modules/fuel/     # 窄 repository command
-src-tauri/migrations/fuel/      # Fuel SQLite migrations
+src-tauri/migrations/           # 客户端唯一 SQLite 序列；Fuel 变更追加在此
 shared/modules/fuel/            # wire schema 与共享业务 validator
 server/src/modules/fuel/        # FuelSyncHandler 与 D1 repository
 server/migrations/fuel/         # FUEL_DB migrations
@@ -334,10 +336,10 @@ tests/fixtures/fuel/            # 六端和服务端共享的固定样例
 
 仓储与 UI 测试：
 
-- SQLite 与 IndexedDB 通过相同 Fuel Repository contract suite。
-- 车辆级联删除、归档导入和同步 bootstrap 全有或全无。
+- SQLite 与 IndexedDB 通过相同 Fuel Repository contract suite，且 Fuel 仓储不能读取其他模块 namespace。
+- 车辆级联删除和归档导入全有或全无；阶段零数据库没有同步对象也能完整 CRUD。阶段三 bootstrap 覆盖车辆与 FuelEntry 的并发新增、编辑、单条删除和车辆级联删除；任一 active 实体最终恰有一个携带最新 payload 的 create intent，已删除实体没有 create intent，故障后从 checkpoint 恢复，完成前不启动 pull 或 push。
 - 统计只从 active 记录重算，不写入 store、归档、outbox 或 wire payload。
-- 导入只检查 Fuel store；其他模块数据不阻止导入。
+- 导入只检查 Fuel 逻辑分区；其他模块数据不阻止导入，也不被读取或改写。
 - 无车辆、无记录、单基线、未闭合部分加油、失败和冲突状态均可操作且无错误统计。
 - App Shell 从工具首页进入 Fuel，Fuel 初始化失败时可返回首页并继续使用设置。
 
@@ -352,6 +354,7 @@ tests/fixtures/fuel/            # 六端和服务端共享的固定样例
 - 旧 epoch shadow 为 revision 10 / payload A、回档后新 epoch 同实体也为 revision 10 / payload B 时，选择服务端版本只能恢复 B；任何 successor 使用新 epoch 与 B 的 revision，不能把 A 当作提交基线。
 - 冻结 mutation 的响应丢失且先 pull 到远端 vehicle tombstone 时，保留删除快照直到重试取得全部终态，再完成清理。
 - 两个并发 mutation 分别把相邻里程改成单独合法、合并非法的值时，每车 constraint CAS 最多接受一个；失败方重读后被拒绝或重试。
+- bootstrap 或正常离线编辑同时产生新车辆及子记录时，vehicle create 必须先取得服务端 revision，相关 FuelEntry create 才能冻结；父 create 失败时子 intent 不发送并进入显式冲突。
 - 删除发生 conflict 并选择服务端版本时，快照和暂停 intent 完整恢复。
 - 业务 rejected 回执丢失后重试仍返回首次终态。
 - 两台设备从同一 999 条基线各离线新增不同记录时，先同步者占满服务端；后同步者把被拒绝记录移入容量冲突，仍能应用第 1000 条远端 change 并推进 cursor，本地 active 投影不超过 1000 条。
@@ -363,11 +366,11 @@ tests/fixtures/fuel/            # 六端和服务端共享的固定样例
 - 断网完成 CRUD，联网后无需手工点击即可同步。
 - 两台设备修改不同记录自动合并；修改同一记录出现对比并能收敛。
 - 一端删除车辆、另一端离线编辑子记录时车辆和子记录不复活。
-- JSON 导出不含 account、session、token、Passkey 或其他身份信息，空 Fuel store 导入后统计一致。
+- JSON 导出不含 account、session、token、Passkey、其他模块数据或其他身份信息，Fuel 逻辑分区为空时导入后统计一致。
 
 ## 13. 回滚与最脆弱假设
 
-- 可以隐藏 Fuel 工具入口回滚，但保留 `hako-fuel` store 和归档恢复路径。
+- 可以隐藏 Fuel 工具入口回滚，但保留本地 Hako 数据库中的 Fuel 逻辑分区和归档恢复路径。
 - 可以关闭 Fuel 服务端 handler 和客户端 sync adapter，但不得清空 outbox、冲突或实体。
 - Fuel schema migration 只向前修复；模块移除先停止同步和提供导出，数据清理由单独授权完成。
 
