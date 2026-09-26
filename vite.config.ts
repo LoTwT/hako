@@ -1,12 +1,42 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import { VitePWA } from "vite-plugin-pwa";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    VitePWA({
+      registerType: "prompt",
+      manifest: {
+        name: "Hako 本地验证",
+        short_name: "Hako",
+        lang: "zh-CN",
+        start_url: "/",
+        display: "standalone",
+        theme_color: "#356b51",
+        background_color: "#f6f7f3",
+        icons: [
+          {
+            src: "/icon.svg",
+            sizes: "any",
+            type: "image/svg+xml",
+            purpose: "any",
+          },
+        ],
+      },
+      workbox: {
+        skipWaiting: false,
+        clientsClaim: false,
+        globPatterns: ["**/*.{js,css,html,wasm,svg}"],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        navigateFallbackDenylist: [/^\/api\//],
+      },
+    }),
+  ],
+  build: { target: "es2022" },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
