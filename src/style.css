@@ -1,0 +1,133 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #253b34;
+  background: #f6f7f3;
+  font-synthesis: none;
+  --ink: #253b34;
+  --accent: #356b51;
+  --muted: #69756e;
+  --line: #dde3da;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px 16px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+input,
+select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid #cbd4c8;
+  border-radius: 5px;
+  font-size: 16px;
+}
+input[aria-invalid="true"],
+select[aria-invalid="true"] {
+  border-color: #b7563a;
+}
+small,
+.muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+small {
+  font-size: 12px;
+}
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 26px;
+  background: #fff;
+}
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.section-heading h2 {
+  font-size: 21px;
+  font-weight: 550;
+  margin: 7px 0 0;
+}
+.section-heading .muted {
+  font-size: 12px;
+}
+.eyebrow {
+  margin: 0;
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  min-height: 46px;
+}
+.text-button {
+  padding: 2px 0;
+  min-height: 30px;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.warning {
+  background: #fff5e2;
+  color: #815318;
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 1.8;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+.warning p {
+  margin: 0 0 8px;
+}
+.field-error {
+  color: #9b3829;
+  font-size: 12px;
+  line-height: 1.65;
+  font-weight: 400;
+}
+@media (max-width: 450px) {
+  .panel {
+    padding: 20px 16px;
+  }
+}

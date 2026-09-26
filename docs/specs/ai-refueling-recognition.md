@@ -219,7 +219,7 @@ Hako 只记录请求 ID、耗时、受控结果码和可选上游请求 ID，用
 
 ## 10. 实施边界与验收
 
-目前 Hako 只有 Vue/Vite/Tauri 骨架，现有脚本为 dev、build、preview、tauri，没有已运行的登录、Worker、业务表单或识图接口。本功能依赖基础表单和本人会话先具备；[整体技术方案](./architecture-proposal.md)中的身份、持久化与同步工作继续独立维护。
+编写本稿时 Hako 只有 Vue/Vite/Tauri 骨架；合入后已开始的手填表单与本机存储验证见[实施进度](../local-validation.md)，尚无已运行的登录、Worker 或识图接口。本功能依赖基础表单和本人会话先具备；[整体技术方案](./architecture-proposal.md)中的身份、持久化与同步工作继续独立维护。
 
 建议新增或修改的职责位置：`shared/refueling-recognition.ts` 维护字段定义、提取 schema 与候选校验；`worker/ai/refueling-recognition.ts` 实现服务端一次调用及错误映射；客户端 `src/ai/` 负责图片准备和请求生命周期；现有规划的表单/业务模块负责合并候选与计算。路由登记、部署配置、单元/Worker/浏览器测试另需接线，预计超过 8 个文件；只复用一个 Hako Worker，不增加服务或存储。以上路径是拟建位置，本次没有创建应用代码或依赖。
 
@@ -240,7 +240,7 @@ Hako 只记录请求 ID、耗时、受控结果码和可选上游请求 ID，用
 | 保存与数据去向 | 预填不写正式记录；核对保存后走原保存/同步；图片不进入 IndexedDB、CRDT、R2、日志或缓存 |
 | 真实链路 | 从 Hako Worker 到实际 eruoo 环境，使用专用 Key 完成“图片＋none＋json_schema＋stream=false”，核对终态与真实字段，并测 CPU、耗时和 usage |
 
-本地先使用合成图片、固定返回和 mock 验证接口/校验/失败路径；测试不能只镜像实现。整体方案拟增加的 `pnpm run test`、`pnpm run test:worker`、`pnpm run test:e2e` 承载这些用例，`pnpm run build` 校验构建；这些测试命令当前尚不存在，本轮没有声称运行通过。四端及 iPhone PWA 验收需要真实浏览器/设备，桌面模拟不能替代。
+本地先使用合成图片、固定返回和 mock 验证接口/校验/失败路径；测试不能只镜像实现。整体方案的 `pnpm run test`、`pnpm run test:worker`、`pnpm run test:e2e` 用于承载这些用例，`pnpm run build` 校验构建；实际已建立的命令及验证范围见[实施进度](../local-validation.md)，当前尚无识图测试通过的结论。四端及 iPhone PWA 验收需要真实浏览器/设备，桌面模拟不能替代。
 
 生产发布前必须由部署端核对实际模型目录和凭证权限，从 Hako Worker 验证真实可达性，并完成上述真实组合请求；本机未认证探测不代表已经发现生产故障。这属于带实际资源和调用成本的联调，不包含在本次写规格的动作中。完成后再按明确发布安排上线。仅有接口或 mock 通过时，不将按钮显示为已验收能力。
 

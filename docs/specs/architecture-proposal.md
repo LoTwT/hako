@@ -2,7 +2,7 @@
 
 日期：2026-09-16  
 更新：2026-09-23  
-状态：整体建议，待用户审阅；尚未实施或部署。
+状态：整体建议；设计文档审查合入后已开始[本地最小验证](../local-validation.md)，完整首版尚未完成或部署。
 
 已确认需求与业务计算规则以[重新设计记录](./redesign.md)为准。用户已接受 PWA 在同步前仍存在本机唯一副本丢失风险；这不等于持久化和恢复已经实现。本文件只维护本轮推荐的技术方案、取舍和验收要求。
 
@@ -25,7 +25,7 @@
 | 身份接入 | eruoo/server OIDC + oauth4webapi + Hako 后端会话 | 协议校验由成熟库承担；令牌不交给浏览器 JavaScript。需要为 Hako 新增静态 Web 客户端。 |
 | AI 接入 | Hako Worker 校验本人会话后调用 eruoo/server；应用调用 Key 使用 Worker Secret | 产品规则见[AI 截图识别](./redesign.md#ai-截图识别)，接口与验收由[AI 接入规格](./ai-refueling-recognition.md)维护；复用现有 Worker，不新增独立 AI 部署。 |
 
-上表的 AI 接入方向已确认，其余技术组合仍为推荐；不把 npm 上存在这些库当成组合已通过验证。当前脚手架的 Vue/Vite 版本较旧，实施时统一升级并锁定依赖；本次没有修改依赖或生成应用代码。
+上表的 AI 接入方向已确认，其余技术组合通过本地与云端验证逐步落实；不把 npm 上存在这些库当成组合已通过验证。方案编制时脚手架的 Vue/Vite 版本较旧，后续升级、锁定的依赖及生成的应用代码以[实施进度](../local-validation.md)和仓库锁文件为准。
 
 ## 2. 成本与替代方案
 
@@ -180,7 +180,7 @@ R2 需要先在 Cloudflare 完成服务开通/结算流程，即使预计在免�
 | 升级 | 离线冷启动、Wasm 预缓存、表单未完成时有更新、旧客户端遇到新格式均不丢本机数据。 |
 | 容量与费用 | 1,000 条和 10,000 条合成记录含修改历史分别验证；记录初始化/保存延迟、Worker CPU、Wasm 包体、DO 内存和备份尺寸。超限保留数据并明确报错。 |
 
-实施时建立并运行 `pnpm run typecheck`、`pnpm run test`、`pnpm run test:worker`、`pnpm run test:e2e`、`pnpm run build`。目前仓库只有 `dev/build/preview/tauri`，其余命令是本方案要求新增的验证入口，不是假称当前已存在或运行通过。发布前检查 Wrangler dry-run 产物；浏览器自动化不能替代 iPhone 真机与跨设备恢复测试。
+实施时建立并运行 `pnpm run typecheck`、`pnpm run test`、`pnpm run test:worker`、`pnpm run test:e2e`、`pnpm run build`。方案编制时仓库只有 `dev/build/preview/tauri`；合入后已新增的命令与实际结果见[实施进度](../local-validation.md)，其余仍是计划入口。发布前检查 Wrangler dry-run 产物；浏览器自动化不能替代 iPhone 真机与跨设备恢复测试。
 
 ## 11. 配置、前提与当前证据
 
@@ -199,6 +199,6 @@ R2 需要先在 Cloudflare 完成服务开通/结算流程，即使预计在免�
 
 外部依赖不可用时，本机已有数据与操作继续可用，云端状态明确待同步；备份失败保留主副本并重试。若不选 Loro，保留业务模块和规范化记录导出，替换存储层时从旧文档迁移；不能承诺两种 CRDT 的原生历史可以无损互转。服务端代码回滚不删除 DO 或 R2。
 
-本次只完成仓库、官方文档、发布包与部分源码核查。npm 当日 stable 标签包括 Vue 3.5.42、Vite 8.3.0、Loro 1.16.1、idb 8.0.3、vite-plugin-pwa 1.3.0、oauth4webapi 3.8.8；它们是版本调查快照，不是已联调的锁文件。尚未执行应用构建、五端测试、Cloudflare 部署、账户配额检查或真实登录。
+方案调研阶段只完成仓库、官方文档、发布包与部分源码核查。npm 当日 stable 标签包括 Vue 3.5.42、Vite 8.3.0、Loro 1.16.1、idb 8.0.3、vite-plugin-pwa 1.3.0、oauth4webapi 3.8.8；它们是历史调查快照，实际本地验证版依赖以仓库锁文件为准。后续构建与浏览器验证见[实施进度](../local-validation.md)；五端测试、Cloudflare 部署、账户配额检查或真实登录仍未完成。
 
 官方依据补充：[Automerge Repo 存储](https://automerge.org/docs/reference/repositories/storage/)、[idb](https://github.com/jakearchibald/idb)、[Vite PWA Vue 接入](https://vite-pwa-org.netlify.app/frameworks/vue)、[Cloudflare Wasm](https://developers.cloudflare.com/workers/runtime-apis/webassembly/)。
