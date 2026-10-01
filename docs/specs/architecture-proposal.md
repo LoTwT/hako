@@ -1,7 +1,8 @@
 # Hako 首版技术方案
 
 日期：2026-09-16  
-更新：2026-09-23  
+更新：2026-10-01
+
 状态：整体建议；设计文档审查合入后已开始[本地最小验证](../local-validation.md)，完整首版尚未完成或部署。
 
 已确认需求与业务计算规则以[重新设计记录](./redesign.md)为准。用户已接受 PWA 在同步前仍存在本机唯一副本丢失风险；这不等于持久化和恢复已经实现。本文件只维护本轮推荐的技术方案、取舍和验收要求。
@@ -22,7 +23,7 @@
 | 服务端 | Workers Static Assets + 一个 Hako Worker | 前端与 API 同源，减少 CORS、Cookie 和部署配置。内部代码按身份、同步、备份职责分开。 |
 | 服务端副本 | 一个本人账号对应一个 SQLite Durable Object | 合并并持久保存 CRDT，保存会话和备份任务状态；账号内操作集中处理，无需再加 D1、Workers KV 或独立队列。 |
 | 独立备份 | R2 Standard 私有桶 + Durable Object Alarm | 按已确认的变化触发与最近 30 版本策略执行；应用关闭后也能完成已同步数据的备份。 |
-| 身份接入 | eruoo/server OIDC + oauth4webapi + Hako 后端会话 | 协议校验由成熟库承担；令牌不交给浏览器 JavaScript。需要为 Hako 新增静态 Web 客户端。 |
+| 身份接入 | eruoo/server OIDC + oauth4webapi + Hako 后端会话 | 协议校验由成熟库承担；令牌不交给浏览器 JavaScript。静态 Web 客户端已上线，Hako 接入待实现。 |
 | AI 接入 | Hako Worker 校验本人会话后调用 eruoo/server；应用调用 Key 使用 Worker Secret | 产品规则见[AI 截图识别](./redesign.md#ai-截图识别)，接口与验收由[AI 接入规格](./ai-refueling-recognition.md)维护；复用现有 Worker，不新增独立 AI 部署。 |
 
 上表的 AI 接入方向已确认，其余技术组合通过本地与云端验证逐步落实；不把 npm 上存在这些库当成组合已通过验证。方案编制时脚手架的 Vue/Vite 版本较旧，后续升级、锁定的依赖及生成的应用代码以[实施进度](../local-validation.md)和仓库锁文件为准。
@@ -107,7 +108,7 @@ HTTP 同步使用 Loro 原生版本向量及增量导入导出，不自己实现
 
 登录保持按[产品决策](./redesign.md#已确认的产品需求)优先满足自有设备长期保持登录；原先每 30 天重新登录的建议已撤下，续期与到期参数由[登录规格第 6.1 节](./eruoo-login-integration.md#61-本应用会话与-owner-配置)统一维护，现已补齐候选机制与验收边界，尚待审阅及实测。
 
-登录的客户端登记、协议参数、会话建议与双方实施责任统一维护在[Hako × eruoo/server 登录接入规格](./eruoo-login-integration.md)。该交接稿沿用既有 OIDC 服务，由 Hako 后端处理授权并建立自己的应用会话；尚未实施或部署。
+登录的客户端登记、协议参数、会话建议与双方实施责任统一维护在[Hako × eruoo/server 登录接入规格](./eruoo-login-integration.md)。eruoo 的客户端支持已上线；Hako 后端仍需实现授权处理及自己的应用会话，并完成部署与联调。
 
 PWA 登录必须验证发起环境绑定。此前“外部浏览器授权后，原 PWA 自动领取会话”的简略描述缺少跨环境的持有证明；本轮已在[登录规格第 6.2 节](./eruoo-login-integration.md#62-浏览器--pwa-发起环境绑定)补充同环境验证与隔离时的完成码建议。该交互仍待技术方案审阅和 iPhone 真机验证，不能只根据公开 state 或回调成功自动完成原 PWA 登录。
 
@@ -161,7 +162,7 @@ R2 需要先在 Cloudflare 完成服务开通/结算流程，即使预计在免�
 
 1. 在现有 Vue 项目中整理业务模型、统计模块与表单，按重新设计记录建立算例。
 2. 接入 Loro 和 IndexedDB，完成离线保存、修改历史、多窗口合并和故障语义。
-3. 实施同源 Worker、Durable Object 与 HTTP 同步，同时完成 eruoo/server 新客户端的协议接入。
+3. 按[最小登录实现](./eruoo-login-integration.md#63-下一步-hako-最小实现范围)先完成同源 Worker、OIDC 接入与本应用会话，再接入 SQLite Durable Object 服务端副本和 HTTP 同步。
 4. 实施独立备份、单记录与整份恢复、文档代次保护和升级策略。
 5. 按[AI 接入规格](./ai-refueling-recognition.md)接入截图识别与服务端调用，完成字段校验、预填与失败处理；真实图片和结构化输出组合、Worker 间请求及 CPU 预算作为上线前验收项。
 6. 完成四端与 Linux 的浏览器/PWA 验收，再按明确的发布授权部署正式资源。历史数据格式适配只在用户提供文件后进行，不重新调查来源 App 的导出方法。
@@ -186,9 +187,9 @@ R2 需要先在 Cloudflare 完成服务开通/结算流程，即使预计在免�
 
 | 配置/资源 | 用途与处理责任 |
 | --- | --- |
-| Hako 正式 HTTPS origin | 决定 Cookie 作用域和精确 OIDC 回调。部署接线时由用户确认已有域名或 Cloudflare 默认域名；本次不占用或购买域名。 |
-| eruoo 的 `hako-web` 注册 | 由对应仓库实施静态配置、持久配置及协议校验；当前仅完成源代码核查。 |
-| 固定 issuer 与本人 subject | Hako 只接受同一身份；subject 在接入时从本人已验证身份取得，不用邮箱或客户端提交的用户 ID 替代。 |
+| Hako 正式 HTTPS origin | 用户已于 2026-09-26 确认，唯一 origin 与精确回调由[登录接入规格](./eruoo-login-integration.md#3-客户端登记合同)维护；DNS、Cloudflare 域名绑定及部署仍待实施。 |
+| eruoo 的 `hako-web` 注册 | 已在 staging 和 production 上线；发布证据、当前实现基线和 Hako 待办统一见[登录接入规格](./eruoo-login-integration.md#2-当前实现与接入状态)。 |
+| 固定 issuer 与本人 subject | 已由 eruoo 侧核实，交接状态见[登录接入规格](./eruoo-login-integration.md#61-本应用会话与-owner-配置)；在对应后端环境固定，不用邮箱或客户端提交的用户 ID 替代。 |
 | Cloudflare 账号与部署凭据 | 使用账号内受限部署权限；仅部署端需要，不进入前端或业务备份。 |
 | DO binding 与私有 R2 binding | 同一 Hako 部署内配置；无需给浏览器或 Worker 再提供 R2 S3 API Key。 |
 | eruoo/server AI 服务地址、精确模型 ID 与应用调用 Key | 服务端统一配置；变量、权限和部署条件只在[AI 接入规格](./ai-refueling-recognition.md#4-配置与部署接线)维护，应用 Key 使用 Worker Secret。 |
