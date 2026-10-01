@@ -1,7 +1,8 @@
 # Hako × eruoo/server 登录接入规格
 
-日期：2026-09-16  
-状态：交接评审稿；用户已要求编写本规格，尚未实施、联调或部署。文中工程参数是本轮建议，不表示 Hako 整体技术方案已经确认。
+日期：2026-09-16；更新：2026-10-01
+
+状态：正式域名已确认；eruoo/server 的客户端支持已在 staging 和 production 上线，Hako 登录实现与线上联调待完成。服务端交付状态与合同见第 2、5 节；Hako 会话参数和 PWA 后备交互仍按第 6 节的建议与验证边界处理。
 
 ## 1. 目标与职责
 
@@ -11,13 +12,13 @@
 | --- | --- |
 | eruoo/server | 登记独立的 Hako OAuth 客户端；通过已有 OIDC 接口提供本人身份；维护客户端策略、协议校验、审计和恢复后的配置一致性。 |
 | Hako | 发起授权、接收回调、验证身份，管理自己的会话；保护自己的同步、备份和恢复接口；处理 PWA 登录返回。 |
-| owner | 在正式登记前提供 Hako 正式 HTTPS origin；按 eruoo/server 既有流程授权实际发布。 |
+| owner | 已确认第 3 节的正式 HTTPS origin；按 eruoo/server 既有流程授权实际发布。 |
 
 登录服务采用的产品决策见[重新设计记录](./redesign.md#已确认的产品需求)。本文是登录接入细节的唯一维护位置，[首版技术方案](./architecture-proposal.md#6-登录接入)只引用本文。
 
 本次不包含 AI 代理、加油数据存储/同步、跨应用统一登出、原生 App 专用登录、动态客户端注册或通用应用管理平台。浏览器和各系统 PWA 使用同一个 Web 客户端登记，分别拥有自己的 Hako 会话。
 
-推荐最小路径：沿用现有 Better Auth OAuth Provider，新增一个静态客户端和对应配置、校验及测试；不新增 eruoo 服务、API Key 或共享 client secret。初期沿用服务器当前的 `none + PKCE` 客户端策略，Hako 后端保管 verifier。若接收方要求改用机密客户端认证，应集中反馈原因与额外凭证维护成本，不静默改变本合同。
+接入沿用现有 Better Auth OAuth Provider；独立静态客户端及对应配置、校验和测试已在 eruoo/server 合入。采用 `none + PKCE`，Hako 后端保管 verifier，无需新增 eruoo 服务、API Key 或共享 client secret。
 
 ```text
 浏览器 / PWA ── 发起登录 ──> Hako 后端（登录事务与本应用会话）
@@ -27,33 +28,46 @@
                               既有 D1（身份、OAuth 配置）
 ```
 
-## 2. 当前证据与需要改动的原因
+## 2. 当前实现与接入状态
 
-核查基线为 eruoo-server 本地 `806250c1b1ea9c7a8bace499caa20839a691e9bd` 的相关实现。当前工作区另有 AI 服务文档改动，不属于本规格；本次未修改该仓库。线上只进行了公开 discovery 的 GET，没有真实登录，也没有读取生产数据库，因此以下源码事实不等于已核验线上所有运行配置。
+2026-09-26，eruoo/server [PR #55](https://github.com/eruoo/server/pull/55) 已合入 `main`，实现提交为 [`8b08a16e4e56925b32e1ad14beb15a2f2f8c7336`](https://github.com/eruoo/server/commit/8b08a16e4e56925b32e1ad14beb15a2f2f8c7336)。Hako 侧已核对合并提交与审查工作区的 Git tree 相同，且该提交的 [Check run 36227299104](https://github.com/eruoo/server/actions/runs/36227299104) 成功。第 3 节的核心客户端合同已有服务端实现，当前部署及接入状态见下表。
 
-| 已确认事实 | 接入影响 |
+此前基于 `806250c1` 与 `d1609f55` 得出的“仅 Desktop 可用、尚无 Hako 登记”结论是实施前状态，已由本次交付取代。当前服务端协议以对应提交的 [protocol-contract.md](https://github.com/eruoo/server/blob/8b08a16e4e56925b32e1ad14beb15a2f2f8c7336/docs/specs/protocol-contract.md#4-oauthoidc-客户端契约)为准；实现对应关系见第 5 节。
+
+| 范围 | 当前状态 |
 | --- | --- |
-| `src/shared/oauth.ts` 只启用 `eruoo-desktop`；Web/Mobile ID 仅保留 | 必须新增 `hako-web`，不能借用桌面端或直接启用 `eruoo-web` 代替 Hako。 |
-| `src/worker/oauth/protocol.ts` 同时检查静态客户端、精确回调、D1 登记、PKCE 和 `tokenEndpointAuthMethod=none` | 只加静态 client ID 或只插数据库均不能完成接入。 |
-| `src/worker/oauth/userinfo.ts` 只接受桌面客户端；`handler.ts` 授权审计写死桌面 ID | 需要按已登记客户端策略放行并记录真实身份，保留 owner 与 token 校验。 |
-| `auth.ts` 启用 `enforcePerClientResources`；授权和 code exchange 必须传 `resource` | Hako 必须登记既有 resource 关联，并在两次请求中使用同一值。 |
-| `scripts/lib/restore-database.ts` 重建所有启用客户端，统一填入 refresh grant 与 end-session 能力 | 必须按客户端策略恢复，避免恢复后给 Hako 扩权。 |
-| `oauth/authorizations.ts` 校验 D1 客户端集合与静态启用集合完全一致 | 新登记、恢复和回滚要同时保持两侧一致，否则会影响整个授权应用列表。 |
+| eruoo 客户端、身份读取与配套策略 | 已合入，核心协议满足本规格；服务端测试通过不等于 Hako 已接入。 |
+| eruoo 远端迁移与部署 | 2026-09-27 两个环境均已发布上述精确提交并通过服务端验收；每环境仅应用 `0005`，五份迁移的 ledger/receipt/hash 与发布源码匹配，Hako 登记策略一致。发布证据及来源见下表。 |
+| Hako Worker、OIDC 接入及本应用会话 | 尚未实现；下一步按第 6.3 节完成一个登录切片。 |
+| 固定 owner、域名及 Worker 间接线 | 正式域名已确认；eruoo 任务已分别核实 production/staging 的持久 owner 身份，身份对存于本地接线记录。实际绑定、ID token 对照及端点可达性仍待联调。 |
+| 真实浏览器/PWA 登录 | 尚未联调，iPhone 返回环境和会话保持不能由服务端合成测试代替。 |
 
-现有协议权威来源为 eruoo/server 的 `docs/specs/protocol-contract.md`。本文提出新增 Hako Web 客户端，因此实施时必须同步更新其中“仅启用 Desktop”的范围描述；其他已有协议边界继续生效。
+2026-09-27，eruoo 任务回传以下发布结果。两个环境均为新版本 100% 活动流量；每环境 5 项发布冒烟和 8 项现场 OIDC 边界检查通过，覆盖 discovery/JWKS、匿名管理拒绝、合法 Hako 授权进入登录、精确回调、拒绝 offline scope、要求 S256 和拒绝 refresh。已有 AI 数据量保持不变。
+
+| 环境 | 成功的发布流水线 | 活动 Worker version |
+| --- | --- | --- |
+| staging | [run 36299264063](https://github.com/eruoo/server/actions/runs/36299264063) | `9e41d49b-5db6-4067-ba5f-1e3a73e8fb57` |
+| production | [run 36299580353](https://github.com/eruoo/server/actions/runs/36299580353) | `86e18043-5b7c-43ef-8355-abf94690f483` |
+
+eruoo 任务使用浏览器已有 owner 会话确认两个环境的授权应用页可打开，并展示 Hako“仅用于登录，登录状态由应用管理”。本轮未重新执行真实 GitHub / Passkey 登录，也未完成 Hako 后端、ID token 全链路或 iPhone 联调。上述远端证据由 eruoo 任务提供，Hako 侧复用其结果，没有重复操作发布资源。正式 issuer、owner 身份和回调保持不变；后续 Hako 登录接入已无 eruoo 发布阻塞。
+
+2026-09-26 较早从本机 GET 公开 discovery 返回 HTTP 403；随后 eruoo 任务核对两环境的 health/discovery 均返回 200，health 与实际活动版本一致，历史 403 未复现但原因未确认。Hako Worker 的实际调用仍待联调，不把该历史现象作为继续本地开发的阻塞。本轮复用 eruoo 的实现与检查记录，没有重新运行其完整测试或执行真实登录。
+
+2026-10-01 接收的[服务端只读复核](#2026-10-01-服务端只读复核)确认上述发布状态未变；该核查仍不包含 Hako 真实登录与设备验收。
 
 ## 3. 客户端登记合同
 
 `HAKO_WEB_ORIGIN` 是本文表示部署输入的名称，不强制要求新增同名环境变量。它必须是 owner 指定的唯一正式 HTTPS origin，不含路径、query、fragment、用户信息或末尾 `/`。正式回调固定为该 origin 加 `/api/auth/callback`，运行时不得由请求的 Host、Origin 或跳转参数推导登记值。
 
-当前正式域名尚未提供。接收方可先用测试专用 `https://hako.test/api/auth/callback` 完成本地协议测试；这个地址不得进入生产登记。正式登记和发布必须在收到实际 origin 后完成，缺失时保持 Hako 客户端未启用。该输入不影响下面的协议、代码职责与测试要求。
+owner 已于 2026-09-26 确认正式域名，唯一正式 origin 与回调见下表。接收方可使用测试专用 `https://hako.test/api/auth/callback` 完成本地协议测试；这个地址不得进入生产登记。域名确认完成了登记输入的选择，DNS、Cloudflare 域名绑定及正式部署仍待实施。
 
-| 项目 | Hako 建议值 / 要求 |
+| 项目 | Hako 配置值 / 要求 |
 | --- | --- |
+| `HAKO_WEB_ORIGIN` | `https://hako.eruoo.me`（用户已确认） |
 | `client_id` / 展示名 | `hako-web` / `Hako` |
 | `application_type` / platform | `web` / `web` |
 | `token_endpoint_auth_method` | `none`；不发 client secret，不用 API Key 代替用户登录 |
-| `redirect_uris` | 只有 `HAKO_WEB_ORIGIN + /api/auth/callback`，以完整字符串精确匹配 |
+| `redirect_uris` | 只有 `https://hako.eruoo.me/api/auth/callback`，以完整字符串精确匹配 |
 | `grant_types` / `response_types` | 只有 `authorization_code` / `code` |
 | `requirePKCE` | `true`，只接受 `S256` |
 | `scope` 上限 | `openid profile`；拒绝 `api:read`、`api:write`、`offline_access` |
@@ -70,7 +84,7 @@
 
 ## 4. 请求、响应与身份合同
 
-2026-09-16 实际读取的[公开 discovery](https://auth.eruoo.me/.well-known/openid-configuration)包含以下地址。Hako 从固定可信 issuer 读取 metadata 并核对 issuer，不接受浏览器指定任意发现地址。
+2026-09-16 实际读取的[公开 discovery](https://auth.eruoo.me/.well-known/openid-configuration)包含以下地址；2026-09-27 服务端发布验收及 Hako 待联调边界见第 2 节。Hako 从固定可信 issuer 读取 metadata 并核对 issuer，不接受浏览器指定任意发现地址。
 
 | 用途 | 现有端点 |
 | --- | --- |
@@ -109,23 +123,22 @@ Token 和 UserInfo 请求由 Hako 后端发出，不能转发浏览器 Cookie �
 
 Hako 将取消、过期、配置错误与服务暂时不可用分别转成可读提示。不能无限自动重定向；token 兑换遇到结果不明时，不盲目重复消费 code，可重新发起一次登录。所有失败保留本机记录和未同步修改。
 
-## 5. eruoo/server 实施清单
+## 5. eruoo/server 已合入的实现
 
-以下是该仓库的相对路径。预计代码、迁移、测试和规格合计超过 8 个文件，仍在已有身份服务内完成，不新增服务。
+以下是第 2 节实现提交中的仓库相对路径。它们已提供并上线 Hako 接入所需的核心能力，后续完成 Hako 实现和联调，不重新建立客户端管理系统。
 
-| 位置 | 需要完成的变更 |
+| 位置 | 已实现的职责 |
 | --- | --- |
-| `src/shared/oauth.ts` | 增加 `hako-web` 类型与静态声明。用同一客户端策略描述/派生 scope、grant、离线访问和 end-session 能力，供运行时与恢复使用。 |
-| 新增向前数据迁移；现有基线为 `migrations/0001_foundation.sql` | 新增 `oauthClient` 与 `oauthClientResource` 登记，不修改已发布基线、不重建库。建议稳定 ID 为 `static-hako-web` 与 `static-hako-web-api`。现有 resource 复用；所有字段满足第 3 节。 |
-| `src/worker/oauth/protocol.ts` | 支持新的 Web 客户端，保留精确 redirect、PKCE 与配置一致性校验；补上或通过真实插件测试证明 per-client scope/grant 上限在授权和兑换时均生效。 |
-| `src/worker/oauth/userinfo.ts` | 将桌面专属判断改为已登记启用客户端的身份读取策略，并校验持久登记；保留其余 token 与 owner 条件。 |
-| `src/worker/oauth/handler.ts` | 审计记录来自已验证的授权上下文或授权记录的 client ID。直接授权、登录续接和 consent 路径都覆盖；不能信任未经验证的前端 client ID，也不能用桌面 ID 兜底。 |
-| `scripts/lib/restore-database.ts`、`scripts/restore-database.test.ts` | 恢复时为 Hako 重建准确回调、scope、`authorization_code` grant、PKCE、`enableEndSession=false` 和 resource 关联；扩充一致性验证，不能只比较客户端名字集合。 |
-| `src/worker/oauth/authorizations.ts`、`src/shared/oauth-authorizations.ts`、授权列表界面 | 正确包含 Hako，`supportsOfflineAccess=false`。现有列表是 OAuth 授权信息，不是 Hako 当前会话列表；不得把“没有 refresh token / consent 记录”解释成 Hako 一定未登录。必要时调整说明，不新增会话管理 API。 |
-| `tests/worker/fixtures/oauth.ts` 与 OAuth 测试 | 增加可显式指定 client/redirect/scope 的测试调用方，保留桌面用例；加入第 7 节的 Hako 专项测试。 |
-| `docs/specs/protocol-contract.md`、`docs/specs/operations.md`、相关验收文档及 OpenAPI | 更新启用客户端范围、登记与恢复流程、会话边界和验收证据。共享 schema 增加 client ID 后检查 OpenAPI 漂移。 |
+| `src/shared/oauth.ts`、`src/shared/oauth-registration.ts` | 定义 `hako-web` 策略、安全字段和注册快照；离线访问能力由 scope 与 grant 推导，供运行时、恢复和发布共用。 |
+| `migrations/0005_hako_oidc_client.sql` | 登记 `static-hako-web` 与 `static-hako-web-api`，复用现有 resource；upsert 支持旧快照恢复时已补种 Hako 的情况，保留既有迁移内容。 |
+| `src/worker/oauth/client-policy.ts`、`protocol.ts` | 校验当前客户端的静态启用状态、完整 D1 登记、resource 关联、精确回调及 scope/grant/PKCE 等条件。 |
+| `src/worker/oauth/authorization-code.ts`、`src/worker/auth.ts` | 在授权码持久化前复核客户端策略及有效 owner Session，覆盖直接授权与登录续接；成功审计使用实际 client 与 subject。 |
+| `src/worker/oauth/userinfo.ts` | 验签后读取对应客户端策略并验证 owner，保留 issuer、audience、期限、scope 与 Bearer 载体检查。 |
+| `scripts/lib/restore-database.ts`、`scripts/build-release.ts`、`scripts/deploy-release.ts` | 按同一策略恢复客户端；产物保存注册快照，迁移后、Worker 切换前验证完整注册集合。 |
+| `src/worker/oauth/authorizations.ts`、`src/shared/oauth-authorizations.ts`、授权列表界面 | 只聚合静态启用的客户端；明确 Hako 自己管理登录状态，不以没有 consent/refresh 记录判断其是否登录。 |
+| `tests/worker/oauth-client-policy.test.ts`、`oauth-guard-regressions.test.ts` 及相关恢复/浏览器测试 | 覆盖 Hako code flow、ID token/UserInfo、无 refresh、权限和登记漂移、持久 owner/Session、审计及登录续接；已有检查结果见第 9 节。 |
 
-`src/worker/auth.ts` 的现有 provider、动态注册禁用、owner 限制与受信客户端集合继续复用。`oauth/families.ts` 里的桌面 refresh/revoke 专属分支不因本次接入机械放开：Hako 不使用 refresh grant，必须通过测试确认无法获得或使用该能力。
+现有 provider、动态注册禁用和 owner 限制继续保留。Hako 不使用 refresh grant；不能为 Web 接入扩大其离线授权或 end-session 能力。
 
 迁移、静态声明和恢复生成结果必须一致；登记缺失或漂移要明确失败。保持未知/未启用客户端不接受授权，不提供通过请求自动补登记的路径。
 
@@ -138,7 +151,7 @@ Hako 将取消、过期、配置错误与服务暂时不可用分别转成可读
 - 建议 Hako 后端使用 `oauth4webapi` 完成标准协议验证；对外建立自己的随机会话，Cookie 使用 `Secure`、`HttpOnly`、`SameSite=Lax`、`Path=/`，不设置跨域 Domain。后端保存会话凭据哈希、固定身份和到期时间。
 - 登录保持遵循[已确认的产品需求](./redesign.md#已确认的产品需求)：自己的设备尽量长期保持登录。撤下原先登录起 30 天绝对到期的建议；本轮给出下表中的续期参数，仍是待审阅建议，尚未实测。
 - 使用中延长 Hako 自己的有效会话，同时保留退出、撤销和过期校验；不申请 `offline_access`、不保存上游 refresh token。Hako 服务端续期不等于重新执行 OIDC 登录，失效会话不得靠续期恢复。
-- 本人 `sub` 由 eruoo 侧在受控环境核对现有 owner 用户后提供，并由 Hako 部署配置固定。不能让第一次公开访问或第一次成功回调自动认领 owner；缺少配置时不能启用云端身份访问。
+- 本人 `sub` 由 eruoo 侧在受控环境核对现有 owner 用户后提供，并由 Hako 部署配置固定。2026-09-26 两环境的 `(issuer, sub)` 已分别只读核实，保存于 Git 忽略的 `hako-oidc.local` 接线记录；该文件目前不是应用自动加载的配置，也不会随 Git 克隆或 worktree 创建转移。接线前按环境取得对应身份对并配置后端，实际 subject 不写入公开文档、前端或日志；真实 ID token 的匹配仍待联调。不能让第一次公开访问或第一次成功回调自动认领 owner；缺少配置时不能启用云端身份访问。
 - Hako 的状态变更 API 校验本应用会话与精确 Origin。首次登录需要联网；已有关联身份的本机数据在会话过期或断网时仍可使用，云端同步等待重新登录。
 - Hako 退出使自己的当前会话及当前环境未完成的登录事务失效，不自动删除本机记录。eruoo 管理会话退出、撤销授权或停用客户端，不被表述为已经即时撤销 Hako 的独立会话；需要停用已建立的 Hako 会话时由 Hako 执行。
 
@@ -173,6 +186,22 @@ Hako 将取消、过期、配置错误与服务暂时不可用分别转成可读
 
 建议 Hako 内部路由固定为 `POST /api/auth/login`（创建事务）、`GET /api/auth/callback`（唯一 OAuth 回调）、`POST /api/auth/complete`（隔离场景完成）、`GET /api/auth/session` 和 `POST /api/auth/logout`。除注册回调外，这些是 Hako 内部接口，不增加 eruoo 的调用面。回调结果页与会话接口使用 `Cache-Control: no-store`，回调页设置 `Referrer-Policy: no-referrer`，不加载第三方资源；PWA Service Worker 不缓存认证响应。
 
+### 6.3 下一步 Hako 最小实现范围
+
+eruoo 发布已完成；Hako 先完成同源 Worker 的登录闭环，再接正式服务联调，不将同步、R2 备份、统计或 AI 识图作为登录前置。
+
+| 本地工作 | 完成条件 |
+| --- | --- |
+| Worker 与固定配置 | 提供第 6.2 节的认证入口；固定 origin、issuer、client 与 owner。缺少 owner 配置时不建立会话，不从首次访问认领账号。 |
+| OIDC 登录事务与回调 | 使用第 4 节的合同及成熟库，验证发起环境、state/nonce/PKCE、ID token 和 UserInfo；事务只能完成一次。 |
+| 本应用会话与退出 | 实现第 6.1 节的服务端持久会话、Cookie 与原子撤销；用测试时钟验证期限。续期随后续已授权前台同步处理，不添加独立后台保活任务。 |
+| 页面衔接与本机数据 | 能显示登录状态、退出及可读错误；认证失败或会话过期保留本机记录和未保存输入，现有验证数据库不自动认领为正式账号数据。 |
+| 本地验证 | 用合成身份与受控协议响应覆盖正常往返、错误身份/事务、重放、过期及退出；实际 Worker 接线和 iPhone 行为在对应环境补验。 |
+
+当前草稿仅在页面内存中，登录跳转前的保护与返回后的恢复方式仍待确定。实施时须覆盖正常返回、取消和失败后的草稿保留，不能把离页提示当作已实现恢复。
+
+本地合成调用方不向生产登记临时回调。隔离环境完成码仍是第 6.2 节的后备交互建议；先验证普通浏览器路径，iPhone 确实发生隔离时再确认和验证后备交互，发起环境绑定不能省略。
+
 ## 7. 验收要求
 
 ### 7.1 eruoo/server 自动化验收
@@ -190,10 +219,10 @@ Hako 将取消、过期、配置错误与服务暂时不可用分别转成可读
 | 授权列表 | 新客户端不会触发全表一致性错误；界面准确说明 Hako 无离线续期能力，不声称可以从 eruoo 注销其独立会话。 |
 | 数据迁移与恢复 | 空库与现有库向前迁移均得到同一策略；恢复后 Hako 不获得 refresh/end-session 能力；其他身份与桌面配置不受影响。 |
 
-实施方在现有 Node 24 / pnpm 11 工具链下完成测试。以下命令来自该仓库现有 scripts；本次编写规格没有运行这些应用检查：
+实施方在现有 Node 24 / pnpm 11 工具链下完成测试。以下保留为后续相关变更的验证入口；本次 Hako 文档对齐复用第 9 节已有结果，不重复执行整套检查：
 
 ```sh
-pnpm run test tests/worker/oauth-flow.test.ts tests/worker/auth-regressions.test.ts tests/worker/oauth-races.test.ts
+pnpm run test tests/worker/oauth-client-policy.test.ts tests/worker/oauth-guard-regressions.test.ts tests/worker/oauth-flow.test.ts
 pnpm run test:scripts scripts/restore-database.test.ts
 pnpm run check
 pnpm run build:release staging
@@ -214,20 +243,60 @@ pnpm run build:release production
 
 ## 8. 接线、发布与回退
 
-本接入可作为 eruoo/server 一个完整功能变更合入：使用合成 Hako 调用方完成协议验收，不依赖 Hako 全部业务页面完成。Hako 侧会话/PWA 联调是 Hako 发布条件，不能把服务端测试通过表述为五端已可用。
+eruoo/server 已作为一个完整功能变更合入，使用合成 Hako 调用方完成协议验证，并于 2026-09-27 完成 staging 与 production 发布验收，结果见第 2 节。Hako 侧会话/PWA 联调仍是 Hako 登录开放条件，不需要等待全部加油业务页面完成。
 
-正式接线需要两个已明确负责人的输入：owner 提供实际 `HAKO_WEB_ORIGIN`；eruoo 实施方核对并向 Hako 提供本人稳定 `sub`。它们都不是新的第三方密钥。Cloudflare 发布权限继续由各仓库现有发布环境持有；Hako 前端不接收部署凭据，eruoo 现有 GitHub / Passkey 配置继续复用。
+正式 origin 已由 owner 确认，登记值统一使用第 3 节；本人稳定身份对已按第 6.1 节核实，待写入对应 Hako 后端部署配置。它们都不是新的第三方密钥。Cloudflare 发布权限继续由各仓库现有发布环境持有；Hako 前端不接收部署凭据，eruoo 现有 GitHub / Passkey 配置继续复用。
 
-发布按 eruoo 当前“检查构建 → 选择精确 SHA 与环境 → 向前迁移 → 发布 → 冒烟验证”流程，授权以 owner 对该次操作的明确指令为准。本规格不触发另一任务、不授权远端迁移或部署。
+发布按 eruoo 当前“检查构建 → 选择精确 SHA 与环境 → 向前迁移 → 发布 → 冒烟验证”流程，授权以 owner 对该次操作的明确指令为准。先核对目标环境实际活动版本与迁移记录，完整说明待执行迁移的数据影响；不能把本版本发布一概描述为只应用 `0005`。本地准备不触发远端迁移或部署。
 
-特别注意客户端集合的过渡期：当前旧代码要求 D1 只包含原启用客户端，新代码要求包含 Hako。先执行新增登记迁移而代码尚未切换时，旧授权列表可能暂时失败。本稿推荐在声明的发布窗口内串行完成登记迁移与同一版本部署，并实测授权列表恢复及桌面登录不受影响；发布记录说明这一短暂影响。部署失败则立即进入既定回退流程，不留下迁移与代码长期不匹配的状态。若 owner 要求该列表也零中断，再单独采用兼容登记过渡方案，不将其作为当前默认复杂度。
+2026-09-26 的发布前只读核查确认：staging 与 production 各自的库身份、活动版本及四份迁移哈希均与对应记录一致，当时仅待 `0005`，不会重跑 `0004` 的 AI 数据重置。已有 AI 数据保留；版本差异还包含 PR #54 的 AI 请求边界修复，不能将整个发布描述为只改 Hako。Wrangler 配置、lockfile、旧迁移及备份 Workflow 未变。这是发布前快照，已执行结果见第 2 节；后续发布仍以当次核验结果为准。
 
-回退必须同时考虑客户端登记与代码：普通代码回退不撤销 D1 写入。回退到尚不认识 Hako 的版本前，按受控方案撤回仅属于 `hako-web` 的登记及其依赖授权记录，并保证静态/持久集合再次一致；不得清空身份库、桌面授权或 Hako 业务数据。不通过“只将 D1 disabled 改为 1”假定旧列表校验会通过。若当前故障可通过向前修复解决，优先保留已有登记与数据。Hako 独立会话的停用仍由 Hako 处理。
+当前静态策略及 `0005` 在各环境登记的都是第 3 节的正式回调；staging 的 issuer 与 production 不同。因此 staging 默认先验证服务端部署及协议，不能将其与正式 Hako 的 issuer/owner 配置混用。如确需独立 Hako staging 端到端联调，再成对配置测试 origin、issuer、owner 和隔离存储，并同步服务端策略、登记及构建快照；不只手改 D1 回调，也不把测试地址加入生产白名单。
+
+2026-09-26 用户要求适当简化准备，以完成 Hako 需求为主。eruoo 任务用精确旧 SHA `d1609f55` 完成隔离 workerd/D1 对照：`0001–0004` 基线 64/64 通过，加入原始 `0005` 后 63/64 通过，唯一差异是已授权应用列表由 200 变为 503。覆盖到的 GitHub owner/非 owner、Session、API Key（含 AI Key）及 Desktop code/refresh/UserInfo/撤销用例仍通过，旧授权入口继续拒绝 Hako。这是本地对照结果，不是线上回退演练。
+
+据此采用短发布窗口作为最小方案，不再把登记/开放拆分或额外中间版本作为默认前置。迁移至 Worker 切换之间可能出现上述列表降级；实际执行前向 owner 说明影响，并按同一版本串行完成迁移、部署和冒烟。若失败需要应急代码回退，保留全部 D1 数据及 `0005` ledger/receipt，使用各环境发布前记录的精确旧 Worker version，明确授权列表仍会降级，不能称为全功能恢复。旧 token 路径也不能承担新客户端策略的完整约束，代码回退不等于撤销已签发的 Hako 凭据或 Hako 本应用会话。
+
+正常恢复优先向前重新发布 `8b08a16` 或包含完整 `0001–0005` 的修复版本，不用旧 SHA 的常规发布流程删除迁移历史，也不为回退删除 Hako 登记或其他业务数据。精确平台 version、执行记录和恢复步骤由 eruoo 运维/实施记录维护，实际恢复须依据当次状态及授权。
+
+本次已按 eruoo staging 的迁移、部署及针对性验收 → 同一候选的 production 发布与冒烟完成服务端发布，剩余为 Hako 实现与正式登录联调。Hako 本地登录实现可与服务端发布并行；服务端发布不要求 Hako 全部业务完成，Hako 开放登录则需要回调、固定身份、会话和实际接线均就绪。本次发布授权限于确定的 SHA、环境及 `0005` 范围，不由文档更新触发新的发布。
 
 接收方完成后回传：实现 commit、实际客户端参数与回调、测试结果、登记/恢复/回退验证、已发布或未发布状态，以及是否存在与本稿不同的协议选择。若未进行真实登录或 iPhone 测试，明确列为未验证。
 
-## 9. 本次交付证据
+## 9. 核查与交付记录
+
+### 2026-09-16 规格编制
 
 - 已读取 Hako 当前决策、eruoo 协议规格、相关实现、数据库基线、恢复生成器、测试调用方与发布脚本入口；已对公开 discovery 做只读连通性核查。
 - 已核查 Better Auth 与 oauth4webapi 官方文档/示例，以及 OIDC / OAuth Security BCP 的身份与发起环境验证要求。
 - 本次只交付规格及其索引和引用更新；没有修改应用代码、eruoo-server 仓库、数据库、账户权限或线上配置，没有进行真实登录、构建或协议测试。
+
+### 2026-09-26 接入复核与域名确认
+
+- 固定提交复核结果及线上连通性限制见第 2 节；域名确认值见第 3 节。
+- 域名确认时，Hako 仍是本地表单验证应用，eruoo 的 Hako 支持尚未合入；该服务端状态已由下节更新。
+- 本轮只更新文档并检查差异及引用；未执行 DNS 配置、客户端登记、远端迁移或部署，未重新运行应用测试。
+
+### 2026-09-26 服务端交付核对与最小准备
+
+- 已核对 PR #55 的合并状态、合并提交与审查源码的 tree 一致性，以及该提交 CI 成功。服务端完整检查 656 项、针对性消融验证及本地构建结果复用 eruoo 的实施记录，本任务没有重新执行或将它们称为线上验收。
+- 已将 Hako 本地工作收敛为第 6.3 节的登录切片，并与 eruoo 任务分工：Hako 维护接入规格和本地开发范围；eruoo 核对实际活动版本、迁移影响及最小发布/恢复步骤。
+- 本地逐项比较了第 3 节与已合入源码的 17 个客户端策略字段，结果一致；4 份改动文档的 39 个本地链接/锚点及空白检查通过。
+- eruoo 任务回传了两个环境的只读活动版本、迁移账本/receipt 与 owner 身份核查结果。已保存 Git 忽略的本地身份交接记录；实际身份值不写入公开规格或前端。
+- eruoo 任务完成旧版本加 `0005` 的隔离回退对照，双方据此采用第 8 节的短窗口和保留数据的应急代码回退方案，未要求额外中间版本。相关真实状态和对照结果由该任务提供，Hako 侧未重复访问 D1 或执行回退。
+- 本次准备更新文档与本地身份交接记录，并核对合同和引用；Hako 登录运行代码仍待实现，没有执行远端配置、迁移、部署或真实登录。
+
+### 2026-09-27 服务端上线结果接收
+
+- 已接收 eruoo 任务的双环境发布与现场验收结果，第 2 节维护精确提交、发布流水线、活动版本和未验证边界；第 8 节的发布前状态已标为历史快照。
+- 本次仅同步 Hako 接入文档及进度引用，未修改应用代码或操作 eruoo 发布资源；Hako 自身部署、完整登录和 iPhone 联调仍待完成。
+
+### 2026-10-01 服务端只读复核
+
+以下记录接收自 eruoo/server 于 2026-10-01 18:07（Asia/Shanghai）提供的只读核查。来源是服务端的本地交接记录 `docs/handoff-2026-10-01.md`，原始快照保存在该工作区的 `.output/handoff-20261001/`，不随 Hako 仓库分发；精确提交、发布流水线和 Worker version 仍见第 2 节。
+
+- 服务端 `main` 与两环境活动版本仍对应第 2 节的发布，两次发布流水线均为 success；活动版本均承载 100% 流量，`RELEASE_SHA=8b08a16`。
+- D1 的 `0001` 至 `0005` 迁移账本、receipt 和文件哈希仍匹配；health 与 OIDC discovery 均返回 200，version 和 issuer 对应各自环境。
+- 现场 OIDC 验收继续复用 2026-09-27 每环境 5 项发布冒烟和 8 项边界检查的结果；本次没有重新执行真实登录或 Hako 端到端验收。
+
+Hako 侧只接收并归档上述证据，没有重复访问远端资源。应用代码、测试、依赖及构建输入相对本地验证版无改动，继续复用[2026-09-26 的验证结果](../local-validation.md#2026-09-26-操作流程复测)；本次整理未重新运行应用检查或执行部署。

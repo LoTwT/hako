@@ -2,7 +2,7 @@
 
 ## 实施进度
 
-- [本地最小验证进展](./local-validation.md)：设计文档 PR #4 已合并；随后开始手填表单、Loro/IndexedDB 与离线资源验证，记录已执行检查和未完成范围。
+- [本地最小验证进展](./local-validation.md)：设计文档 PR #4 与本地验证版 PR #5 已合并；维护实际实现范围、验证结果、代码入口和本地运行方法，并指向下一步最小登录实现。
 
 ## 当前设计
 
@@ -10,7 +10,7 @@
 - [Hako 首版技术方案](./specs/architecture-proposal.md)：Vue PWA、Loro、IndexedDB 与 Cloudflare 同步/备份的整体建议；已开始本地验证，完整首版及云端接入尚未完成。
 - [架构补充调研与验证安排](./specs/architecture-validation-research.md)：长期登录、易捷截图与 Cloudflare Free 的官方资料核查、方案修订依据及验证顺序；本地运行进展由实施进度维护，云端与真机仍待验证。
 - [Hako 加油截图识别接入规格](./specs/ai-refueling-recognition.md)：单张截图、固定 DeepSeek、服务端调用的请求合同、候选字段、预填规则、限额、错误映射与验收；第一版评审稿，技术参数尚未确认或联调。
-- [Hako × eruoo/server 登录接入规格](./specs/eruoo-login-integration.md)：独立 Web 客户端登记、OIDC 合同、双方改动、PWA 登录返回、验收及发布回退要求；交接评审稿，尚未实施。
+- [Hako × eruoo/server 登录接入规格](./specs/eruoo-login-integration.md)：正式域名已确认，eruoo 客户端支持已在双环境上线；维护实际合同、Hako 最小登录切片、环境接线及发布回退边界，Hako 登录实现和线上联调仍待完成。
 - [加油统计工具算法对照](./specs/refueling-algorithm-research.md)：小熊油耗等工具的官方依据、公式算例与公开资料的边界；Hako 采用决定仍由重新设计记录维护。
 
 ## 历史 AI 方案

@@ -1,6 +1,8 @@
 # 本地最小验证进展
 
-更新：2026-09-26。设计文档已通过 [PR #4](https://github.com/LoTwT/hako/pull/4) 合入；随后在 `codex/local-first-validation` 开始本地验证版。本文件维护实现进度和运行证据，产品规则仍以[重新设计记录](./specs/redesign.md)为准。
+更新：2026-10-01。设计文档已通过 [PR #4](https://github.com/LoTwT/hako/pull/4) 合入；本地验证版已通过 [PR #5](https://github.com/LoTwT/hako/pull/5) 合入。本文件维护实现进度和运行证据，产品规则仍以[重新设计记录](./specs/redesign.md)为准。
+
+当前完成的是本地手填验证版。下一项工作是[Hako 最小登录实现](./specs/eruoo-login-integration.md#63-下一步-hako-最小实现范围)，再接正式服务验证完整登录与 iPhone PWA。eruoo 的客户端支持已上线，10 月 1 日接收的[服务端只读复核记录](./specs/eruoo-login-integration.md#2026-10-01-服务端只读复核)确认发布状态未变。
 
 ## 已实现的范围
 
@@ -51,7 +53,37 @@
 
 审查未修改应用代码，复用同日上节的 15 个自动化用例、类型检查、生产构建和浏览器操作结果。未保存草稿仅在页面内存中、重新编辑已保存记录时保留全部账单值，以及尚未接入登录和云端恢复，均作为本验证版的明确边界保留；本地验证数据不自动迁移为正式账号数据。
 
+## 2026-09-26 登录接入准备
+
+eruoo 的 Hako 客户端支持已合入并通过 CI；实现基线、双方合同及远端发布边界统一见[登录接入规格](./specs/eruoo-login-integration.md#2-当前实现与接入状态)。这完成了身份服务的源码前置，不代表 Hako 已有登录能力。
+
+当时确定的下一步是按[最小登录切片](./specs/eruoo-login-integration.md#63-下一步-hako-最小实现范围)实现 Hako Worker、OIDC 回调与本应用会话；本地实现可与 eruoo 发布准备并行，真实联调等待对应环境就绪。同步、备份与 AI 不作为该切片的前置。
+
+本次本地准备更新了文档并核对合同及引用。Hako 应用代码、依赖和构建输入未变，继续复用同日的测试、构建及浏览器证据，未重复运行应用检查或调用线上身份服务。
+
+## 2026-09-27 身份服务上线
+
+eruoo 任务已回传 staging 和 production 的发布与服务端验收结果，证据及未验证范围统一见[登录接入规格](./specs/eruoo-login-integration.md#2-当前实现与接入状态)。服务端发布前置已完成；下一步仍是实现 Hako 最小登录切片，再接正式服务验证完整登录与 iPhone PWA 行为。
+
+本次只更新文档；Hako 运行代码、依赖和构建输入未变，复用 2026-09-26 的本地验证证据，未重复运行应用检查或执行部署。
+
+## 代码入口
+
+| 位置 | 职责 |
+| --- | --- |
+| [App.vue](../src/App.vue)、[RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue) | 页面组合、新增和编辑流程、保存结果衔接。 |
+| [RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[form.ts](../src/domain/refueling/form.ts) | 录入、校验与核对确认；确定性表单规则、十进制计算和定点金额。 |
+| [refueling-document.ts](../src/data/refueling-document.ts) | Loro 文档读写、字段级变更与完整历史快照。 |
+| [local-refueling.ts](../src/data/local-refueling.ts) | Web Locks、最新快照读取、候选文档和 IndexedDB 严格事务。 |
+| [useLocalRefueling.ts](../src/composables/useLocalRefueling.ts) | 页面状态、保存结果、窗口通知与聚焦刷新。 |
+| [StorageStatus.vue](../src/components/refueling/StorageStatus.vue)、[vite.config.ts](../vite.config.ts) | 离线准备、持久存储申请、更新提示和预缓存范围。 |
+| [refueling-form.test.ts](../tests/refueling-form.test.ts)、[refueling-document.test.ts](../tests/refueling-document.test.ts) | 表单规则与 Loro 文档的自动化用例。 |
+
+`src-tauri/` 保留早期原生骨架，当前交付方向是浏览器和 PWA，原生分发不作为前置。
+
 ## 本地查看
+
+Node、pnpm 版本与运行命令以 [package.json](../package.json) 为准，依赖版本以[锁文件](../pnpm-lock.yaml)为准。
 
 ```sh
 pnpm install --frozen-lockfile
@@ -60,7 +92,7 @@ pnpm run build
 pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort
 ```
 
-打开 `http://localhost:4173`，先联网等待离线页面准备成功，再测试断网。开发用 `pnpm run dev`；Service Worker 验证应使用生产构建预览。
+打开 `http://localhost:4173`，先联网等待离线页面准备成功，再测试断网。开发用 `pnpm run dev`，当前端口为 `1420`；Service Worker 验证应使用生产构建预览。
 
 手工复核可先保存一条合成记录，再打开两个同源窗口编辑不同字段并依次或同时保存，刷新后检查两项都在。取消或离开未保存表单会提示；当前草稿仅保留在页面内存中，强制关闭或系统终止仍可能丢失未保存输入。
 
