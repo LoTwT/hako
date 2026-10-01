@@ -1,0 +1,4 @@
+# 本地开发合成登录配置示例。复制为 .dev.vars（已被 Git 忽略）后按需修改。
+# 合成 owner 主体仅用于本地联调，不代表真实身份；
+# 真实 owner 只通过生产部署的 Secret 输入，不写入本文件、前端或文档。
+HAKO_OWNER_SUBJECT=local-synthetic-owner-subject
