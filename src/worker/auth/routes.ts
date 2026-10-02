@@ -248,9 +248,9 @@ const CALLBACK_PAGES: Record<CallbackOutcome, { status: number; message: string 
 };
 
 /**
- * 回调收尾页面：只包含服务端生成的静态文本，不加载第三方资源、不回退首页，
- * 不包含 code/state/token 或任何凭据；no-store 与 Referrer-Policy:no-referrer
- * 由响应头保证。
+ * 回调收尾页面：只包含服务端生成的静态文本与固定同源“返回 Hako”入口，
+ * 不加载第三方资源、不回退首页，不包含 code/state/token 或任何凭据；
+ * no-store 与 Referrer-Policy:no-referrer 由响应头保证。
  */
 function callbackResponse(outcome: CallbackOutcome, setCookies: string[]): Response {
   const page = CALLBACK_PAGES[outcome];
@@ -265,6 +265,7 @@ function callbackResponse(outcome: CallbackOutcome, setCookies: string[]): Respo
     "</head>",
     "<body>",
     `<p data-hako-callback-status="${outcome}">${page.message}</p>`,
+    '<p><a href="/">返回 Hako</a></p>',
     "</body>",
     "</html>",
   ].join("");

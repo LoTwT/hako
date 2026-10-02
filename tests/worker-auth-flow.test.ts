@@ -497,7 +497,10 @@ describe("GET /api/auth/callback 失败路径", () => {
     expect(response.status).toBe(expectedStatus);
     const html = await response.text();
     expect(html).toContain(`data-hako-callback-status="${expectedMarker}"`);
-    expect(html).not.toMatch(/<script|src=|href=/);
+    // 只允许固定同源“返回 Hako”入口，不加载脚本或第三方资源
+    expect(html).toContain('<a href="/">返回 Hako</a>');
+    expect(html.match(/href=/g)).toHaveLength(1);
+    expect(html).not.toMatch(/<script|src=|url\(|@import/i);
     expect(findSetCookie(response, SESSION_COOKIE_NAME)).toBeNull();
     const after = testAccount.database
       .prepare("SELECT COUNT(*) AS count FROM sessions")
