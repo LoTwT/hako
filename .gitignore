@@ -11,6 +11,13 @@ node_modules
 dist
 dist-ssr
 *.local
+*.tsbuildinfo
+
+# Cloudflare / cf 本地产物与本地 Secret
+.cloudflare/
+.wrangler/
+.dev.vars*
+!.dev.vars.example
 
 # Editor directories and files
 .vscode/*

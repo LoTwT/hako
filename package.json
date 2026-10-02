@@ -4,11 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview",
+    "dev": "cf dev",
+    "build": "pnpm run typecheck && cf build --mode production",
+    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "tauri": "tauri",
-    "typecheck": "vue-tsc --noEmit",
+    "typecheck": "cf workers types && vue-tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run"
   },
   "dependencies": {
@@ -19,9 +19,12 @@
     "workbox-window": "7.4.1"
   },
   "devDependencies": {
+    "@cloudflare/build-output-utils": "0.8.2",
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-ad79608dd",
     "@tauri-apps/cli": "^2",
     "@types/node": "^24.13.6",
     "@vitejs/plugin-vue": "^6.0.9",
+    "cf": "1.0.0-beta.10",
     "typescript": "~5.9.3",
     "vite": "^8.3.0",
     "vite-plugin-pwa": "1.3.0",

@@ -27,5 +27,6 @@
     "src/**/*.vue",
     "tests/**/*.ts"
   ],
+  "exclude": ["src/worker"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
