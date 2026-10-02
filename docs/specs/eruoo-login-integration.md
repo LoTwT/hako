@@ -2,7 +2,7 @@
 
 日期：2026-09-16；更新：2026-10-01
 
-状态：正式域名已确认；eruoo/server 的客户端支持已在 staging 和 production 上线，Hako 登录实现与线上联调待完成。服务端交付状态与合同见第 2、5 节；Hako 会话参数和 PWA 后备交互仍按第 6 节的建议与验证边界处理。
+状态：正式域名已确认；eruoo/server 的客户端支持已在 staging 和 production 上线；Hako 登录后端已在本地实现（登录事务、OIDC code flow、本应用会话与退出），真实登录与线上联调待完成。服务端交付状态与合同见第 2、5 节；Hako 会话参数和 PWA 后备交互仍按第 6 节的建议与验证边界处理。
 
 ## 1. 目标与职责
 
@@ -38,8 +38,8 @@
 | --- | --- |
 | eruoo 客户端、身份读取与配套策略 | 已合入，核心协议满足本规格；服务端测试通过不等于 Hako 已接入。 |
 | eruoo 远端迁移与部署 | 2026-09-27 两个环境均已发布上述精确提交并通过服务端验收；每环境仅应用 `0005`，五份迁移的 ledger/receipt/hash 与发布源码匹配，Hako 登记策略一致。发布证据及来源见下表。 |
-| Hako Worker、OIDC 接入及本应用会话 | 尚未实现；下一步按第 6.3 节完成一个登录切片。 |
-| 固定 owner、域名及 Worker 间接线 | 正式域名已确认；eruoo 任务已分别核实 production/staging 的持久 owner 身份，身份对存于本地接线记录。实际绑定、ID token 对照及端点可达性仍待联调。 |
+| Hako Worker、OIDC 接入及本应用会话 | 本地已实现：同源 Worker（PR1）提供 `/api/auth/login`、`/api/auth/callback`、`/api/auth/session`、`/api/auth/logout`，使用 SQLite Durable Object 保存登录事务与会话，出站走普通公开 HTTPS；合成协议、失败路径与本地 workerd/DO 重启恢复已验证，见[本地验证进展](../local-validation.md#2026-10-02-pr2-oidc-登录事务do-会话与-eruoo-出站接线验证)。真实身份匹配与线上可达性待联调。 |
+| 固定 owner、域名及 Worker 间接线 | 正式域名已确认；eruoo 任务已分别核实 production/staging 的持久 owner 身份，身份对存于本地接线记录。实际绑定、ID token 对照及端点可达性仍待联调；Service Binding 目标未核实，暂不采用。 |
 | 真实浏览器/PWA 登录 | 尚未联调，iPhone 返回环境和会话保持不能由服务端合成测试代替。 |
 
 2026-09-27，eruoo 任务回传以下发布结果。两个环境均为新版本 100% 活动流量；每环境 5 项发布冒烟和 8 项现场 OIDC 边界检查通过，覆盖 discovery/JWKS、匿名管理拒绝、合法 Hako 授权进入登录、精确回调、拒绝 offline scope、要求 S256 和拒绝 refresh。已有 AI 数据量保持不变。
@@ -190,6 +190,8 @@ Hako 将取消、过期、配置错误与服务暂时不可用分别转成可读
 
 eruoo 发布已完成；Hako 先完成同源 Worker 的登录闭环，再接正式服务联调，不将同步、R2 备份、统计或 AI 识图作为登录前置。
 
+2026-10-02：本地已按第 4 节与本节完成认证入口、OIDC 登录事务与回调、本应用会话与退出（PR2），证据见[本地验证进展](../local-validation.md#2026-10-02-pr2-oidc-登录事务do-会话与-eruoo-出站接线验证)。页面衔接、草稿保护与本机数据（PR3）、真实登录和真机验证仍待完成。
+
 | 本地工作 | 完成条件 |
 | --- | --- |
 | Worker 与固定配置 | 提供第 6.2 节的认证入口；固定 origin、issuer、client 与 owner。缺少 owner 配置时不建立会话，不从首次访问认领账号。 |
@@ -300,3 +302,9 @@ eruoo/server 已作为一个完整功能变更合入，使用合成 Hako 调用�
 - 现场 OIDC 验收继续复用 2026-09-27 每环境 5 项发布冒烟和 8 项边界检查的结果；本次没有重新执行真实登录或 Hako 端到端验收。
 
 Hako 侧只接收并归档上述证据，没有重复访问远端资源。应用代码、测试、依赖及构建输入相对本地验证版无改动，继续复用[2026-09-26 的验证结果](../local-validation.md#2026-09-26-操作流程复测)；本次整理未重新运行应用检查或执行部署。
+
+### 2026-10-02 Hako 本地登录后端与公开发现只读核对
+
+- Hako 本地实现登录事务、OIDC code flow、SQLite Durable Object 会话与退出，并使用合成 owner 与受控 OIDC 响应完成协议、失败路径与本地 workerd/DO 重启恢复验证；实现范围、证据与未验证边界见[本地验证进展](../local-validation.md#2026-10-02-pr2-oidc-登录事务do-会话与-eruoo-出站接线验证)。本节只更新进度表述，不改动第 3、4、6 节的合同。
+- 只读核对 `GET https://auth.eruoo.me/.well-known/openid-configuration`（2026-10-02，返回 200）：`userinfo_endpoint` 存在、`code_challenge_methods_supported: [S256]`、`authorization_response_iss_parameter_supported: true`、`id_token_signing_alg_values_supported: [EdDSA, RS256]`、`subject_types_supported: [public]`，与本规格一致；未访问任何受保护资源或执行真实登录。
+- 出站采用普通公开 HTTPS 路径；同账号 Service Binding 的绑定目标未经核实，Hako 侧不猜测也不配置。

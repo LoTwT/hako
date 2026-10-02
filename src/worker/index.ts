@@ -4,11 +4,13 @@
 
 import { handleApiRequest, isApiPath } from "./api";
 
+export { HakoAccountDurableObject } from "./account-durable-object";
+
 export default {
   async fetch(request, env): Promise<Response> {
     const { pathname } = new URL(request.url);
     if (isApiPath(pathname)) {
-      return handleApiRequest(request);
+      return handleApiRequest(request, env);
     }
     return env.ASSETS.fetch(request);
   },
