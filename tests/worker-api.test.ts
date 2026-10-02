@@ -131,7 +131,10 @@ describe("认证端点的 API 边界", () => {
     expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     const body = await response.text();
     expect(body).toContain('data-hako-callback-status="invalid_login_transaction"');
-    expect(body).not.toMatch(/<script|src=|href=/);
+    // 结果页只允许一个固定同源返回入口，不加载脚本或第三方资源
+    expect(body).toContain('<a href="/">返回 Hako</a>');
+    expect(body.match(/href=/g)).toHaveLength(1);
+    expect(body).not.toMatch(/<script|src=|url\(|@import/i);
   });
 
   it("无 Cookie 的会话读取返回未认证", async () => {

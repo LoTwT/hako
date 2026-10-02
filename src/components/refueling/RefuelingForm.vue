@@ -7,19 +7,26 @@ import {
   validateDraft,
   type FormField,
   type NumberField,
+  type RefuelingDraft,
   type RefuelingRecord,
 } from "../../domain/refueling/form";
 
 const props = defineProps<{
   initial?: RefuelingRecord;
+  /** 恢复或延用的初始草稿；未提供时按初始记录（或空表单）生成。 */
+  initialDraft?: RefuelingDraft;
   busy: boolean;
+  /** 登录流程进行中：冻结输入，保证离页内容与已确认落盘的版本一致。 */
+  locked?: boolean;
   available: boolean;
 }>();
 const emit = defineEmits<{
   save: [record: RefuelingRecord];
   dirty: [value: boolean];
+  /** 每次编辑后的完整原始草稿，交由页面持久保存。 */
+  draft: [draft: RefuelingDraft];
 }>();
-const draft = shallowRef(createDraft(props.initial));
+const draft = shallowRef(props.initialDraft ?? createDraft(props.initial));
 const submitted = shallowRef(false);
 const confirmed = shallowRef(false);
 const validation = computed(() => validateDraft(draft.value));
@@ -36,10 +43,11 @@ function edit(field: FormField, event: Event) {
   );
   confirmed.value = false;
   emit("dirty", true);
+  emit("draft", draft.value);
 }
 function submit() {
   submitted.value = true;
-  if (props.busy || !props.available || !validation.value.record) return;
+  if (props.busy || props.locked || !props.available || !validation.value.record) return;
   if (validation.value.warnings.length && !confirmed.value) return;
   emit("save", validation.value.record);
 }
@@ -55,7 +63,7 @@ function submit() {
       <span class="muted">手动录入</span>
     </div>
     <form novalidate @submit.prevent="submit">
-      <fieldset :disabled="busy || !available" class="form-fields">
+      <fieldset :disabled="busy || locked || !available" class="form-fields">
         <label class="field wide"
           >加油日期时间（北京时间）
           <input
@@ -164,7 +172,7 @@ function submit() {
           ><input
             v-model="confirmed"
             type="checkbox"
-            :disabled="busy"
+            :disabled="busy || locked"
           />我已核对，按当前账单数据保存</label
         >
       </div>
@@ -178,7 +186,10 @@ function submit() {
       <button
         class="primary save-button"
         :disabled="
-          busy || !available || (!!validation.warnings.length && !confirmed)
+          busy ||
+          locked ||
+          !available ||
+          (!!validation.warnings.length && !confirmed)
         "
         type="submit"
       >
