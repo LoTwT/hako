@@ -236,16 +236,157 @@ function callbackOutcomeForFailure(reason: OidcLoginFailureReason): CallbackOutc
   }
 }
 
-const CALLBACK_PAGES: Record<CallbackOutcome, { status: number; message: string }> = {
-  completed: { status: 200, message: "登录已完成，可以返回 Hako 继续使用。" },
-  authorization_declined: { status: 400, message: "授权未完成或已取消，请返回 Hako 重新登录。" },
-  invalid_login_transaction: { status: 400, message: "登录请求已过期或无效，请返回 Hako 重新登录。" },
-  invalid_authorization_response: { status: 400, message: "登录响应校验未通过，请返回 Hako 重新登录。" },
-  identity_verification_failed: { status: 400, message: "登录身份校验未通过，请返回 Hako 重新登录。" },
-  owner_mismatch: { status: 403, message: "当前登录身份不是这台 Hako 的 owner。" },
-  identity_service_unavailable: { status: 503, message: "身份服务暂时不可用，请稍后返回 Hako 重试。" },
-  configuration_error: { status: 503, message: "Hako 登录配置无效，暂时无法登录。" },
+type CallbackTone = "success" | "notice" | "error";
+
+const CALLBACK_PAGES: Record<
+  CallbackOutcome,
+  { status: number; title: string; message: string; tone: CallbackTone }
+> = {
+  completed: {
+    status: 200,
+    title: "登录成功",
+    message: "登录已完成，可以返回 Hako 继续使用。",
+    tone: "success",
+  },
+  authorization_declined: {
+    status: 400,
+    title: "授权未完成",
+    message: "授权未完成或已取消，请返回 Hako 重新登录。",
+    tone: "notice",
+  },
+  invalid_login_transaction: {
+    status: 400,
+    title: "登录请求已失效",
+    message: "登录请求已过期或无效，请返回 Hako 重新登录。",
+    tone: "notice",
+  },
+  invalid_authorization_response: {
+    status: 400,
+    title: "无法完成登录",
+    message: "登录响应校验未通过，请返回 Hako 重新登录。",
+    tone: "error",
+  },
+  identity_verification_failed: {
+    status: 400,
+    title: "身份验证未通过",
+    message: "登录身份校验未通过，请返回 Hako 重新登录。",
+    tone: "error",
+  },
+  owner_mismatch: {
+    status: 403,
+    title: "无法使用此账号",
+    message: "当前账号没有此 Hako 的访问权限，请返回后使用已授权的账号登录。",
+    tone: "error",
+  },
+  identity_service_unavailable: {
+    status: 503,
+    title: "暂时无法登录",
+    message: "身份服务暂时不可用，请稍后返回 Hako 重试。",
+    tone: "notice",
+  },
+  configuration_error: {
+    status: 503,
+    title: "登录暂不可用",
+    message: "Hako 登录暂时无法完成，请稍后再试。",
+    tone: "error",
+  },
 };
+
+const CALLBACK_ICONS: Record<CallbackTone, string> = {
+  success: '<path d="m6 12 4 4 8-8"/>',
+  notice: '<path d="M12 7v6m0 4h.01"/>',
+  error: '<path d="m8 8 8 8m0-8-8 8"/>',
+};
+
+const CALLBACK_PAGE_STYLES = `
+  :root {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #253b34;
+    background: #f6f7f3;
+    color-scheme: light;
+    font-synthesis: none;
+    --accent: #356b51;
+    --muted: #69756e;
+    --line: #dde3da;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    min-height: 100svh;
+    display: grid;
+    place-items: center;
+    padding: 32px 20px;
+  }
+  .callback-card {
+    width: 100%;
+    max-width: 440px;
+    padding: 36px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 12px 36px rgb(37 59 52 / 5%);
+    --status-color: var(--accent);
+    --status-background: #edf4ed;
+  }
+  .brand {
+    margin-bottom: 32px;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -1px;
+  }
+  .brand span { color: var(--accent); }
+  .notice { --status-color: #815318; --status-background: #fff5e2; }
+  .error { --status-color: #9b3829; --status-background: #fcf0eb; }
+  .status-icon {
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    color: var(--status-color);
+    background: var(--status-background);
+  }
+  h1 {
+    margin: 20px 0 12px;
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .message {
+    margin: 0;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.8;
+    overflow-wrap: anywhere;
+  }
+  .callback-card a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+    margin-top: 28px;
+    padding: 12px 20px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.5;
+    text-align: center;
+    text-decoration: none;
+  }
+  .callback-card a:hover { background: #2c5944; }
+  .callback-card a:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 4px;
+  }
+  @media (max-width: 450px) {
+    body { padding: 24px 16px; }
+    .callback-card { padding: 28px 24px; }
+  }
+`;
 
 /**
  * 回调收尾页面：只包含服务端生成的静态文本与固定同源“返回 Hako”入口，
@@ -261,11 +402,20 @@ function callbackResponse(outcome: CallbackOutcome, setCookies: string[]): Respo
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     '<meta name="referrer" content="no-referrer">',
-    `<title>Hako 登录</title>`,
+    `<title>${page.title} · Hako</title>`,
+    `<style>${CALLBACK_PAGE_STYLES}</style>`,
     "</head>",
     "<body>",
-    `<p data-hako-callback-status="${outcome}">${page.message}</p>`,
-    '<p><a href="/">返回 Hako</a></p>',
+    `<main class="callback-card ${page.tone}" aria-labelledby="callback-title">`,
+    '<div class="brand">hako<span aria-hidden="true">.</span></div>',
+    '<div class="status-icon" aria-hidden="true">',
+    '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false">',
+    CALLBACK_ICONS[page.tone],
+    "</svg></div>",
+    `<h1 id="callback-title">${page.title}</h1>`,
+    `<p class="message" data-hako-callback-status="${outcome}">${page.message}</p>`,
+    '<a href="/">返回 Hako</a>',
+    "</main>",
     "</body>",
     "</html>",
   ].join("");

@@ -267,13 +267,13 @@ describe("AuthSessionClient", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("会话读取失败归为暂不可确认，不影响本地使用", async () => {
+  it("会话读取失败归为暂不可确认，提示本机数据已保留", async () => {
     const { fetch } = createFetchStub(() => {
       throw new TypeError("network down");
     });
     const client = new AuthSessionClient({ fetch });
     await client.refresh();
     expect(client.current.status).toBe("unavailable");
-    expect(client.current.message).toContain("本机记录与草稿不受影响");
+    expect(client.current.message).toContain("本机记录与草稿已保留");
   });
 });

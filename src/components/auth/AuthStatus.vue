@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import type { AuthSnapshot } from "../../domain/auth/session-client";
 
-defineProps<{
+const props = defineProps<{
   auth: AuthSnapshot;
   /** 登录被本机草稿保存阻止等本地提示。 */
   notice: string;
@@ -9,20 +10,22 @@ defineProps<{
   busy?: boolean;
 }>();
 const emit = defineEmits<{ login: []; logout: []; retry: [] }>();
+const statusLabel = computed(() => ({
+  checking: "确认中…",
+  anonymous: "未登录",
+  authenticated: "已登录",
+  unavailable: "状态暂不可用",
+})[props.auth.status]);
+const feedback = computed(() =>
+  props.notice || (props.auth.status === "unavailable" ? props.auth.message : ""),
+);
 </script>
 
 <template>
-  <section class="auth-panel" aria-labelledby="auth-title">
-    <div class="auth-main">
-      <p class="eyebrow" id="auth-title">ACCOUNT</p>
-      <p class="status-text" role="status" aria-live="polite">
-        <span class="status-dot" :class="auth.status"></span>{{ auth.message }}
-      </p>
-      <p v-if="notice" class="notice-line" role="status">{{ notice }}</p>
-      <p class="auth-note">
-        登录仅用于云端身份；现有本地验证数据不会自动关联或上传。
-      </p>
-    </div>
+  <section class="auth-panel" aria-label="账号状态">
+    <p class="status-text" role="status" aria-live="polite">
+      <span class="status-dot" :class="auth.status" aria-hidden="true"></span>{{ statusLabel }}
+    </p>
     <div class="auth-actions">
       <button
         v-if="auth.status === 'authenticated'"
@@ -45,13 +48,18 @@ const emit = defineEmits<{ login: []; logout: []; retry: [] }>();
         {{ busy || auth.loggingIn ? "正在准备登录…" : "登录 eruoo" }}
       </button>
       <button
-        class="text-button"
+        class="refresh-button"
+        aria-label="重新检查登录状态"
+        title="重新检查登录状态"
         :disabled="busy || auth.loggingIn || auth.loggingOut"
         @click="emit('retry')"
       >
-        重新检查登录状态
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 7v5h-5M4 17v-5h5M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9" />
+        </svg>
       </button>
     </div>
+    <p v-if="feedback" class="notice-line" role="status">{{ feedback }}</p>
   </section>
 </template>
 
@@ -59,26 +67,21 @@ const emit = defineEmits<{ login: []; logout: []; retry: [] }>();
 .auth-panel {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 20px;
+  gap: 4px 12px;
   align-items: center;
-  justify-content: space-between;
-  margin: 0 0 22px;
-  padding: 16px 18px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #fff;
-}
-.auth-main {
-  min-width: 260px;
-  flex: 1 1 420px;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 440px;
+  margin-left: auto;
 }
 .status-text {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  margin: 6px 0 4px;
-  font-size: 13px;
+  margin: 0;
+  font-size: 12px;
   line-height: 1.7;
+  white-space: nowrap;
 }
 .status-dot {
   width: 7px;
@@ -94,21 +97,34 @@ const emit = defineEmits<{ login: []; logout: []; retry: [] }>();
   background: #b7563a;
 }
 .notice-line {
-  margin: 0 0 4px;
+  flex-basis: 100%;
+  margin: 4px 0 0;
   font-size: 12px;
   color: var(--accent);
   line-height: 1.7;
-}
-.auth-note {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.7;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .auth-actions {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px 14px;
+  gap: 4px;
+}
+.auth-actions button {
+  min-height: 44px;
+  font-size: 13px;
+}
+.refresh-button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  padding: 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+}
+.refresh-button svg {
+  width: 20px;
+  height: 20px;
 }
 </style>

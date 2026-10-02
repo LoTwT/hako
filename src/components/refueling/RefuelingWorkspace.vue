@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, shallowRef, watch } from "vue";
-import { useRegisterSW } from "virtual:pwa-register/vue";
-import { useAuthSession } from "../../composables/useAuthSession";
 import { useLocalRefueling } from "../../composables/useLocalRefueling";
 import { useRefuelingDrafts } from "../../composables/useRefuelingDrafts";
 import type {
@@ -14,10 +12,14 @@ import {
   type RefuelingRecord,
   type SavedRefuelingRecord,
 } from "../../domain/refueling/form";
-import AuthStatus from "../auth/AuthStatus.vue";
 import RefuelingForm from "./RefuelingForm.vue";
 import RefuelingRecords from "./RefuelingRecords.vue";
 import StorageStatus from "./StorageStatus.vue";
+
+const props = defineProps<{
+  locked: boolean;
+  navigatingForLogin: boolean;
+}>();
 
 const {
   records,
@@ -30,12 +32,6 @@ const {
   initialize,
   requestPersistence,
 } = useLocalRefueling();
-const {
-  auth,
-  refresh: refreshAuth,
-  login: startLogin,
-  logout: endLogin,
-} = useAuthSession();
 const drafts = useRefuelingDrafts({
   knownRecords: () => new Map(records.value.map((record) => [record.id, record])),
 });
@@ -46,20 +42,6 @@ const formKey = shallowRef(0);
 const initialDraft = shallowRef<RefuelingDraft>();
 const dirty = shallowRef(false);
 const localNotice = shallowRef("");
-const registrationError = shallowRef("");
-/** 登录跳转期间不再弹离页确认：草稿已经确认落盘。 */
-const navigatingForLogin = shallowRef(false);
-/**
- * 登录流程阶段：preparing 期间冻结页面输入，navigating 表示正在顶层跳转。
- * 冻结保证离页内容与已确认落盘的版本一致，也避免并发发起两次登录。
- */
-const loginPhase = shallowRef<"idle" | "preparing" | "navigating">("idle");
-const loginInProgress = computed(() => loginPhase.value !== "idle");
-const { offlineReady, needRefresh } = useRegisterSW({
-  onRegisterError() {
-    registrationError.value = "离线资源准备失败；重新联网打开后再检查。";
-  },
-});
 
 const recovery = computed(() => drafts.drafts.value.recovery);
 const recoveryCandidates = computed(() =>
@@ -158,42 +140,21 @@ async function discardDraft(draft: StoredRefuelingDraft) {
   if (result === "failed") localNotice.value = drafts.drafts.value.writeError;
 }
 
-async function login() {
-  if (loginInProgress.value || auth.value.loggingIn || auth.value.loggingOut) return;
-  localNotice.value = "";
-  loginPhase.value = "preparing";
-  try {
-    // 先确认最新草稿已经写入本机，再允许顶层跳转
-    if (!(await confirmDraftSaved())) return;
-    const result = await startLogin();
-    if (!result.ok) return;
-    // 请求期间页面已冻结；跳转前再确认一次，保证离页版本就是已落盘版本
-    if (!(await confirmDraftSaved())) return;
-    loginPhase.value = "navigating";
-    navigatingForLogin.value = true;
-    window.location.assign(result.authorizationUrl);
-  } finally {
-    // 跳转成功时保持冻结，等待浏览器接管
-    if (loginPhase.value !== "navigating") loginPhase.value = "idle";
-  }
-}
-
-/** 等待草稿落盘；失败时给出可读提示并返回 false（由调用方取消跳转）。 */
-async function confirmDraftSaved(): Promise<boolean> {
-  if (await drafts.flush()) return true;
+/** 工作区隐藏时也由应用层调用；失败提示显示在当前可见的账号区。 */
+async function flushDraft(): Promise<{ ok: boolean; message: string }> {
+  if (await drafts.flush()) return { ok: true, message: "" };
   const draftsState = drafts.drafts.value;
-  localNotice.value =
-    draftsState.writeError ||
-    (draftsState.status === "loading"
-      ? "正在准备本机草稿，请稍后再试。"
-      : "草稿尚未保存到本机，已取消登录跳转。");
-  return false;
+  return {
+    ok: false,
+    message:
+      draftsState.writeError ||
+      (draftsState.status === "loading"
+        ? "正在准备本机草稿，请稍后再试。"
+        : "草稿尚未保存到本机，已取消登录跳转。"),
+  };
 }
 
-async function logout() {
-  localNotice.value = "";
-  await endLogin();
-}
+defineExpose({ flushDraft, saving });
 
 function draftTime(updatedAt: number): string {
   return new Date(updatedAt).toLocaleString("zh-CN", {
@@ -214,7 +175,7 @@ function draftSummary(draft: StoredRefuelingDraft): string {
 }
 
 const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
-  if (navigatingForLogin.value) return;
+  if (props.navigatingForLogin) return;
   if (dirty.value || saving.value) {
     event.preventDefault();
     event.returnValue = "";
@@ -247,32 +208,13 @@ onUnmounted(() =>
 </script>
 
 <template>
-  <main class="workspace">
-    <header class="page-header">
-      <a class="brand" href="/" aria-label="Hako 首页"
-        >hako<span class="brand-dot">.</span></a
-      ><span class="version-label">本地验证版</span>
-    </header>
-    <div class="page-heading">
-      <div>
-        <p class="eyebrow">ONE CAR, EVERY JOURNEY</p>
-        <h1>把每次加油，记清楚。</h1>
-        <p class="intro">
-          先验证本机保存、草稿恢复与多窗口编辑。请使用测试记录，云端同步和备份尚未接入。
-        </p>
-      </div>
-      <button v-if="selected" :disabled="saving || loginInProgress" @click="createNew">
+  <div class="refueling-workspace">
+    <p v-if="localNotice" class="local-notice" role="status">{{ localNotice }}</p>
+    <div v-if="selected" class="workspace-actions">
+      <button :disabled="saving || locked" @click="createNew">
         新增记录
       </button>
     </div>
-    <AuthStatus
-      :auth="auth"
-      :notice="localNotice"
-      :busy="loginInProgress"
-      @login="login"
-      @logout="logout"
-      @retry="refreshAuth"
-    />
     <div v-if="recoveryCandidates.length" class="warning" role="region" aria-label="未保存的草稿">
       <p>{{ recoveryNotice }}</p>
       <ul class="draft-list">
@@ -282,8 +224,8 @@ onUnmounted(() =>
             {{ draftTime(draft.updatedAt) }}</span
           >
           <span class="draft-summary">{{ draftSummary(draft) }}</span>
-          <button class="text-button" @click="restoreDraft(draft)">恢复</button>
-          <button class="text-button" @click="discardDraft(draft)">放弃</button>
+          <button class="text-button" :disabled="locked || saving" @click="restoreDraft(draft)">恢复</button>
+          <button class="text-button" :disabled="locked || saving" @click="discardDraft(draft)">放弃</button>
         </li>
       </ul>
     </div>
@@ -293,25 +235,20 @@ onUnmounted(() =>
     <p v-else-if="retainedDraftNotice" class="warning">
       {{ retainedDraftNotice }}
     </p>
-    <p v-if="registrationError" class="warning">{{ registrationError }}</p>
-    <p v-else-if="offlineReady" class="offline-label">离线页面已准备好</p>
-    <div v-if="needRefresh" class="warning">
-      新版本已就绪。请保存所有窗口中的输入，再关闭并重新打开 Hako。
-    </div>
     <div class="workspace-grid">
       <RefuelingForm
         :key="formKey"
         :initial="selected"
         :initial-draft="initialDraft"
         :busy="saving"
-        :locked="loginInProgress"
+        :locked="locked"
         :available="ready"
         @dirty="dirty = $event"
         @draft="onFormDraft"
         @save="submit"
       /><RefuelingRecords
         :records="records"
-        :busy="saving || loginInProgress"
+        :busy="saving || locked"
         @edit="edit"
       />
     </div>
@@ -323,54 +260,19 @@ onUnmounted(() =>
       @retry="initialize"
       @persist="requestPersistence"
     />
-  </main>
+  </div>
 </template>
 
 <style scoped>
-.workspace {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 30px 28px 40px;
-}
-.page-header {
+.workspace-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 28px;
-  border-bottom: 1px solid var(--line);
+  justify-content: flex-end;
+  margin-bottom: 16px;
 }
-.brand {
-  font-size: 30px;
-  font-weight: 750;
-  letter-spacing: -1.5px;
-  color: var(--ink);
-  text-decoration: none;
-}
-.brand-dot {
+.local-notice {
   color: var(--accent);
-}
-.version-label {
-  font-size: 12px;
-  color: var(--muted);
-}
-.page-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 20px;
-  margin: 42px 0 26px;
-}
-.page-heading h1 {
-  margin: 9px 0 12px;
-  font-size: clamp(25px, 4vw, 34px);
-  font-weight: 550;
-  letter-spacing: -0.8px;
-}
-.intro {
-  color: var(--muted);
   font-size: 13px;
-  line-height: 1.9;
-  max-width: 620px;
+  line-height: 1.8;
 }
 .workspace-grid {
   display: grid;
@@ -399,20 +301,9 @@ onUnmounted(() =>
   color: var(--muted);
   flex: 1 1 140px;
 }
-.offline-label {
-  color: var(--accent);
-  font-size: 12px;
-  margin-bottom: 16px;
-}
 @media (max-width: 760px) {
-  .workspace {
-    padding: 20px 16px;
-  }
   .workspace-grid {
     grid-template-columns: 1fr;
-  }
-  .page-heading {
-    margin-top: 30px;
   }
 }
 </style>

@@ -33,9 +33,9 @@ export interface AuthSessionClientOptions {
 
 const statusMessages: Record<AuthStatus, string> = {
   checking: "正在确认登录状态…",
-  anonymous: "未登录：本机记录与草稿仍可使用，云端同步尚未接入。",
+  anonymous: "尚未登录，请登录后继续。本机记录与草稿已保留。",
   authenticated: "已登录。登录不会自动关联或上传现有本地验证数据。",
-  unavailable: "暂时无法确认登录状态（离线或服务不可用）。本机记录与草稿不受影响。",
+  unavailable: "暂时无法确认登录状态（离线或服务不可用）。本机记录与草稿已保留。",
 };
 
 export class AuthSessionClient {
@@ -107,7 +107,7 @@ export class AuthSessionClient {
       if (!response.ok) {
         this.update({
           status: "unavailable",
-          message: "服务端暂时无法确认登录状态。本机记录与草稿不受影响。",
+          message: "服务端暂时无法确认登录状态。本机记录与草稿已保留。",
         });
         return;
       }
@@ -163,7 +163,7 @@ export class AuthSessionClient {
       this.update({
         loggingIn: false,
         status: "unavailable",
-        message: "发起登录失败：网络或服务不可用。本机记录与草稿不受影响。",
+        message: "发起登录失败：网络或服务不可用。本机记录与草稿已保留。",
       });
       return { ok: false, authorizationUrl: "", message: this.snapshot.message };
     }
