@@ -26,6 +26,8 @@ import type {
   RenewHakoSessionInput,
 } from "../../src/worker/auth/account-state";
 import { SESSION_RENEWAL_INTERVAL_MS, SESSION_TTL_MS } from "../../src/worker/auth/session-policy";
+import { AccountSync } from "../../src/worker/sync/account-sync";
+import type { SyncRefuelingInput, SyncRefuelingResult } from "../../src/worker/auth/account-rpc";
 
 class NodeSqliteCursor<T extends AccountStateRow> implements AccountStateSqlCursor<T> {
   constructor(private readonly rows: T[]) {}
@@ -43,7 +45,7 @@ class NodeSqliteSqlStorage implements AccountStateSqlStorage {
     ...bindings: AccountStateBinding[]
   ): AccountStateSqlCursor<T> {
     const statement = this.database.prepare(query);
-    const rows = statement.all(...(bindings as Array<string | number | null | Uint8Array>)) as T[];
+    const rows = statement.all(...bindings.map((value) => value instanceof ArrayBuffer ? new Uint8Array(value) : value)) as T[];
     return new NodeSqliteCursor(rows);
   }
 }
@@ -78,13 +80,22 @@ export interface TestAccount {
 /** 打开 SQLite 上的账号状态，并保留数据库句柄用于直接检查存储内容或模拟重启。 */
 export function createTestAccount(path = ":memory:"): TestAccount {
   const database = new DatabaseSync(path);
-  const state = new HakoAccountState(new NodeSqliteAccountStorage(database));
-  return { account: new TestHakoAccount(state), state, database };
+  const storage = new NodeSqliteAccountStorage(database);
+  const state = new HakoAccountState(storage);
+  return { account: new TestHakoAccount(state, new AccountSync(storage, state)), state, database };
 }
 
 /** 按 HakoAccountStub 合同包装真实状态逻辑；路由测试通过它访问 SQLite。 */
 export class TestHakoAccount implements HakoAccountStub {
-  constructor(readonly state: HakoAccountState) {}
+  constructor(readonly state: HakoAccountState, readonly sync: AccountSync) {}
+
+  async readAccountId(input: ReadHakoSessionInput): Promise<string | null> {
+    return this.sync.readAccountId(input);
+  }
+
+  async syncRefueling(input: SyncRefuelingInput): Promise<SyncRefuelingResult> {
+    return this.sync.exchange(input);
+  }
 
   async createLoginTransaction(input: LoginTransactionInput): Promise<void> {
     this.state.createLoginTransaction(input);

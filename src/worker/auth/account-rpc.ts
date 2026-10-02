@@ -30,6 +30,15 @@ export interface RenewHakoSessionInput {
   nowMs: number;
 }
 
+export interface SyncRefuelingInput extends ReadHakoSessionInput {
+  expectedAccountId: string;
+  snapshot: Uint8Array;
+}
+
+export type SyncRefuelingResult =
+  | { ok: false; error: "unauthorized" | "account_changed" | "invalid_document" | "document_too_large" }
+  | { ok: true; accountId: string; snapshot: Uint8Array };
+
 export interface HakoAccountStub {
   createLoginTransaction(input: LoginTransactionInput): Promise<void>;
   consumeLoginTransaction(
@@ -38,6 +47,8 @@ export interface HakoAccountStub {
   finalizeLoginTransaction(input: FinalizeLoginTransactionInput): Promise<boolean>;
   revokeEnvironmentTransactions(environmentId: string): Promise<void>;
   readSession(input: ReadHakoSessionInput): Promise<HakoSessionRecord | null>;
+  readAccountId(input: ReadHakoSessionInput): Promise<string | null>;
+  syncRefueling(input: SyncRefuelingInput): Promise<SyncRefuelingResult>;
   renewSessionIfDue(input: RenewHakoSessionInput): Promise<RenewedHakoSession | null>;
   revokeSession(input: RevokeHakoSessionInput): Promise<void>;
 }

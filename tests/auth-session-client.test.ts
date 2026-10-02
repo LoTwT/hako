@@ -30,9 +30,27 @@ function createFetchStub(
 }
 
 describe("AuthSessionClient", () => {
+  it("账号标识缺失或非法时不放行；退出清除当前标识", async () => {
+    let body: unknown = { authenticated: true };
+    const { fetch } = createFetchStub((call) => call.url.endsWith("logout")
+      ? jsonResponse({ authenticated: false }) : jsonResponse(body));
+    const client = new AuthSessionClient({ fetch });
+    await client.refresh();
+    expect(client.current.status).toBe("unavailable");
+    expect(client.current.accountId).toBeNull();
+    body = { authenticated: true, accountId: "raw-subject" };
+    await client.refresh();
+    expect(client.current.status).toBe("unavailable");
+    body = { authenticated: true, accountId: "00000000-0000-4000-8000-000000000001" };
+    await client.refresh();
+    expect(client.current.accountId).toBe("00000000-0000-4000-8000-000000000001");
+    await client.logout();
+    expect(client.current.accountId).toBeNull();
+  });
+
   it("以 session 响应决定登录状态", async () => {
     let authenticated = false;
-    const { fetch } = createFetchStub(() => jsonResponse({ authenticated }));
+    const { fetch } = createFetchStub(() => jsonResponse({ authenticated, accountId: "00000000-0000-4000-8000-000000000001" }));
     const client = new AuthSessionClient({ fetch });
 
     await client.refresh();
@@ -67,7 +85,7 @@ describe("AuthSessionClient", () => {
     expect(client.current.status).toBe("anonymous");
 
     // 迟到的会话响应（仍是登录中）不得把状态改回已登录
-    releaseSession(jsonResponse({ authenticated: true }));
+    releaseSession(jsonResponse({ authenticated: true, accountId: "00000000-0000-4000-8000-000000000001" }));
     await refresh;
     expect(client.current.status).toBe("anonymous");
   });
@@ -105,7 +123,7 @@ describe("AuthSessionClient", () => {
     });
     const { fetch } = createFetchStub((call) => {
       if (call.url.endsWith("/api/auth/logout")) return logoutPending;
-      return jsonResponse({ authenticated: true });
+      return jsonResponse({ authenticated: true, accountId: "00000000-0000-4000-8000-000000000001" });
     });
     const client = new AuthSessionClient({ fetch });
 
@@ -164,7 +182,7 @@ describe("AuthSessionClient", () => {
     await logout;
     expect(client.current.status).toBe("anonymous");
 
-    releaseRefresh(jsonResponse({ authenticated: true }));
+    releaseRefresh(jsonResponse({ authenticated: true, accountId: "00000000-0000-4000-8000-000000000001" }));
     await refresh;
     expect(client.current.status).toBe("anonymous");
     expect(client.current.message).toContain("已退出");
@@ -183,7 +201,7 @@ describe("AuthSessionClient", () => {
       ok: true,
       json: async () => {
         await bodyGate;
-        return { authenticated: true };
+        return { authenticated: true, accountId: "00000000-0000-4000-8000-000000000001" };
       },
     } as unknown as Response;
     const { fetch } = createFetchStub((call) =>
@@ -242,7 +260,7 @@ describe("AuthSessionClient", () => {
     const { fetch } = createFetchStub((call) =>
       call.url.endsWith("/api/auth/logout")
         ? jsonResponse({ error: "server_error" }, 500)
-        : jsonResponse({ authenticated: true }),
+        : jsonResponse({ authenticated: true, accountId: "00000000-0000-4000-8000-000000000001" }),
     );
     const client = new AuthSessionClient({ fetch });
     await client.refresh();
@@ -253,7 +271,7 @@ describe("AuthSessionClient", () => {
   });
 
   it("离线时区分“暂不可确认”，不发起登录或假装退出", async () => {
-    const { fetch, calls } = createFetchStub(() => jsonResponse({ authenticated: true }));
+    const { fetch, calls } = createFetchStub(() => jsonResponse({ authenticated: true, accountId: "00000000-0000-4000-8000-000000000001" }));
     const client = new AuthSessionClient({ fetch, isOnline: () => false });
 
     await client.refresh();

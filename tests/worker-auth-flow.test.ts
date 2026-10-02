@@ -5,7 +5,9 @@
 // UserInfo 不一致或不可用、重复参数、回调重放、缺或错误事务 Cookie、转发到其他环境、
 // 取消、事务过期与并发完成。
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { LoroDoc } from "loro-crdt/web";
+import { initializeTestLoro } from "./helpers/sync-fixtures";
 import { handleApiRequest } from "../src/worker/api";
 import type { AuthEnvironment, AuthHandlerDependencies } from "../src/worker/auth/routes";
 import { createTestAccount } from "./helpers/account-state-sqlite";
@@ -28,6 +30,7 @@ let provider: OidcMockProvider;
 let testAccount: TestAccount;
 let nowMs: number;
 
+beforeAll(initializeTestLoro);
 beforeEach(async () => {
   provider = new OidcMockProvider(OWNER_SUBJECT);
   await provider.start();
@@ -307,8 +310,8 @@ describe("GET /api/auth/callback 正常路径", () => {
     expect(sessionSetCookie).toContain("HttpOnly");
     expect(sessionSetCookie).toContain("SameSite=Lax");
     expect(sessionSetCookie).not.toContain("Domain");
-    // 180 天 = 15552000 秒
-    expect(sessionSetCookie).toContain("Max-Age=15552000");
+    // Cookie 一次保留到 365 天绝对上限；180 天有效期仍由服务端执行。
+    expect(sessionSetCookie).toContain("Max-Age=31536000");
     // 事务 Cookie 被清除
     const clearedLogin = findSetCookie(response, LOGIN_COOKIE_NAME);
     expect(clearedLogin).toContain("Max-Age=0");
@@ -344,7 +347,7 @@ describe("GET /api/auth/callback 正常路径", () => {
 
     const sessionResponse = await readSession(sessionCookie);
     expect(sessionResponse.status).toBe(200);
-    expect(await sessionResponse.json()).toEqual({ authenticated: true });
+    expect(await sessionResponse.json()).toEqual({ authenticated: true, accountId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
     expect(sessionResponse.headers.get("Cache-Control")).toBe("no-store");
 
     // GET 状态读取不续期
@@ -361,6 +364,42 @@ describe("GET /api/auth/callback 正常路径", () => {
     expect(response.status).toBe(200);
   });
 
+  it("新登录 Cookie 不依赖续期响应交付，丢失与重试后仍跨过原有效期；服务端过期仍拒绝", async () => {
+    const { authorizationUrl, loginCookie } = await startLogin();
+    const { response } = await completeLogin({ authorizationUrl, loginCookie });
+    const setCookie = findSetCookie(response, SESSION_COOKIE_NAME)!;
+    const sessionCookie = cookiePair(setCookie);
+    const cookieExpiresAt = CLOCK_START_MS + Number(/Max-Age=(\d+)/.exec(setCookie)![1]) * 1000;
+    const originalExpiry = CLOCK_START_MS + 180 * 86400000;
+    nowMs = originalExpiry - 3600000;
+    const sessionBody = await (await readSession(sessionCookie)).json() as { accountId: string };
+    const doc = new LoroDoc();
+    const snapshot = doc.export({ mode: "snapshot" }); doc.free();
+    const synchronize = () => handleApiRequest(new Request(`${MOCK_WEB_ORIGIN}/api/sync/refueling`, {
+      method: "POST", headers: { Origin: MOCK_WEB_ORIGIN, Cookie: sessionCookie,
+        "Content-Type": "application/octet-stream", "X-Hako-Sync-Protocol": "1", "X-Hako-Account": sessionBody.accountId },
+      body: new Uint8Array(snapshot),
+    }), environment(), dependencies());
+    // 模拟首个成功响应在到达浏览器之前丢失，浏览器 Cookie 仍是登录时的值及期限。
+    const dropped = await synchronize();
+    expect(dropped.status).toBe(200);
+    const extended = testAccount.database.prepare("SELECT expires_at FROM sessions").get() as { expires_at: number };
+    expect(extended.expires_at).toBe(nowMs + 180 * 86400000);
+    nowMs += 2000;
+    const retried = await synchronize();
+    expect(retried.status).toBe(200);
+    expect(cookieExpiresAt).toBeGreaterThan(extended.expires_at);
+    expect(findSetCookie(dropped, SESSION_COOKIE_NAME)).toBeNull();
+    expect(findSetCookie(retried, SESSION_COOKIE_NAME)).toBeNull();
+    nowMs = originalExpiry + 1;
+    expect((await (await readSession(sessionCookie)).json() as { authenticated: boolean }).authenticated).toBe(true);
+    nowMs = extended.expires_at;
+    expect(cookieExpiresAt).toBeGreaterThan(nowMs);
+    const expired = await readSession(sessionCookie);
+    expect(await expired.json()).toEqual({ authenticated: false });
+    expect(findSetCookie(expired, SESSION_COOKIE_NAME)).toBeNull();
+  });
+
   it("退出使当前会话失效并清除 Cookie，不再返回 authenticated", async () => {
     const { authorizationUrl, loginCookie } = await startLogin();
     const { response } = await completeLogin({ authorizationUrl, loginCookie });
@@ -373,7 +412,7 @@ describe("GET /api/auth/callback 正常路径", () => {
 
     const after = await readSession(sessionCookie);
     expect(await after.json()).toEqual({ authenticated: false });
-    expect(findSetCookie(after, SESSION_COOKIE_NAME)).toContain("Max-Age=0");
+    expect(findSetCookie(after, SESSION_COOKIE_NAME)).toBeNull();
     expect(await readSession(null).then((r) => r.json())).toEqual({ authenticated: false });
   });
 
@@ -454,7 +493,7 @@ describe("GET /api/auth/callback 正常路径", () => {
     );
     expect(read.status).toBe(200);
     expect(await read.json()).toEqual({ authenticated: false });
-    expect(findSetCookie(read, SESSION_COOKIE_NAME)).toContain("Max-Age=0");
+    expect(findSetCookie(read, SESSION_COOKIE_NAME)).toBeNull();
   });
 
   it("缺少 owner 配置时带会话 Cookie 的状态读取返回配置错误", async () => {

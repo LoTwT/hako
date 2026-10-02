@@ -18,7 +18,7 @@ export function draftClaimName(draftId: string): string {
 }
 
 /** sessionStorage 包装；不可用时退回进程内内存，页面仍能工作但失去重载线索。 */
-export function createSessionLocatorStorage(): DraftLocatorStorage {
+export function createSessionLocatorStorage(scope = ""): DraftLocatorStorage {
   const memory = new Map<string, string>();
   let storage: Storage | null = null;
   try {
@@ -39,21 +39,21 @@ export function createSessionLocatorStorage(): DraftLocatorStorage {
   return {
     get(key) {
       try {
-        return session.getItem(key);
+        return session.getItem(scope + key);
       } catch {
         return fallback.get(key);
       }
     },
     set(key, value) {
       try {
-        session.setItem(key, value);
+        session.setItem(scope + key, value);
       } catch {
         fallback.set(key, value);
       }
     },
     remove(key) {
       try {
-        session.removeItem(key);
+        session.removeItem(scope + key);
       } catch {
         fallback.remove(key);
       }
@@ -83,7 +83,7 @@ export interface DraftPageClaim {
 }
 
 /** 基于 Web Locks 的页面占用：页面关闭或崩溃时浏览器自动释放。 */
-export function createWebLocksPageClaim(locks: LockManager = navigator.locks): DraftPageClaim {
+export function createWebLocksPageClaim(locks: LockManager = navigator.locks, scope = ""): DraftPageClaim {
   const held = new Map<string, () => void>();
   return {
     async isHeldByAnotherPage(draftId) {
@@ -98,7 +98,7 @@ export function createWebLocksPageClaim(locks: LockManager = navigator.locks): D
           resolve(value);
         };
         void locks
-          .request(draftClaimName(draftId), { ifAvailable: true }, (lock) => {
+          .request(scope + draftClaimName(draftId), { ifAvailable: true }, (lock) => {
             finish(lock === null);
           })
           .catch(() => {
@@ -112,7 +112,7 @@ export function createWebLocksPageClaim(locks: LockManager = navigator.locks): D
       return await new Promise<boolean>((resolve) => {
         let settled = false;
         void locks
-          .request(draftClaimName(draftId), { ifAvailable: true }, async (lock) => {
+          .request(scope + draftClaimName(draftId), { ifAvailable: true }, async (lock) => {
             if (lock === null) {
               settled = true;
               resolve(false);

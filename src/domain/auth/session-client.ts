@@ -2,10 +2,12 @@
 // 事实来源。只读刷新与登录/退出命令分开排序：刷新不会取消在途命令（否则
 // 命令的 busy 状态会永远不复位），命令也不会被更早的刷新响应覆盖；页面
 // 可见性/上线触发的刷新只更新展示状态。没有轮询或保活。
+import { isAccountId } from "../../shared/sync-protocol";
 
 export type AuthStatus = "checking" | "anonymous" | "authenticated" | "unavailable";
 
 export interface AuthSnapshot {
+  accountId: string | null;
   status: AuthStatus;
   message: string;
   /** 登录跳转请求正在进行（按钮与输入据此禁用）。 */
@@ -44,6 +46,7 @@ export class AuthSessionClient {
   /** 刷新序号：每次只读刷新递增，用于丢弃过期的刷新响应。 */
   private refreshSequence = 0;
   private snapshot: AuthSnapshot = {
+    accountId: null,
     status: "checking",
     message: statusMessages.checking,
     loggingIn: false,
@@ -58,6 +61,7 @@ export class AuthSessionClient {
   }
 
   private update(partial: Partial<AuthSnapshot>): void {
+    if (partial.status && partial.status !== "authenticated") partial.accountId = null;
     this.snapshot = { ...this.snapshot, ...partial };
     this.options.onChange?.(this.snapshot);
   }
@@ -111,17 +115,30 @@ export class AuthSessionClient {
         });
         return;
       }
-      const body = (await response.json()) as { authenticated?: unknown };
+      const body = (await response.json()) as { authenticated?: unknown; accountId?: unknown };
       if (!applies()) return;
+      if (body.authenticated === true && !isAccountId(body.accountId)) {
+        this.update({ status: "unavailable", message: "账号存储信息不可用，请更新页面后重新检查。" });
+        return;
+      }
       const authenticated = body.authenticated === true;
       this.update({
         status: authenticated ? "authenticated" : "anonymous",
+        accountId: authenticated && isAccountId(body.accountId) ? body.accountId : null,
         message: authenticated ? statusMessages.authenticated : statusMessages.anonymous,
       });
     } catch {
       if (!applies()) return;
       this.update({ status: "unavailable", message: statusMessages.unavailable });
     }
+  }
+
+  /** 同步端点拒绝会话时立即关闭门禁，旧状态读取不得重新放行。 */
+  async recheckRejectedSession(): Promise<void> {
+    this.refreshSequence += 1;
+    this.update({ status: "checking", message: statusMessages.checking });
+    await this.refreshInFlight;
+    await this.refresh();
   }
 
   /** 发起登录并返回授权地址；调用方在草稿落盘后做顶层跳转。 */

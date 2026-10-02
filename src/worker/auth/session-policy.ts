@@ -15,7 +15,8 @@ export const SESSION_RENEWAL_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** 自本次 OIDC 登录创建会话起的绝对有效期（规格建议 365 天）。 */
 export const SESSION_ABSOLUTE_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 
-/** 会话 Cookie：Secure、HttpOnly、SameSite=Lax、Path=/，不设置 Domain。
+/** 会话 Cookie 在登录时一次保留到绝对上限；有效性仍由服务端 180 天期限和撤销判定。
+ * Secure、HttpOnly、SameSite=Lax、Path=/，不设置 Domain。
  * `__Host-` 前缀在浏览器侧强制同样的属性并避免同域其他主机写同名 Cookie。 */
 export const SESSION_COOKIE_NAME = "__Host-hako_session";
 

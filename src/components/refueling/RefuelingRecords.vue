@@ -27,7 +27,6 @@ const warnings = computed(() => recordWarnings([...props.records]));
       <div class="empty-mark">↗</div>
       <h3>从一次加油开始</h3>
       <p>填好表单，保存后会出现在这里。</p>
-      <p>此版本请使用测试数据。</p>
     </div>
     <ul v-else class="records">
       <li v-for="record of records" :key="record.id" class="record">

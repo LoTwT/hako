@@ -4,12 +4,12 @@
 import "fake-indexeddb/auto";
 import { deleteDB } from "idb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { refuelingDraftDatabaseName } from "../src/data/refueling-draft-store";
+import { accountStorageNames } from "../src/data/account-storage";
 import { useRefuelingDrafts } from "../src/composables/useRefuelingDrafts";
 import { createDraft, updateDraft } from "../src/domain/refueling/form";
 
 function createDrafts() {
-  return useRefuelingDrafts({ knownRecords: () => new Map() });
+  return useRefuelingDrafts({ accountId: "00000000-0000-4000-8000-000000000001", knownRecords: () => new Map() });
 }
 
 beforeEach(() => {
@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await deleteDB(refuelingDraftDatabaseName);
+  await deleteDB(accountStorageNames("00000000-0000-4000-8000-000000000001").drafts);
   vi.restoreAllMocks();
 });
 
