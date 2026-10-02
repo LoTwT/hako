@@ -1,22 +1,24 @@
 # 本地最小验证进展
 
-更新：2026-10-02。设计文档已通过 [PR #4](https://github.com/LoTwT/hako/pull/4) 合入；本地验证版已通过 [PR #5](https://github.com/LoTwT/hako/pull/5) 合入。2026-10-01 完成 PR1：同源 Hako Worker 与运行配置（cf CLI + Cloudflare Vite 插件 beta），验证记录见[PR1 验证](#2026-10-01-pr1-同源-worker-与运行配置验证)。2026-10-02 完成 PR2：完整 OIDC 登录事务、SQLite Durable Object 会话与 eruoo 出站接线，见[PR2 验证](#2026-10-02-pr2-oidc-登录事务do-会话与-eruoo-出站接线验证)。同日完成 PR3（本地工作区，未提交）：登录 UI、草稿保护与返回恢复，见[PR3 验证](#2026-10-02-pr3-登录-ui草稿保护与返回恢复验证)。本文件维护实现进度和运行证据，产品规则仍以[重新设计记录](./specs/redesign.md)为准。
+更新：2026-10-02。设计文档已通过 [PR #4](https://github.com/LoTwT/hako/pull/4) 合入；本地验证版已通过 [PR #5](https://github.com/LoTwT/hako/pull/5) 合入。PR1 [#7](https://github.com/LoTwT/hako/pull/7) 已合入：同源 Hako Worker 与运行配置（cf CLI + Cloudflare Vite 插件 beta），验证记录见[PR1 验证](#2026-10-01-pr1-同源-worker-与运行配置验证)。PR2 [#8](https://github.com/LoTwT/hako/pull/8) 已合入：完整 OIDC 登录事务、SQLite Durable Object 会话与 eruoo 出站接线，见[PR2 验证](#2026-10-02-pr2-oidc-登录事务do-会话与-eruoo-出站接线验证)。PR3 [#9](https://github.com/LoTwT/hako/pull/9) 已合入：登录 UI、草稿保护与返回恢复，见[PR3 验证](#2026-10-02-pr3-登录-ui草稿保护与返回恢复验证)。精确发布候选及当前平台状态由[首次登录发布单](./releases/2026-10-02-login.md)维护。本文件维护实现进度和运行证据，产品规则仍以[重新设计记录](./specs/redesign.md)为准。
 
-当前状态：本地手填验证版加同源 Worker，`/api` 命名空间由 Worker 承载；登录后端（发起、回调、会话读取、退出）与登录页面、草稿保护/返回恢复（PR3，本地工作区）已按[登录接入规格](./specs/eruoo-login-integration.md)实现并本地验证，真实 eruoo 登录、部署与 iPhone 真机仍未完成。eruoo 的客户端支持已上线，10 月 1 日接收的[服务端只读复核记录](./specs/eruoo-login-integration.md#2026-10-01-服务端只读复核)确认发布状态未变。
+当前状态：本地手填验证版加同源 Worker，`/api` 命名空间由 Worker 承载；登录后端（发起、回调、会话读取、退出）与登录页面、草稿保护/返回恢复已按[登录接入规格](./specs/eruoo-login-integration.md)实现、合入并完成首次 production 部署。线上匿名检查、真实登录事务和受控失败路径已通过，真实登录成功已有用户报告和 completed 回调截图；退出/重登、返回草稿恢复及 iPhone 真机尚无分项回报。实际平台状态、证据边界与操作入口见[首次登录发布单](./releases/2026-10-02-login.md)。
+
+后续回调样式、功能首页与用户最新要求的[登录门禁](./specs/redesign.md#功能首页与页面切换)已完成本地修订和针对性验证；用户现已授权审阅、提交及发布，结果入口见[后续 UI 发布记录](./releases/2026-10-02-ui.md)。下文保留各阶段当时的验证和权限快照。
 
 ## 已实现的范围
 
 - 一页手填表单与记录列表：新增、编辑、是否加满、可选油灯及账单补充字段；金额联动、人工修正保护、精度与必填校验、金额差异确认和里程异常提示。
 - Loro 字段级 Map 与完整历史快照；同源窗口使用 Web Locks 串行读取最新快照并写入字段变更。IndexedDB 快照、版本向量和待同步标记在同一严格持久性事务中保存，事务完成后才显示成功。
 - 写入失败保留当前输入，不把失败修改留在可继续保存的共享文档中；重试复用记录 ID。BroadcastChannel 通知其他窗口重新读取，重新聚焦时也会读取最新版本。
-- PWA 静态资源预缓存包含 Loro Wasm，可在首次准备成功后离线重开。提供持久存储申请和更新提示；新版本等待旧窗口全部关闭，不从某个窗口强制刷新其他窗口的未保存表单。
-- 同源 Hako Worker（PR1，原生 `fetch`，无 Web 框架）：`/api` 与 `/api/*`（含页面导航请求）一律进入 Worker；`GET`/`HEAD /api/health` 返回简单健康状态，未支持方法返回 405 与 `Allow`，未知 API 返回 JSON 404，API 响应统一 `Cache-Control: no-store`；`/api/auth/callback` 得到 API 404 而非首页。非 API 请求由静态资产承载，SPA 回退仅作用于未命中资产的非 API 路径。
+- PWA 静态资源预缓存包含 Loro Wasm，可在首次准备成功后离线重开页面外壳；待审 UI 的功能访问遵守[当前登录门禁](./specs/redesign.md#功能首页与页面切换)。提供持久存储申请和更新提示；新版本等待旧窗口全部关闭，不从某个窗口强制刷新其他窗口的未保存表单。
+- 同源 Hako Worker（PR1，原生 `fetch`，无 Web 框架）：`/api` 与 `/api/*`（含页面导航请求）一律进入 Worker；`GET`/`HEAD /api/health` 返回简单健康状态，未支持方法返回 405 与 `Allow`，未知 API 返回 JSON 404，API 响应统一 `Cache-Control: no-store`。认证回调由下述 PR2 路由处理，不回退首页。非 API 请求由静态资产承载，SPA 回退仅作用于未命中资产的非 API 路径。
 - [cloudflare.config.ts](../cloudflare.config.ts) 是唯一 Cloudflare 配置入口（PR1）：单个 `hako` Worker、正式域名 `hako.eruoo.me`（关闭 workers.dev）、兼容日期 2026-10-01、`assets.runWorkerFirst` 固定 `/api` 与 `/api/*`、observability 开启日志与 traces 并对 query 脱敏。工具链采用 cf CLI（`cf@1.0.0-beta.10`）与 `@cloudflare/vite-plugin@2.0.0-beta.sha-ad79608dd` beta 组合。
 - 登录配置合同（PR1）：固定 origin、issuer、client、resource 以 `HAKO_LOGIN` JSON 绑定声明；owner 主体由 `HAKO_OWNER_SUBJECT` 后端 Secret 输入。Worker 在读取登录配置时执行校验（HTTPS origin 形态、拒绝本地/内网地址、非空 owner），回调由固定配置组装为 `${origin}/api/auth/callback`，不从请求 Host/Origin 推导。缺少 owner 无法取得有效登录配置，但类型生成、构建、健康检查与静态页面不依赖真实 owner；真实 owner 不进入前端、日志、公共配置或文档。
 - 登录后端（PR2）：`POST /api/auth/login`、`GET /api/auth/callback`、`GET /api/auth/session`、`POST /api/auth/logout`。登录事务短期（10 分钟）、绑定发起浏览器环境（`__Host-hako_login`），回调到达时原子消费、OIDC 兑换完成后在同一 SQLite 事务里删除事务并插入会话；退出或同环境重新发起会删除事务，因此在途登录不会建立会话。回调使用 oauth4webapi 完成 state/iss 校验、PKCE S256 兑换、ID token 签名与 claims（nonce/aud/azp/期限/at_hash）验证、UserInfo `sub` 核对与固定 owner 比对；成功后才建立 Hako 自己的会话（`__Host-hako_session`，仅保存凭据哈希）。会话在服务端绑定固定 issuer 与 owner `sub`，状态读取与续期都要求身份匹配（缺少有效登录配置时带 Cookie 的读取返回配置错误）。凭证不进入响应体、日志或缓存；回调收尾返回最小静态 HTML（no-store、`Referrer-Policy: no-referrer`、不加载第三方资源），不回退首页。
 - 账号级 SQLite Durable Object（PR2）：登录事务与会话状态在 `cloudflare.config.ts` 声明的 `HakoAccountDurableObject` 中原子处理（消费、过期、撤销、续期）；续期能力（24 小时间隔、180 天有效期、365 天绝对上限）已在 DO 内实现并由测试覆盖，但本 PR 没有会触发它的前台同步端点，不新造保活接口。
 - 出站接线（PR2）：discovery、JWKS、token 与 UserInfo 使用普通公开 HTTPS，出站只允许固定 issuer origin 与既定端点路径；未采用 Service Binding（绑定目标未经核实，不做猜测）。
-- 登录 UI 与草稿保护（PR3，本地工作区）：[AuthStatus.vue](../src/components/auth/AuthStatus.vue) 显示登录状态、登录/退出与可读错误；账号面板与草稿提示分区显示，登录状态只由 `GET /api/auth/session` 决定。未保存输入写入独立草稿库（严格持久性），页面线索命中自动恢复、无线索时只提供恢复/放弃选择；新建草稿的页面立即占住草稿（Web Locks），其他窗口与复制标签页不能抢占。登录跳转只发生在草稿 `flush()` 成功之后，写失败或草稿库不可用时阻止跳转并提示；返回后恢复编辑现场，恢复的金额差异必须重新确认，退出不影响本机记录与未保存输入。
+- 登录 UI 与草稿保护（PR3，已合入）：[AuthStatus.vue](../src/components/auth/AuthStatus.vue) 显示登录状态、登录/退出与可读错误；账号面板与草稿提示分区显示，登录状态只由 `GET /api/auth/session` 决定。未保存输入写入独立草稿库（严格持久性），页面线索命中自动恢复、无线索时只提供恢复/放弃选择；新建草稿的页面立即占住草稿（Web Locks），其他窗口与复制标签页不能抢占。登录跳转只发生在草稿 `flush()` 成功之后，写失败或草稿库不可用时阻止跳转并提示；返回后恢复编辑现场，恢复的金额差异必须重新确认，退出不影响本机记录与未保存输入。
 - Worker 与前端的产物与类型隔离（PR1）：client 构建输出与预缓存固定在 Build Output 的 Worker 资源目录（官方 `getWorkerAssetsDir` 路径函数对齐），Worker bundle 只含 Worker 代码；Service Worker 每次构建只生成一次，`navigateFallbackDenylist` 覆盖裸 `/api` 与 `/api/*`。
 
 验证数据使用独立的 `hako-local-validation-v1` IndexedDB。当前只供测试，不自动当作未来已登录账号的数据。记录列表日常金额只显示实付。
@@ -142,7 +144,7 @@ PR2 实现登录后端：短期登录事务 + 标准 OIDC code flow（none + PKC
 
 - 真实 eruoo 登录、真实 owner 主体、线上 Worker 间可达性（含 Service Binding 方案）与真实 ID token 匹配仍未联调；本地只证明协议与受控响应正确。
 - 登录 UI、草稿保护与返回恢复、跨 Cookie 环境的完成码后备交互（规格第 6.2 节的建议交互）均不在本 PR；`/api/auth/complete` 不存在，未知 API 返回 JSON 404，缺匹配事务 Cookie 一律安全失败。
-- 未部署、未写远端 Secret、未绑定域名；未做浏览器/PWA 与 iPhone 真机验证。首次真实部署时 cf 应依据 `exports` 生成 SQLite Durable Object 类迁移，这一步没有真实部署证据。
+- 未部署、未写远端 Secret、未绑定域名；未做浏览器/PWA 与 iPhone 真机验证。首次真实部署时 cf 会提交 `exports` 中的 SQLite Durable Object 类声明，由平台协调创建 namespace；这一步没有真实部署证据，当前发布边界见[首次登录发布单](./releases/2026-10-02-login.md)。
 - `cf dev` 的 `--persist-to` 未作用于 Vite dev server 实现，本地 DO 状态落在项目 `.cloudflare/state`（已被 Git 忽略）；清理 `.cloudflare/` 会清除本地合成会话与事务。
 
 ### 2026-10-02 PR2 审查修复（会话身份绑定与在途登录取消）
@@ -235,14 +237,125 @@ PR3 把登录页面接到 PR2 的认证端点，并在跳转前保护未保存�
 12. 父会话第二轮发现：切换表单后旧页面仍可补写并覆盖新接管页面；改为占用与待写/在途写入同生命周期，写完才释放。
 13. 父会话第二轮发现：退出期间启动的只读刷新会在退出完成后恢复已登录显示；改为命令执行期间启动的观察一律不采纳。
 
-下一步的部署与联调执行清单（候选 SHA、域名、owner Secret、首次 DO 迁移、冒烟、出站联调、iPhone 与回退）见[登录接入规格第 8.1 节](./specs/eruoo-login-integration.md#81-hako-部署与联调执行清单本地准备未执行)，本轮只准备清单，未执行其中任何一步。
+当时准备的部署与联调执行清单（候选 SHA、域名、owner Secret、首次 DO 迁移、冒烟、出站联调、iPhone 与回退）见[登录接入规格第 8.1 节](./specs/eruoo-login-integration.md#81-hako-部署与联调执行清单)，本节记录的 PR3 轮只准备清单，未执行其中任何一步。
 
 未验证与保留边界：
 
 - 真实 eruoo 在线登录、真实 owner 主体、线上 Worker 间可达性（含 Service Binding 方案）与 iPhone Cookie 隔离下的完成码后备交互都未联调；本地只用合成身份与受控响应证明链路正确。
 - 占用与删除保护用本机 Chrome 与 Node 真实 Web Locks 验证；跨浏览器/跨设备的锁与存储配额行为、以及父会话指出的“保存响应真正丢失”（网络响应而非本地事务）场景仍未经真机验证。
 - 浏览器验证使用受控发起页替代 eruoo 授权页，回调结果页与非法事务页是真实 Worker 响应；这不等于真实登录已验证。
-- PR3 差异只在本地工作区，未提交、未推送、未建 PR、未部署、未写远端 Secret、未绑定域名。
+- PR3 已通过 #9 合入；上述验证属于实施及收尾会话的证据，不代表已部署、已写远端 Secret、已绑定域名或已完成真实登录。
+
+## 2026-10-02 发布前准备与只读核查
+
+本轮在独立 worktree 核对 GitHub main、主检出和候选 tree；修正文档，不修改应用源码、配置或依赖。Node 已变为 24.19.0，pnpm 仍为 11.25.0，因此重新执行锁文件安装、191 个单测、包含四段类型检查的生产构建及无凭据 prebuilt dry-run，全部通过。13 个构建产物与保留的 PR3 产物逐字节一致；74 项浏览器检查及收尾会话的六项定向复验据此复用，本轮未重跑浏览器。
+
+本轮新核查确认 Hako Worker、版本、域名绑定及 DO namespace 尚不存在；已确认 Cloudflare 账号/权限、production discovery、活动服务端版本、只读客户端登记及 owner 安全输入来源。完整结果、产物哈希、失败恢复与下一轮授权范围统一见[首次登录发布单](./releases/2026-10-02-login.md)。没有部署、远端资源写入、真实认证事务或登录；本轮文档改动保持未提交、未推送。
+
+## 2026-10-02 首次 production 部署与线上验收
+
+父会话转交用户对发布单整组操作的「go」授权后，本会话完成写入前漂移检查，使用相同候选和已核验 prebuilt 产物部署。Cloudflare 读回确认活动版本、SQLite namespace 与绑定、Secret 名称、Custom Domain、受管 DNS、active 证书，以及关闭的 workers.dev/preview。线上 Worker 代码及抽查的 5 个前端资产与本地产物逐字节一致；精确 ID、时间、安全输入清理和恢复边界统一由[发布单第 4、5 节](./releases/2026-10-02-login.md#4-已授权远端操作与执行结果)维护。
+
+新增检查包括匿名 HTTP 冒烟与隔离 Chrome 的 24 项线上检查。真实 Hako UI 已创建 DO 登录事务，并经公开 HTTPS discovery 到达 eruoo 登录页；Cookie 属性、受控错误/重复/退出后迟到回调、缺少原 Cookie 的隔离环境拒绝、返回与离线重载草稿保留、SW 下 API 分流均通过。没有由 owner 完成 GitHub/通行密钥交互，未验证成功会话或 token/JWKS/UserInfo 出站；受控 `access_denied` 不等于 provider 的人工取消，桌面隔离上下文不等于 iPhone 实测。
+
+namespace 已有真实事务 RPC 证据，10:59 UTC 的管理 API 对象枚举也确认 1 个 `hasStoredData: true` 的实例；此前空列表的时间点保留于发布单。首次浏览器探针的响应采集限制和 cf 凭据过期后的读取重试同样保留；没有改应用代码、重新部署或改变接线。191 单测、四段 typecheck、build、dry-run、PR3 的 74 项浏览器检查及收尾六项复验继续按前节证据复用，没有重跑完整本地检查。
+
+用户随后确认真实登录成功，原始回报及截图边界见发布单第 4.3 节。待补分项回报的退出/重登、返回草稿及离线记录、iPhone 浏览器与主屏幕 PWA 操作见[发布单第 6 节](./releases/2026-10-02-login.md#6-用户参与与仍未知的验收)。文档保持未提交、未推送；本会话未修改主检出或清理分支/worktree，但收尾发现 PR3 旧目录与 worktree 登记已消失，本地/远端分支仍保留，具体差异与父会话待核实项见发布单第 7 节。完成码后备交互仍未实现。
+
+## 2026-10-02 回调结果页本地样式修订
+
+用户确认真实登录成功，并提供已部署版本的 completed 成功回调截图；这不是对退出/重登、返回后的草稿恢复、浏览器具体版本或 iPhone/PWA 的分项验收。截图与授权范围以[发布单第 4.3 节](./releases/2026-10-02-login.md#43-用户确认与后续本地-ui-修订)为准，本轮没有重跑部署或线上认证。
+
+回调页已在 [routes.ts](../src/worker/auth/routes.ts) 改为 Hako 浅背景、绿色主按钮和系统字体的紧凑静态卡片。8 种结果共用品牌、标题、说明与返回按钮，通过图标、文字及配色表达成功、取消/失效和失败；身份拒绝与配置失败改用面向用户的说明。局部 CSS 直接随 HTML 返回，窄屏可用，键盘焦点明显。原 HTTP 状态码、`data-hako-callback-status`、Cookie、安全响应头及精确 `<a href="/">返回 Hako</a>` 保持不变，没有脚本、外部资源或自动跳转。
+
+| 本轮新执行的本地检查 | 结果 |
+| --- | --- |
+| `pnpm run test tests/worker-auth-flow.test.ts` | 41 个现有用例通过；首次因新增链接 class 与严格标签断言不一致而失败，改用卡片内 CSS 选择器后通过，未放宽原断言或新增 CSS 字符串测试 |
+| `pnpm run build` | 通过，包含四段既有类型检查；没有升级依赖或改变配置 |
+| 合成回调响应 | 从实际静态生成函数取 8 种结果，不发起认证；与 HEAD 的响应逐一比较，状态码、完整响应头（含合成 Cookie）和固定返回入口一致，没有脚本、外部资源或自动刷新 |
+| 浏览器布局 | 本机 Chrome `154.0.8037.95`、Playwright `1.63.0`，禁用页面 JavaScript；1280×800 与 360×780 共 16 个状态/尺寸组合通过，无横向溢出，主按钮至少 48px，Tab 焦点为 3px 清晰轮廓；另检查 320×568 的最长拒绝说明，布局及按钮可见 |
+| 实际图像检查 | 查看成功/身份拒绝的桌面和窄屏截图，以及取消/依赖失败的窄屏截图；留存 5 类结果、两种尺寸共 10 张 PNG，均包含键盘焦点状态 |
+| 构建对比 | 默认 output 中仅 Worker bundle 改变，12 个其余文件与已发布候选一致；旧候选的 13 文件副本哈希仍匹配原发布清单 |
+
+截图与脱敏回执保存在当前 worktree 的 `.cloudflare/callback-style-review/`，该目录被 Git 忽略，不随克隆转移。脚本仅用于本次本地验收，未加入项目测试套件；HTML 由实际回调生成函数生成并在 loopback 上供浏览器渲染，无真实 owner、事务或认证请求。
+
+| 合成结果 | 桌面截图 | 窄屏截图 |
+| --- | --- | --- |
+| 成功 | `completed-desktop.png` | `completed-narrow.png` |
+| 取消 | `authorization_declined-desktop.png` | `authorization_declined-narrow.png` |
+| 失效 | `invalid_login_transaction-desktop.png` | `invalid_login_transaction-narrow.png` |
+| 身份拒绝 | `owner_mismatch-desktop.png` | `owner_mismatch-narrow.png` |
+| 依赖失败 | `identity_service_unavailable-desktop.png` | `identity_service_unavailable-narrow.png` |
+
+`auth-tests.json`、`build.json`、`visual-review.json` 与 `artifact-comparison.json` 保存对应回执。新本地 Worker bundle SHA-256 为 `83acc2a03e79d37dd0e27ba46b37a5f7ce87a8ef0d12e9ac7659f70b223a8474`，仅供本次审阅，不是获准部署的新候选。此前完整协议、DO、191 单测与 74 项浏览器证据仍按原适用范围复用，没有重跑线上验收。
+
+本阶段完成时，首页结构仍等待父会话回传选择，尚未改 App.vue、RefuelingWorkspace.vue 或其登录/草稿接线。后续获准的本地首页实施与验证见下一节。
+
+本轮改动未提交、未推送、未部署，主检出保持干净。尚无用户对退出/重登、返回后草稿恢复、具体系统/浏览器版本或 iPhone/PWA 的分项回报；本地窄屏截图不能替代真机验收。
+
+## 2026-10-02 功能首页与工作区切换本地验证
+
+父会话已审阅回调 diff 与成功/拒绝截图并复用上述证据，随后授权继续用户“入口不直接展示加油功能”的本地修订。当时首页选项尚无用户明确回复，按父会话已告知用户的推荐最小方案制作预览。产品规则集中在[重新设计记录](./specs/redesign.md#功能首页与页面切换)，本节只维护实施与证据。下列首轮及 header 阶段记录保留历史结果；其中匿名/离线直接进入功能、未成功返回即显示表单的行为已由后续[登录门禁验证](#登录后访问首页)替代，不作为当前门禁的通过证据。
+
+[App.vue](../src/App.vue) 承担两页外壳、单一账号状态、PWA 注册及登录编排；[RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue) 保留业务表单和既有草稿会话，向外暴露落盘结果与保存状态。首页初次不挂载工作区，进入后用同一实例隐藏/显示；没有复制账号 client 或改动 IndexedDB/Web Locks 底层。登录仍双次 flush，应用层冻结涵盖隐藏的表单和页面导航；进入离页阶段后等待 Vue 把状态传给工作区，再跳转，避免错误触发草稿离页提示。恢复/放弃按钮也随冻结禁用。AuthStatus 简化重复说明并保证窄屏布局与触控目标。
+
+本轮新增验证使用本机 Chrome `154.0.8037.95`、Playwright `1.63.0`，从生产前端产物启动 loopback 静态预览与合成 session/login/logout。数据、身份状态和失败注入均为本地合成；没有调用 Worker 认证端点、production、eruoo 或真实账号，没有保存 HAR/trace。
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 既有相关单测 | `auth-session-client` 20、`refueling-draft-session` 25、`use-refueling-drafts` 2、`refueling-form` 11，共 58 项通过；未新写 CSS 字符串断言或重跑全套 191 项 |
+| 类型与构建 | `pnpm run build` 通过，包含既有四段类型检查；配置、锁文件与依赖未变 |
+| 首页与导航 | 首开没有表单或业务/草稿库打开；单账号状态区。入口与返回、浏览器前进/后退保留同一表单；首页刷新仍为首页，工作区刷新恢复原页面。初始首页登录不凭空创建草稿 |
+| 新增及编辑草稿 | 切页保留原始输入与来源、当前新增/编辑上下文；首页刷新后重新进入仍可恢复。页面内隐藏/显示保留已核对状态，刷新或模拟登录返回的恢复必须重新核对金额差异 |
+| 占用及在途写入 | 隐藏工作区仍持有原草稿 Web Lock，第二窗口不能接管；实际 IndexedDB 写事务被合成延迟时，切页不卸载、不释放锁，登录等到事务完成后才发起 |
+| 登录与退出 | 合成成功及未成功的固定 `/` 返回均恢复发起页面；只有 session 响应改变账号显示。两次 flush 任一次失败均阻止跳转，首轮失败还阻止发起请求；隐藏草稿失败在首页账号区可见。退出保留输入、草稿和占用。合成授权页浏览器返回恢复可编辑状态；另触发 `pageshow(persisted)` 分支，不据此宣称原生 bfcache 跨浏览器兼容已验收 |
+| 线索与离线 | 任意 URL 形状的导航线索不会成为跳转目标或登录依据；sessionStorage 不可用时回到首页，草稿可手动恢复。真实 Service Worker 预缓存下断网刷新首页、进入工作区、恢复并继续写草稿通过 |
+| 布局与键盘 | 1280px 桌面、360px 窄屏及 320px 补充检查无横向溢出；功能链接键盘焦点清晰、Enter 可进入并将焦点移到标题，账号按钮与返回入口至少 44px。实际查看首页及工作区桌面/窄屏截图 |
+
+定向浏览器回执汇总为 50 项去重检查。初次探针的状态选择器命中隐藏的 StorageStatus、datetime-local 秒数被 Chrome 规范化，以及 Playwright 对 fieldset 的 `isDisabled` 判定导致检查中断；改用限定账号区、规范化时间及原生 `fieldset.disabled` 后完成。窄屏首次 fullPage 截图出现捕获重复，改为固定宽度、按完整内容高度设置视口后直接截图；未修改产品代码来迁就探针，也未把这些中断记为应用通过。完成的布局/导航阶段按回执复用，只续跑受影响及剩余场景。
+
+截图与临时脚本保存在当前 worktree 的 Git 忽略目录 `.cloudflare/home-review/`，不随克隆转移：
+
+| 页面 | 桌面 | 窄屏 |
+| --- | --- | --- |
+| Hako 首页（键盘焦点） | `home-desktop.png` | `home-narrow.png` |
+| 加油记录工作区 | `refueling-desktop.png` | `refueling-narrow.png` |
+| 合成已登录首页 | 共用同一布局 | `home-authenticated-narrow.png` |
+
+`browser-review.json` 汇总分段浏览器回执，`unit-tests.json`、`build.log` 和 `final-verification.json` 保存本轮验证及产物清单。已部署旧候选的 13 个文件副本仍逐项匹配原 SHA-256 清单；callback 源码与本地 Worker bundle 的哈希仍与上一节一致，因此复用 41 项认证测试和 callback 布局证据，没有重做该修订。默认 `.cloudflare/output/v0/` 现为待审 UI 产物，不能沿用旧候选的部署授权。
+
+本轮全部代码与五份文档保持未提交、未推送、未部署；主检出干净。该阶段移交后用户继续给出页面反馈，落实见下节。真实环境的退出/重登、返回后会话与草稿、具体浏览器版本及 iPhone/PWA 分项仍未知；本轮合成返回、离线和窄屏证据不扩大既有线上验收结论，完成码后备交互仍未实现。
+
+### Header 登录入口调整
+
+按[重新设计记录中的最新反馈](./specs/redesign.md#功能首页与页面切换)，将同一 AuthStatus 实例移入共用 header，使用简短的真实状态、登录/退出按钮和有可访问名称的重新检查图标。App 将登录/退出命令失败反馈交给该处展示；状态不可用和草稿保存失败仍显示可读说明。其余首页、功能入口、表单和草稿生命周期保持上阶段实现。
+
+重新执行 `pnpm run build`（含四段类型检查）通过。以新生产前端产物和 loopback 合成 API 完成 26 项定向浏览器检查：header 的单实例、键盘焦点、44px 操作目标、1280/360/320px 布局、状态刷新、登录/退出失败反馈、合成登录返回和退出保留草稿，以及隐藏草稿的双次 flush 失败/在途事务保护全部通过。复用上阶段 58 项单测与其余适用导航/草稿证据，没有重跑完整验收或真实认证。
+
+该阶段截图和回执保存于 `.cloudflare/header-review/`：`home-desktop.png`、`home-narrow.png`、`refueling-desktop.png`、`refueling-narrow.png`、`home-authenticated-narrow.png`、`header-unavailable-narrow.png`，以及 `browser-header.json`、`build.log`、`final-verification.json`。旧 `.cloudflare/home-review/` 截图与回执作为上阶段记录保留；已部署候选快照和 callback 证据继续保留。本次未提交、未推送、未部署，真实分项验收边界不变。
+
+### 登录后访问首页
+
+用户随后明确要求未登录跳转登录、登录后才能看到首页。App 在原有单一会话状态上增加展示门禁和固定 `/#login` 页面；新增 LoginPage 仅接收状态、发出登录/重试事件，不创建第二个账号 client。已打开的工作区隐藏时继续保留草稿会话、在途写入和 Web Lock；登录双次 flush 与固定回调入口不变。AuthSessionClient 仅调整状态文案，协议和命令竞态处理未变。产品规则与离线访问边界仍只由[重新设计记录](./specs/redesign.md#功能首页与页面切换)维护。
+
+本轮重新通过认证客户端 20 项既有测试与 `pnpm run build`（含四段类型检查）。使用同一 Chrome / Playwright 工具链、当前生产前端产物与 loopback 合成 API，40 项定向浏览器检查全部通过，无未预期页面错误：
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 首开与直接访问 | 会话请求等待期间、匿名响应及刷新均不显示首页/表单，不打开业务或草稿库；直接访问加油 URL、本机假登录标记和历史返回不能放行 |
+| 合成登录返回 | 失败后留在登录页且不自动发起事务；固定 `/` 返回不足以放行，正面的 session 响应才恢复首页或原加油页；sessionStorage 不可用时安全回到首页 |
+| 退出与草稿 | 退出或会话失效隐藏、冻结原工作区并保留原实例、编辑上下文和草稿锁；重新认证恢复新增/编辑草稿，重载恢复仍要求重新确认金额差异 |
+| 登录前持久化 | 首次及二次 flush 失败均阻止跳转，首次失败还阻止发起登录请求；重试写入最新输入。在途 IndexedDB 写入和锁在门禁关闭后仍保留，重新认证等待其完成 |
+| 离线及恢复文档 | 实际 Service Worker 预缓存下断网重载留在登录页，草稿仍在；恢复网络并确认会话后重新打开工作区。合成 `pageshow(persisted)` 等待新会话结果时隐藏旧内容，两处触发合并为一次请求；匿名结果保持门禁且未丢弃原草稿 |
+| 布局与键盘 | 1280px 桌面、360px 窄屏及 320px 补充检查无横向溢出；登录按钮至少 48px，键盘焦点明显。实际查看登录页、服务不可用页与已登录首页截图 |
+
+最新证据保存在 Git 忽略目录 `.cloudflare/login-gate-review/`：`auth-client-tests.json`、`browser-all.json`、`build.log`、`final-verification.json`；截图为 `login-desktop.png`、`login-narrow.png`、`unavailable-narrow.png`、`home-authenticated-desktop.png`、`home-authenticated-narrow.png`。此前 38 项草稿/表单测试、callback 的 41 项认证测试及布局证据按未变范围复用；未重跑全套验收。已部署候选 13 个文件的副本与原清单仍匹配，旧回执未覆盖。
+
+本轮不调用真实认证或远端资源，不保存 HAR/trace。合成缓存文档事件不能证明原生 bfcache 的跨浏览器行为；真实退出/重登、返回会话与草稿、具体用户浏览器及 iPhone/PWA 仍待分项验收。全部本地代码和文档未提交、未推送、未部署，主检出保持干净。
+
+## 2026-10-02 最终审阅与发布授权
+
+用户选择执行最终审阅与提交发布。最终 diff 未发现阻塞问题；源码及产物与门禁阶段回执一致，因此复用上述适用验证，没有重跑完整测试或真实认证。GitHub main 仍为首次部署候选，eruoos 写权限已确认；目标仓库没有工作流、分支保护或规则集，不将本地结果称为 GitHub 绿色 CI。提交、合并候选和部署回执由[本轮发布记录](./releases/2026-10-02-ui.md)引用维护。保留任务分支/worktree，主检出保持不改动。
 
 ## 代码入口
 
@@ -255,8 +368,8 @@ PR3 把登录页面接到 PR2 的认证端点，并在跳转前保护未保存�
 | [src/worker/auth/oidc.ts](../src/worker/auth/oidc.ts) | eruoo 出站接线：固定 issuer discovery 与端点半白名单、授权地址组装、code 兑换、ID token 签名与 claims、UserInfo。 |
 | [src/worker/auth/account-state.ts](../src/worker/auth/account-state.ts)、[account-durable-object.ts](../src/worker/account-durable-object.ts) | 登录事务与会话的 SQLite 原子语义（消费、完成、过期、身份校验、续期、撤销）及 Durable Object 运行时包装。 |
 | [src/worker/auth/account-rpc.ts](../src/worker/auth/account-rpc.ts)、[cookies.ts](../src/worker/auth/cookies.ts)、[secrets.ts](../src/worker/auth/secrets.ts)、[session-policy.ts](../src/worker/auth/session-policy.ts) | DO RPC 合同、Cookie 读写与属性、随机凭据与哈希、会话与事务时间参数（集中定义）。 |
-| [App.vue](../src/App.vue)、[RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue) | 页面组合、新增和编辑流程、保存结果衔接，以及草稿恢复横幅、登录后返回提示与登录跳转前的落盘等待。 |
-| [AuthStatus.vue](../src/components/auth/AuthStatus.vue)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、[session-client.ts](../src/domain/auth/session-client.ts) | 登录状态区（登录/退出/可读错误）、状态读取与跳转编排；发起地址只接受 https（本机 http 例外），网络失败不谎报成功。 |
+| [App.vue](../src/App.vue)、[RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue) | 会话门禁、功能首页与固定页面切换、单一账号/PWA 接线与登录双次落盘编排；工作区保留新增/编辑、保存、草稿恢复及占用生命周期。 |
+| [LoginPage.vue](../src/components/auth/LoginPage.vue)、[AuthStatus.vue](../src/components/auth/AuthStatus.vue)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、[session-client.ts](../src/domain/auth/session-client.ts) | 登录页与 header 账号状态/操作、状态读取和可读错误；发起地址只接受 https（本机 http 例外），网络失败不谎报成功。 |
 | [useRefuelingDrafts.ts](../src/composables/useRefuelingDrafts.ts)、[refueling-draft-session.ts](../src/data/refueling-draft-session.ts)、[refueling-draft-store.ts](../src/data/refueling-draft-store.ts)、[draft-environment.ts](../src/data/draft-environment.ts)、[draft-recovery.ts](../src/domain/refueling/draft-recovery.ts) | 草稿会话（绑定表单、flush、采用/放弃、保存后清理）、独立草稿库（严格持久性）、sessionStorage 线索与 Web Locks 页面占用、恢复决策（线索恢复/选择/幽灵清理/孤儿保留）。 |
 | [RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[form.ts](../src/domain/refueling/form.ts) | 录入、校验与核对确认；确定性表单规则、十进制计算和定点金额。 |
 | [refueling-document.ts](../src/data/refueling-document.ts) | Loro 文档读写、字段级变更与完整历史快照。 |
@@ -279,22 +392,22 @@ pnpm run build
 pnpm preview
 ```
 
-打开 `http://localhost:4173`，先联网等待离线页面准备成功，再测试断网。开发用 `pnpm dev`（当前端口为 `1420`，vite 仅监听 IPv6 `localhost`，`127.0.0.1` 可能不可达）；Service Worker 验证应使用生产构建预览。对已构建产物做无凭据部署演练：
+打开 `http://localhost:4173`，当前待审 UI 会先检查会话；匿名预览停在登录页。功能交互验证使用上述临时 loopback 合成 API，不能把真实 owner 凭据注入前端或当作本地测试数据。离线场景的当前结果见[登录门禁验证](#登录后访问首页)，旧阶段匿名离线进入表单的步骤已不适用。开发用 `pnpm dev`（当前端口为 `1420`，vite 仅监听 IPv6 `localhost`，`127.0.0.1` 可能不可达）；Service Worker 验证应使用生产构建预览。对已构建产物做无凭据部署演练：
 
 ```sh
 pnpm exec cf deploy --prebuilt --dry-run --mode production
 ```
 
-正式部署命令为 `cf deploy --prebuilt --mode production`（需在构建后执行，并完成域名绑定与 `HAKO_OWNER_SUBJECT` Secret 写入；本 PR 未执行部署、未写远端 Secret、未做 DNS 绑定）。
+正式部署由项目锁定的 `pnpm exec cf deploy --prebuilt --mode production` 消费既有产物；首次部署已将 owner Secret 通过 `--secrets-file` 一并上传，并由配置声明同步 Custom Domain。安全输入、资源创建顺序、实际回执与授权范围见[首次登录发布单](./releases/2026-10-02-login.md)。
 
 配置责任：`HAKO_LOGIN` 中的固定 origin、issuer、client、resource 是公开部署值，由 [cloudflare.config.ts](../cloudflare.config.ts) 声明并与[登录接入规格](./specs/eruoo-login-integration.md#3-客户端登记合同)保持一致；真实 owner 主体只能通过部署 Secret（本地用 `.dev.vars`，示例见 [.dev.vars.example](../.dev.vars.example)）输入，不进入前端、日志、公共配置或文档。`.cloudflare/`（类型与构建产物、本地 DO 状态）与 `.dev.vars` 均被 Git 忽略，类型由 `pnpm run typecheck` 先生成再检查。
 
-登录后端与登录页面已随 `pnpm dev`/`pnpm preview` 提供：页面可读取登录状态、发起登录与退出。点击登录会跳转 eruoo 授权页，因此真实登录需要 eruoo 实际服务与真实 owner Secret；本地协议验证使用测试内的受控 OIDC 提供方（见 [worker-auth-flow.test.ts](../tests/worker-auth-flow.test.ts) 与 [tests/helpers/oidc-provider-mock.ts](../tests/helpers/oidc-provider-mock.ts)）。`GET /api/auth/session` 在未登录时返回 `{"authenticated":false}`，用于确认 Worker/DO 接线；`POST /api/auth/login` 与 `POST /api/auth/logout` 要求精确 `Origin: https://hako.eruoo.me`。
+登录后端与登录页面已随 `pnpm dev`/`pnpm preview` 提供：页面可读取登录状态、发起登录与退出。点击登录会跳转 eruoo 授权页，因此真实登录需要 eruoo 实际服务与真实 owner Secret；本地协议验证使用测试内的受控 OIDC 提供方（见 [worker-auth-flow.test.ts](../tests/worker-auth-flow.test.ts) 与 [tests/helpers/oidc-provider-mock.ts](../tests/helpers/oidc-provider-mock.ts)）。无 Cookie 的 `GET /api/auth/session` 返回 `{"authenticated":false}`，且在调用 DO 前直接返回，只能证明匿名路由行为；携带会话 Cookie 的读取及登录事务才涉及 DO。`POST /api/auth/login` 与 `POST /api/auth/logout` 要求精确 `Origin: https://hako.eruoo.me`。
 
-手工复核可先保存一条合成记录，再打开两个同源窗口编辑不同字段并依次或同时保存，刷新后检查两项都在；未保存的输入会在刷新或登录往返后从独立草稿库恢复，金额差异需要重新确认，另一个窗口正在编辑的草稿不会被静默接管。草稿写入使用严格持久性事务；草稿库不可用（例如浏览器禁用站点数据）时会阻止登录跳转而不是丢掉输入。
+在合成会话确认的本地预览中，可先保存一条合成记录，再打开两个同源窗口编辑不同字段并依次或同时保存，刷新后检查两项都在；会话允许进入工作区后，未保存的输入从独立草稿库恢复，金额差异需要重新确认，另一个窗口正在编辑的草稿不会被静默接管。草稿写入使用严格持久性事务；草稿库不可用（例如浏览器禁用站点数据）时会阻止登录跳转而不是丢掉输入。
 
 ## 尚未完成
 
-这不是可正式使用的首版：尚未真实 eruoo 登录与线上联调、跨设备同步、云端备份与恢复、历史查看/恢复界面、完整统计、历史导入和 AI 识图，隔离环境完成码后备交互（规格第 6.2 节建议）也未实现。同源 Worker、API 边界（PR1）、登录后端、DO 会话与 eruoo 出站接线（PR2）已就绪；登录 UI、草稿保护与返回恢复（PR3）已在本地工作区完成并验证，尚未提交。清除站点数据会丢失本验证版记录，当前不能从云端恢复。
+首版仍未完成：登录后的分项验收与设备验收、跨设备同步、云端备份与恢复、历史查看/恢复界面、完整统计、历史导入和 AI 识图尚待完成，隔离环境完成码后备交互（规格第 6.2 节建议）也未实现。同源 Worker、API 边界（PR1）、登录后端、DO 会话与 eruoo 出站接线（PR2）、登录 UI、草稿保护与返回恢复（PR3）均已合入并首次部署。清除站点数据会丢失本验证版记录，当前不能从云端恢复。
 
-真实登录、线上 Worker 间可达性（含 Service Binding 方案）、iPhone Chrome/PWA 真机行为、1,000/10,000 条含历史的容量与延迟、Cloudflare Free CPU 和其他平台仍按[后续验证安排](./specs/architecture-validation-research.md#5-下一步最小验证)执行。会话与事务的时钟边界已在 PR2 用可控时钟验证，但不代表真机 Cookie 保存行为已验证。本轮没有创建云资源、调用付费模型或部署；真实部署需先完成域名绑定与 owner Secret 写入，且尚未验证。
+退出/重登、返回后的会话与草稿、iPhone Chrome/PWA 真机行为、1,000/10,000 条含历史的容量与延迟、Cloudflare Free CPU 和其他平台仍按[后续验证安排](./specs/architecture-validation-research.md#5-下一步最小验证)执行。会话与事务的时钟边界已在 PR2 用可控时钟验证，但不代表真机 Cookie 保存行为已验证。当前域名、Secret、DO 与 Worker 已按发布单获准并部署；真实事务及 discovery 出站通过，剩余本人验收由父会话继续统筹。
