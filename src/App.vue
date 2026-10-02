@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, shallowRef, watch } from "v
 import { useRegisterSW } from "virtual:pwa-register/vue";
 import AuthStatus from "./components/auth/AuthStatus.vue";
 import LoginPage from "./components/auth/LoginPage.vue";
-import RefuelingWorkspace from "./components/refueling/RefuelingWorkspace.vue";
+import AccountWorkspace from "./components/refueling/AccountWorkspace.vue";
 import { useAuthSession } from "./composables/useAuthSession";
 
 type AppPage = "home" | "refueling";
@@ -32,20 +32,21 @@ function initialPage(): AppPage {
 }
 
 const page = shallowRef<AppPage>(initialPage());
-const workspaceOpened = shallowRef(false);
-const workspace = shallowRef<InstanceType<typeof RefuelingWorkspace> | null>(null);
+const accounts = shallowRef<{ id: string; opened: boolean }[]>([]);
+const workspaces = shallowRef<InstanceType<typeof AccountWorkspace>[]>([]);
 const loginPage = shallowRef<InstanceType<typeof LoginPage> | null>(null);
 const pageHeading = shallowRef<HTMLHeadingElement | null>(null);
-const { auth, refresh: refreshAuth, login: startLogin, logout: endLogin } = useAuthSession();
+const { auth, refresh: refreshAuth, login: startLogin, logout: endLogin, recheckRejectedSession } = useAuthSession();
 const refreshingRestoredPage = shallowRef(false);
-const canEnter = computed(() => auth.value.status === "authenticated" && !refreshingRestoredPage.value);
+const canEnter = computed(() => auth.value.status === "authenticated" && auth.value.accountId !== null && !refreshingRestoredPage.value);
 const loginPageAuth = computed(() => refreshingRestoredPage.value
   ? { ...auth.value, status: "checking" as const }
   : auth.value);
 const loginNotice = shallowRef("");
 const loginPhase = shallowRef<"idle" | "preparing" | "navigating">("idle");
 const loginInProgress = computed(() => loginPhase.value !== "idle");
-const navigationBusy = computed(() => loginInProgress.value || workspace.value?.saving === true);
+const navigationBusy = computed(() => loginInProgress.value || workspaces.value.some((workspace) => workspace.saving));
+const accountActive = computed(() => canEnter.value && !loginInProgress.value && !auth.value.loggingIn && !auth.value.loggingOut);
 const registrationError = shallowRef("");
 const { offlineReady, needRefresh } = useRegisterSW({
   onRegisterError() {
@@ -59,7 +60,14 @@ function visiblePageHref(): string {
 
 function syncVisiblePage() {
   // 未确认会话时不挂载业务组件；已有实例仅隐藏，待写草稿与占用继续存活。
-  if (canEnter.value && page.value === "refueling") workspaceOpened.value = true;
+  const accountId = auth.value.accountId;
+  if (canEnter.value && accountId) {
+    const known = accounts.value.find((account) => account.id === accountId);
+    if (!known) accounts.value = [...accounts.value, { id: accountId, opened: page.value === "refueling" }];
+    else if (page.value === "refueling" && !known.opened) {
+      accounts.value = accounts.value.map((account) => account.id === accountId ? { ...account, opened: true } : account);
+    }
+  }
   window.history.replaceState(null, "", visiblePageHref());
   try {
     if (canEnter.value) window.sessionStorage.removeItem(loginReturnPageKey);
@@ -70,7 +78,7 @@ function syncVisiblePage() {
   document.title = !canEnter.value ? "登录 · Hako" : page.value === "home" ? "Hako" : "加油记录 · Hako";
 }
 syncVisiblePage();
-watch([canEnter, page], async () => {
+watch([canEnter, () => auth.value.accountId, page], async () => {
   syncVisiblePage();
   await nextTick();
   if (canEnter.value) pageHeading.value?.focus({ preventScroll: true });
@@ -101,10 +109,11 @@ function onLocationChanged() {
 
 async function confirmDraftSaved(): Promise<boolean> {
   // 首页尚未打开工作区时没有本页待写内容；已打开后即使隐藏也必须等待它落盘。
-  if (workspace.value === null) return true;
-  const result = await workspace.value.flushDraft();
-  if (!result.ok) loginNotice.value = result.message;
-  return result.ok;
+  for (const workspace of workspaces.value) {
+    const result = await workspace.flushDraft();
+    if (!result.ok) { loginNotice.value = result.message; return false; }
+  }
+  return true;
 }
 
 async function login() {
@@ -203,11 +212,14 @@ onUnmounted(() => {
           <span class="feature-action">进入加油记录 <span aria-hidden="true">→</span></span>
         </span>
       </a>
-      <p class="device-note">数据仅保存在此设备的当前浏览器，暂不支持云端同步与备份。</p>
+      <p class="device-note">当前账号的记录在前台联网时自动同步。旧验证数据保留，需在加油页主动选择导入；独立备份尚未接入。</p>
     </section>
 
     <!-- 首次进入才挂载，之后只隐藏：表单、待写草稿与 Web Locks 随页面继续存活。 -->
-    <RefuelingWorkspace v-if="workspaceOpened" v-show="canEnter && page === 'refueling'" ref="workspace" :locked="loginInProgress || !canEnter" :navigating-for-login="loginPhase === 'navigating'" />
+    <AccountWorkspace v-for="account in accounts" :key="account.id" ref="workspaces" :account-id="account.id"
+      :active="accountActive && auth.accountId === account.id" :opened="account.opened"
+      :visible="canEnter && auth.accountId === account.id && page === 'refueling'"
+      :navigating-for-login="loginPhase === 'navigating'" @session-rejected="recheckRejectedSession" />
 
     <p v-if="canEnter && registrationError" class="warning">{{ registrationError }}</p>
     <p v-else-if="canEnter && offlineReady" class="offline-label">离线页面已准备好</p>

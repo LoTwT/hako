@@ -206,7 +206,8 @@ async function handleCallbackRequest(
   }
   return callbackResponse("completed", [
     clearLoginTransactionCookie(),
-    serializeSessionCookie(sessionToken, Math.floor((expiresAtMs - nowMs) / 1000)),
+    // 浏览器保存期限与服务端有效期分离：同步只续期服务端，不依赖 Cookie 响应交付。
+    serializeSessionCookie(sessionToken, Math.floor((absoluteExpiresAtMs - nowMs) / 1000)),
   ]);
 }
 
@@ -441,7 +442,7 @@ async function handleSessionRequest(
   // 会话必须与固定 issuer 和固定 owner 主体匹配；缺少有效登录配置时无法校验身份。
   const loginConfig = readLoginConfig(env);
   if (!loginConfig.ok) return jsonResponse({ error: "configuration_error" }, 503);
-  const session = await accountStub(env).readSession({
+  const accountId = await accountStub(env).readAccountId({
     sessionHash: await hashSecret(sessionToken),
     identity: {
       issuer: loginConfig.config.issuer,
@@ -449,10 +450,11 @@ async function handleSessionRequest(
     },
     nowMs: now(),
   });
-  if (session === null) {
-    return jsonResponse({ authenticated: false }, 200, { "Set-Cookie": clearSessionCookie() });
+  if (accountId === null) {
+    // 旧观察响应可能晚于另一窗口的新登录；只读结果不能清除新的会话 Cookie。
+    return jsonResponse({ authenticated: false }, 200);
   }
-  return jsonResponse({ authenticated: true }, 200);
+  return jsonResponse({ authenticated: true, accountId }, 200);
 }
 
 // ---------------------------------------------------------------------------

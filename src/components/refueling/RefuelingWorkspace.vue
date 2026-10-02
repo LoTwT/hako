@@ -15,8 +15,11 @@ import {
 import RefuelingForm from "./RefuelingForm.vue";
 import RefuelingRecords from "./RefuelingRecords.vue";
 import StorageStatus from "./StorageStatus.vue";
+import LegacyImport from "./LegacyImport.vue";
 
 const props = defineProps<{
+  accountId: string;
+  local: ReturnType<typeof useLocalRefueling>;
   locked: boolean;
   navigatingForLogin: boolean;
 }>();
@@ -31,8 +34,12 @@ const {
   save,
   initialize,
   requestPersistence,
-} = useLocalRefueling();
+  importedLegacyIds,
+  importLegacy,
+  retrySync,
+} = props.local;
 const drafts = useRefuelingDrafts({
+  accountId: props.accountId,
   knownRecords: () => new Map(records.value.map((record) => [record.id, record])),
 });
 
@@ -102,6 +109,7 @@ function onFormDraft(draft: RefuelingDraft) {
 }
 
 async function submit(record: RefuelingRecord) {
+  if (props.locked) return;
   const patch = selected.value ? changedFields(selected.value, record) : record;
   if (!(await save(formId.value, patch, !selected.value))) return;
   const cleared = await drafts.clearAfterSave();
@@ -260,10 +268,14 @@ onUnmounted(() =>
       @retry="initialize"
       @persist="requestPersistence"
     />
+    <button class="text-button sync-now" :disabled="locked || !ready" @click="retrySync">立即同步</button>
+    <p class="local-notice">服务端同步副本不等于独立备份；本版尚未接入独立备份。</p>
+    <LegacyImport :disabled="locked || saving || !ready" :imported-ids="importedLegacyIds" :import-records="importLegacy" />
   </div>
 </template>
 
 <style scoped>
+.sync-now { min-height: 44px; }
 .workspace-actions {
   display: flex;
   justify-content: flex-end;

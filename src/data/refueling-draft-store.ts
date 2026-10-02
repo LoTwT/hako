@@ -1,6 +1,6 @@
 // 表单草稿的独立 IndexedDB 存储。
-// 与业务文档库 hako-local-validation-v1 分开：草稿不是正式记录，也不改变
-// 现有记录与验证数据的含义。写入使用严格持久性事务，并且只有事务完成
+// 正式使用者传入账号隔离库名；默认旧库名仅保留给历史格式测试与只读工具。
+// 草稿不是正式记录。写入使用严格持久性事务，并且只有事务完成
 // （transaction.done）才视为保存成功，与 local-refueling.ts 的约定一致。
 // 无法识别的格式版本只统计、不删除，避免静默丢失用户草稿。
 
@@ -33,8 +33,8 @@ export interface RefuelingDraftStore {
   close(): void;
 }
 
-export async function openRefuelingDraftStore(): Promise<RefuelingDraftStore> {
-  const database = await openDB<RefuelingDraftDatabase>(refuelingDraftDatabaseName, 1, {
+export async function openRefuelingDraftStore(databaseName = refuelingDraftDatabaseName): Promise<RefuelingDraftStore> {
+  const database = await openDB<RefuelingDraftDatabase>(databaseName, 1, {
     upgrade(db) {
       db.createObjectStore("drafts");
     },

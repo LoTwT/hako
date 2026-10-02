@@ -7,6 +7,7 @@ import { AuthSessionClient, type AuthSnapshot } from "../domain/auth/session-cli
  */
 export function useAuthSession() {
   const snapshot = shallowRef<AuthSnapshot>({
+    accountId: null,
     status: "checking",
     message: "正在确认登录状态…",
     loggingIn: false,
@@ -45,5 +46,6 @@ export function useAuthSession() {
     refresh: () => client.refresh(),
     login: () => client.login(),
     logout: () => client.logout(),
+    recheckRejectedSession: () => client.recheckRejectedSession(),
   };
 }

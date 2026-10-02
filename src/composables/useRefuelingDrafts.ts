@@ -12,6 +12,7 @@ import {
 } from "../data/refueling-draft-session";
 import type { DraftFormContext } from "../domain/refueling/draft-recovery";
 import type { RefuelingDraft, SavedRefuelingRecord } from "../domain/refueling/form";
+import { accountStorageNames } from "../data/account-storage";
 
 export interface RefuelingDraftSnapshot {
   status: "loading" | "ready";
@@ -26,7 +27,8 @@ export interface RefuelingDraftSnapshot {
  * knownRecords 由业务记录列表提供，用于识别已保存草稿、找不到记录的编辑草稿
  * 与内容已经一致的草稿。
  */
-export function useRefuelingDrafts(options: { knownRecords: () => ReadonlyMap<string, SavedRefuelingRecord> }) {
+export function useRefuelingDrafts(options: { accountId: string; knownRecords: () => ReadonlyMap<string, SavedRefuelingRecord> }) {
+  const names = accountStorageNames(options.accountId);
   const snapshot = shallowRef<RefuelingDraftSnapshot>({
     status: "loading",
     recovery: { status: "loading" },
@@ -56,13 +58,13 @@ export function useRefuelingDrafts(options: { knownRecords: () => ReadonlyMap<st
     if (session !== null) return;
     const claim =
       typeof navigator !== "undefined" && "locks" in navigator
-        ? createWebLocksPageClaim()
+        ? createWebLocksPageClaim(navigator.locks, names.draftScope)
         : createUnclaimedPageClaim();
     try {
-      const store = await openRefuelingDraftStore();
+      const store = await openRefuelingDraftStore(names.drafts);
       session = new RefuelingDraftSession({
         store,
-        locator: createSessionLocatorStorage(),
+        locator: createSessionLocatorStorage(names.draftScope),
         claim,
         knownRecords: options.knownRecords,
         onChange: sync,

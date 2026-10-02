@@ -7,13 +7,18 @@ import {
   type SavedRefuelingRecord,
 } from "../domain/refueling/form";
 
+export const refuelingRecordFields: ReadonlySet<string> = new Set([
+  ...Object.keys(numberFields), "occurredAtLocal", "fullTank", "lowFuelLight",
+  "stationName", "fuelGrade", "orderNumber",
+]);
+
 export function readRecords(doc: LoroDoc): SavedRefuelingRecord[] {
-  const data = doc.getMap("records").toJSON() as Record<string, unknown>;
-  return Object.entries(data)
+  return doc.getMap("records").entries()
     .map(([id, value]) => {
-      if (typeof value !== "object" || value === null || Array.isArray(value))
+      if (!(value instanceof LoroMap))
         throw new Error("记录格式不受支持，已保留本机数据。");
-      const record = value as RefuelingRecord;
+      // entries 保留特殊键和容器句柄；toJSON 会漏键，并把 Text/Counter 冒充为标量。
+      const record = Object.fromEntries(value.entries()) as RefuelingRecord;
       for (const key of Object.keys(
         numberFields,
       ) as (keyof typeof numberFields)[]) {
