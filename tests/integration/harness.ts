@@ -156,7 +156,9 @@ export interface TestWorkerHandle {
   persistDir: string;
   r2: TestR2Bucket;
   createSession(subject?: string): Promise<TestWorkerSession>;
+  bootstrap(account: TestWorkerSession): Promise<{ documentGeneration: string; legacyGeneration: string }>;
   sync(account: TestWorkerSession, snapshot: Uint8Array): Promise<Response>;
+  bootstrapDirect(subject: string, account: TestWorkerSession): Promise<{ documentGeneration: string; legacyGeneration: string } | null>;
   syncDirect(subject: string, account: TestWorkerSession, snapshot: Uint8Array): Promise<Response>;
   status(account: TestWorkerSession): Promise<Response>;
   debugState(): Promise<{ alarm: number | null; rows: Record<string, unknown[]> }>;
@@ -192,6 +194,7 @@ export async function startTestWorker(options: { bundleDir: string; persistDir: 
   const miniflare = createTestMiniflare(options);
   const r2 = await miniflare.getR2Bucket("HAKO_BACKUPS");
 
+  const generations = new Map<string, string>();
   async function postJson(path: string, body: unknown): Promise<unknown> {
     const response = await miniflare.dispatchFetch(`https://hako.test${path}`, {
       method: "POST",
@@ -202,6 +205,34 @@ export async function startTestWorker(options: { bundleDir: string; persistDir: 
     return await response.json();
   }
 
+  /** 直连 DO bootstrap（隔离测试的第二合成身份不走固定 owner 路由）；拒绝按 null 返回。 */
+  async function bootstrapDirect(subject: string, account: TestWorkerSession): Promise<{ documentGeneration: string; legacyGeneration: string } | null> {
+    const response = await miniflare.dispatchFetch(
+      `https://hako.test/test/bootstrap-direct?subject=${encodeURIComponent(subject)}&token=${encodeURIComponent(account.token)}&account=${account.accountId}`,
+      { method: "POST", body: "{}" },
+    );
+    if (response.status !== 200) return null;
+    return await response.json() as { documentGeneration: string; legacyGeneration: string };
+  }
+
+  /** 协议 v2 bootstrap（真实路由）：取得并缓存该账号会话的当前代次。 */
+  async function bootstrap(account: TestWorkerSession): Promise<{ documentGeneration: string; legacyGeneration: string }> {
+    const response = await miniflare.dispatchFetch("https://hako.test/api/sync/refueling/bootstrap", {
+      method: "POST",
+      headers: {
+        Origin: "https://hako.test",
+        Cookie: `__Host-hako_session=${account.token}`,
+        "X-Hako-Account": account.accountId,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    if (response.status !== 200) throw new Error(`bootstrap failed: ${response.status}`);
+    const info = await response.json() as { documentGeneration: string; legacyGeneration: string };
+    generations.set(account.token, info.documentGeneration);
+    return info;
+  }
+
   return {
     miniflare,
     bundleDir: options.bundleDir,
@@ -210,22 +241,36 @@ export async function startTestWorker(options: { bundleDir: string; persistDir: 
     async createSession(subject = "synthetic-owner") {
       return await postJson(`/test/session?subject=${encodeURIComponent(subject)}`, {}) as TestWorkerSession;
     },
+    bootstrap,
+    bootstrapDirect,
     async sync(account, snapshot) {
+      // 协议 v2：携带 bootstrap 缓存的当前代次上传（生产客户端在应用打开时
+      // bootstrap 一次；测试用 handle.bootstrap 预热，同步本身只计同步 SQL）。
+      let generation = generations.get(account.token);
+      if (generation === undefined) {
+        const info = await bootstrap(account);
+        generation = info.documentGeneration;
+      }
       return await miniflare.dispatchFetch("https://hako.test/api/sync/refueling", {
         method: "POST",
         headers: {
           Origin: "https://hako.test",
           Cookie: `__Host-hako_session=${account.token}`,
           "X-Hako-Account": account.accountId,
-          "X-Hako-Sync-Protocol": "1",
+          "X-Hako-Sync-Protocol": "2",
+          "X-Hako-Document-Generation": generation,
           "Content-Type": "application/octet-stream",
         },
         body: new Uint8Array(snapshot) as unknown as BodyInit,
       });
     },
     async syncDirect(subject: string, account: TestWorkerSession, snapshot: Uint8Array): Promise<Response> {
+      // 先直连 DO 取得该账号当前代次，再携带代次直连同步；bootstrap 阶段的
+      // 账号不匹配等拒绝与同步阶段一样表现为 409。
+      const bootstrap = await bootstrapDirect(subject, account);
+      if (bootstrap === null) return Response.json({ ok: false, error: "account_changed" }, { status: 409 });
       return await miniflare.dispatchFetch(
-        `https://hako.test/test/sync-direct?subject=${encodeURIComponent(subject)}&token=${encodeURIComponent(account.token)}&account=${account.accountId}`,
+        `https://hako.test/test/sync-direct?subject=${encodeURIComponent(subject)}&token=${encodeURIComponent(account.token)}&account=${account.accountId}&generation=${bootstrap.documentGeneration}`,
         { method: "POST", body: new Uint8Array(snapshot) as unknown as BodyInit },
       );
     },

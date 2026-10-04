@@ -35,6 +35,20 @@ const fastSchedule = {
   retentionCount: 30,
 };
 
+/**
+ * 代次兼容基础（A）后的实测 SQL 计量（协议 v2 同步与备份生命周期）。
+ * 数值以本套件连续多次全量运行的稳定读数为准（详见备份合同 §10 的更新记录）；
+ * 计量取样口径不变：同步区间只含同步请求，alarm 区间按生命周期差值。
+ */
+const SQL_METERS = {
+  sync: { rowsRead: 8, rowsWritten: 4 },
+  firstBaselineAlarm: { rowsRead: 53, rowsWritten: 18, statements: 72 },
+  windowMergeAlarm: { rowsRead: 56, rowsWritten: 18, statements: 73 },
+  pruneAlarm: { rowsRead: 79, rowsWritten: 23, statements: 89 },
+  retryFailedAlarm: { rowsRead: 29, rowsWritten: 7, statements: 36 },
+  retryDoneAlarm: { rowsRead: 43, rowsWritten: 13, statements: 55 },
+};
+
 let bundleDir: string;
 let worker: TestWorkerHandle;
 let persistDir: string;
@@ -174,10 +188,13 @@ describe("独立备份 workerd 集成验收", () => {
     const before = Date.now();
     const working = doc();
     writeRecord(working, "one", syntheticRecord, true);
+    // 协议 v2 客户端时序：bootstrap（应用打开时一次）在取样区间之外，
+    // 取样区间内只有同步请求本身。
+    await worker.bootstrap(account);
     const meterBeforeSync = (await worker.sqlMeter()).totals;
     await syncOk(account, working.export({ mode: "snapshot" }));
-    // 一次同步（RPC 鉴权 + 合并 + 待备责任 + 续期判定）的实际 SQL 用量：
-    // 取样区间内只有同步请求本身，调试读取一律在区间之外。
+    // 一次同步（RPC 鉴证 + 代次核对 + 合并 + 待备责任 + 续期判定）的实际 SQL 用量：
+    // 调试读取一律在区间之外。
     const meterAfterSync = (await worker.sqlMeter()).totals;
     const state = await worker.debugState();
     // alarm 固定在首次未覆盖变化 + 30 秒；不受后续编辑顺延。
@@ -187,8 +204,8 @@ describe("独立备份 workerd 集成验收", () => {
       rowsRead: meterAfterSync.rowsRead - meterBeforeSync.rowsRead,
       rowsWritten: meterAfterSync.rowsWritten - meterBeforeSync.rowsWritten,
     };
-    expect(syncSql.rowsRead).toBe(6);
-    expect(syncSql.rowsWritten).toBe(4);
+    expect(syncSql.rowsRead).toBe(SQL_METERS.sync.rowsRead);
+    expect(syncSql.rowsWritten).toBe(SQL_METERS.sync.rowsWritten);
     // 计量完整性门禁：出现过累计异常（incomplete）时数值不可采纳。
     expect((await worker.sqlMeter()).incomplete).toBe(false);
     await waitForBackups(1, 40_000);
@@ -198,9 +215,9 @@ describe("独立备份 workerd 集成验收", () => {
     expect(meter.active).toBe(true);
     expect(meter.incomplete).toBe(false);
     expect(meter.lastAlarm).not.toBeNull();
-    expect(meter.lastAlarm!.rowsRead).toBe(48);
-    expect(meter.lastAlarm!.rowsWritten).toBe(18);
-    expect(meter.lastAlarm!.statements).toBe(67);
+    expect(meter.lastAlarm!.rowsRead).toBe(SQL_METERS.firstBaselineAlarm.rowsRead);
+    expect(meter.lastAlarm!.rowsWritten).toBe(SQL_METERS.firstBaselineAlarm.rowsWritten);
+    expect(meter.lastAlarm!.statements).toBe(SQL_METERS.firstBaselineAlarm.statements);
     console.log("SQL_METER_PROD", JSON.stringify({ sync: syncSql, backupAlarm: meter.lastAlarm }));
     const after = await worker.debugState();
     expect(after.rows.completions).toEqual([{ revision: 1 }]);
@@ -250,9 +267,9 @@ describe("独立备份 workerd 集成验收", () => {
     const meter = await worker.sqlMeter();
     expect(meter.active).toBe(true);
     expect(meter.incomplete).toBe(false);
-    expect(meter.lastAlarm!.rowsRead).toBe(51);
-    expect(meter.lastAlarm!.rowsWritten).toBe(18);
-    expect(meter.lastAlarm!.statements).toBe(68);
+    expect(meter.lastAlarm!.rowsRead).toBe(SQL_METERS.windowMergeAlarm.rowsRead);
+    expect(meter.lastAlarm!.rowsWritten).toBe(SQL_METERS.windowMergeAlarm.rowsWritten);
+    expect(meter.lastAlarm!.statements).toBe(SQL_METERS.windowMergeAlarm.statements);
     console.log("SQL_METER_WINDOW", JSON.stringify(meter.lastAlarm));
     // 观测读取被计量抑制：debugState 轮询前后计量值完全不变——即使观测请求
     // 交错在 alarm 的外部 I/O 期间，也不进入生命周期差值（对照父侧合成实测：
@@ -345,9 +362,9 @@ describe("独立备份 workerd 集成验收", () => {
     const meter = await worker.sqlMeter();
     expect(meter.active).toBe(true);
     expect(meter.incomplete).toBe(false);
-    expect(meter.lastAlarm!.rowsRead).toBe(74);
-    expect(meter.lastAlarm!.rowsWritten).toBe(23);
-    expect(meter.lastAlarm!.statements).toBe(84);
+    expect(meter.lastAlarm!.rowsRead).toBe(SQL_METERS.pruneAlarm.rowsRead);
+    expect(meter.lastAlarm!.rowsWritten).toBe(SQL_METERS.pruneAlarm.rowsWritten);
+    expect(meter.lastAlarm!.statements).toBe(SQL_METERS.pruneAlarm.statements);
     console.log("SQL_METER_PRUNE", JSON.stringify(meter.lastAlarm));
 
     // 多行校准（30 行，与父侧 30 行探针同规模）：官方计量随游标消费逐步累计——
@@ -396,9 +413,9 @@ describe("独立备份 workerd 集成验收", () => {
     const failedAttemptMeter = await worker.sqlMeter();
     expect(failedAttemptMeter.active).toBe(true);
     expect(failedAttemptMeter.incomplete).toBe(false);
-    expect(failedAttemptMeter.lastAlarm!.rowsRead).toBe(27);
-    expect(failedAttemptMeter.lastAlarm!.rowsWritten).toBe(7);
-    expect(failedAttemptMeter.lastAlarm!.statements).toBe(34);
+    expect(failedAttemptMeter.lastAlarm!.rowsRead).toBe(SQL_METERS.retryFailedAlarm.rowsRead);
+    expect(failedAttemptMeter.lastAlarm!.rowsWritten).toBe(SQL_METERS.retryFailedAlarm.rowsWritten);
+    expect(failedAttemptMeter.lastAlarm!.statements).toBe(SQL_METERS.retryFailedAlarm.statements);
     console.log("SQL_METER_RETRY_FAILED", JSON.stringify(failedAttemptMeter.lastAlarm));
     await waitForBackups(1, 10_000);
     state = await worker.debugState();
@@ -407,9 +424,9 @@ describe("独立备份 workerd 集成验收", () => {
     const retryMeter = await worker.sqlMeter();
     expect(retryMeter.active).toBe(true);
     expect(retryMeter.incomplete).toBe(false);
-    expect(retryMeter.lastAlarm!.rowsRead).toBe(40);
-    expect(retryMeter.lastAlarm!.rowsWritten).toBe(13);
-    expect(retryMeter.lastAlarm!.statements).toBe(52);
+    expect(retryMeter.lastAlarm!.rowsRead).toBe(SQL_METERS.retryDoneAlarm.rowsRead);
+    expect(retryMeter.lastAlarm!.rowsWritten).toBe(SQL_METERS.retryDoneAlarm.rowsWritten);
+    expect(retryMeter.lastAlarm!.statements).toBe(SQL_METERS.retryDoneAlarm.statements);
     console.log("SQL_METER_RETRY_DONE", JSON.stringify(retryMeter.lastAlarm));
 
     // 写后丢失响应：包 PUT 已生效但抛错；重试时条件创建返回 null，读回核验一致后完成。

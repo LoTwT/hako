@@ -665,3 +665,48 @@ describe("草稿恢复决策", () => {
     expect(second.session.recovery.status).toBe("ready");
   });
 });
+
+describe("保留内容带回后的草稿上下文持久化（R9 二轮）", () => {
+  it("带回绑定的编辑上下文随输入落盘：重开恢复为同记录编辑草稿，不误当新增", async () => {
+    // 保留记录带回后的表单：attachForm 绑定当前记录与当前基线（非旧随机 ID/新增）。
+    const store = new FakeDraftStore();
+    const current = recordFixture("one");
+    const { session } = createSession(store, { knownRecords: new Map([["one", current]]) });
+    await session.initialize();
+    session.attachForm({ mode: "edit", recordId: "one", base: current });
+    const draft = draftValues([["stationName", "retained input"]]);
+    session.updateDraft(draft);
+    expect(await session.flush()).toBe(true);
+
+    // 落盘的草稿属于编辑 one、基线为当前记录；关闭重开（新会话）可恢复同一上下文。
+    const stored = [...store.entries.values()].at(-1)!;
+    expect(stored.mode).toBe("edit");
+    expect(stored.recordId).toBe("one");
+    expect(stored.base).toMatchObject({ id: "one" });
+    const { session: reopened } = createSession(store, { knownRecords: new Map([["one", current]]) });
+    await reopened.initialize();
+    const adopted = await reopened.adopt(stored.id);
+    expect(adopted).not.toBeNull();
+    expect(adopted).toMatchObject({ mode: "edit", recordId: "one" });
+    // 恢复后继续输入仍写入同一份草稿（不生成第二份）。
+    reopened.updateDraft(updateDraft(draft, "stationName", "retained input 2"));
+    expect(await reopened.flush()).toBe(true);
+    expect(store.entries.size).toBe(1);
+    session.close();
+    reopened.close();
+  });
+
+  it("带回新记录（记录不存在）时落盘为新增草稿：重开不误绑旧记录基线", async () => {
+    const store = new FakeDraftStore();
+    const { session } = createSession(store);
+    await session.initialize();
+    session.attachForm({ mode: "create", recordId: "fresh-id", base: null });
+    session.updateDraft(draftValues([["stationName", "retained input"]]));
+    expect(await session.flush()).toBe(true);
+    const stored = [...store.entries.values()].at(-1)!;
+    expect(stored.mode).toBe("create");
+    expect(stored.recordId).toBe("fresh-id");
+    expect(stored.base).toBeNull();
+    session.close();
+  });
+});

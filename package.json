@@ -9,7 +9,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "tauri": "tauri",
     "typecheck": "cf workers types && vue-tsc --noEmit && tsc --noEmit -p tsconfig.worker.json && tsc --noEmit -p tsconfig.node.json",
-    "test": "vitest run"
+    "test": "vitest run && vitest run --config vitest.components.config.ts"
   },
   "dependencies": {
     "decimal.js": "10.6.0",

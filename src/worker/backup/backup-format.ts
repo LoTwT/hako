@@ -2,23 +2,35 @@
 // 本文件是格式的唯一权威实现：序列化、严格解析、版本向量摘要与键的构造／反解。
 // 业务字段校验不在格式层做，引用既有验证器（见 backup-verify.ts 与同步合同）。
 //
-// 包结构：8 字节 ASCII `HAKOBK1\n` + 4 字节大端 manifest 长度 + UTF-8 JSON manifest
-// + 原始 Loro snapshot；总长必须精确匹配，无尾随数据。首版不套 Base64 或压缩。
+// 格式 v1（已部署）：8 字节 ASCII `HAKOBK1\n` + 4 字节大端 manifest 长度 + UTF-8 JSON
+// manifest + 原始 Loro snapshot；总长必须精确匹配，无尾随数据。
+// 格式 v2（代次兼容基础 A 新增）：魔数 `HAKOBK2\n`，二进制长度结构与上限沿用 v1；
+// manifest 与 marker 的 formatVersion 均为 2 且必须彼此匹配，sourceGeneration 为
+// document-generation-v1，新增 generationOrigin，syncProtocol 为 2，reason 增加
+// restore-baseline。对象布局仍为 layout-v1，继续使用原 stream 与全局递增 revision。
+// 解析显式区分 v1/v2，不放宽 v1 的严格字段校验，也不根据账号 ID 猜测现代次。
 
 import { MAX_SYNC_BYTES } from "../../shared/sync-protocol";
+import {
+  parseGenerationOrigin,
+  serializeGenerationOrigin,
+  type GenerationOrigin,
+} from "../../shared/document-generation";
 
 /** 备份对象的固定环境标签；生产 Worker 与本地模拟共用同一代码路径。 */
 export const BACKUP_ENVIRONMENT = "production";
 
 /** 布局与格式的标识常量；与 Loro 库版本、同步协议版本和业务 schema 分开维护。 */
 export const BACKUP_FORMAT_NAME = "hako-independent-backup";
-export const BACKUP_FORMAT_VERSION = 1;
+export const BACKUP_FORMAT_VERSION_V1 = 1;
+export const BACKUP_FORMAT_VERSION_V2 = 2;
+export type BackupFormatVersion = typeof BACKUP_FORMAT_VERSION_V1 | typeof BACKUP_FORMAT_VERSION_V2;
 export const BACKUP_DOCUMENT_TYPE = "refueling";
 export const BACKUP_BUSINESS_SCHEMA = "hako-refueling-records-v1";
 export const BACKUP_LORO_VERSION = "1.16.3";
-export const BACKUP_SYNC_PROTOCOL = 1;
 
-const BUNDLE_MAGIC = "HAKOBK1\n";
+const BUNDLE_MAGIC_V1 = "HAKOBK1\n";
+const BUNDLE_MAGIC_V2 = "HAKOBK2\n";
 const BUNDLE_MAGIC_BYTES = 8;
 const MANIFEST_LENGTH_BYTES = 4;
 const MAX_MANIFEST_BYTES = 16 * 1024;
@@ -33,18 +45,15 @@ export const MAX_BUNDLE_BYTES = MAX_SNAPSHOT_BYTES + MAX_BUNDLE_OVERHEAD_BYTES;
 
 const REVISION_DIGITS = 20;
 
-export type BackupCaptureReason = "baseline" | "history-change";
+export type BackupCaptureReason = "baseline" | "history-change" | "restore-baseline";
 
-export interface BackupManifest {
+interface BackupManifestBase {
   format: typeof BACKUP_FORMAT_NAME;
-  formatVersion: typeof BACKUP_FORMAT_VERSION;
   environment: string;
   accountId: string;
   documentType: typeof BACKUP_DOCUMENT_TYPE;
-  sourceGeneration: { kind: "legacy-account-v1"; id: string };
   backupStreamId: string;
   revision: number;
-  reason: BackupCaptureReason;
   /** DO 冻结时刻；一旦入库不再改变。 */
   capturedAt: string;
   /** 该源版本持久提交时刻；启用前基线没有已知服务端提交时间时为 null。 */
@@ -52,7 +61,6 @@ export interface BackupManifest {
   previousCompletedRevision: number | null;
   firstPendingRevision: number | null;
   businessSchema: typeof BACKUP_BUSINESS_SCHEMA;
-  syncProtocol: typeof BACKUP_SYNC_PROTOCOL;
   loroVersion: typeof BACKUP_LORO_VERSION;
   snapshotMode: "snapshot";
   snapshotBytes: number;
@@ -61,9 +69,28 @@ export interface BackupManifest {
   recordCount: number;
 }
 
+/** 格式 v1：legacy 账号来源，仅 baseline/history-change。 */
+export interface BackupManifestV1 extends BackupManifestBase {
+  formatVersion: typeof BACKUP_FORMAT_VERSION_V1;
+  sourceGeneration: { kind: "legacy-account-v1"; id: string };
+  reason: "baseline" | "history-change";
+  syncProtocol: 1;
+}
+
+/** 格式 v2：文档代次来源，携带代次来源；restore-baseline 仅用于切换事务冻结的首份恢复快照。 */
+export interface BackupManifestV2 extends BackupManifestBase {
+  formatVersion: typeof BACKUP_FORMAT_VERSION_V2;
+  sourceGeneration: { kind: "document-generation-v1"; id: string };
+  generationOrigin: GenerationOrigin;
+  reason: BackupCaptureReason;
+  syncProtocol: 2;
+}
+
+export type BackupManifest = BackupManifestV1 | BackupManifestV2;
+
 export interface BackupCommitMarker {
   format: typeof BACKUP_FORMAT_NAME;
-  formatVersion: typeof BACKUP_FORMAT_VERSION;
+  formatVersion: BackupFormatVersion;
   environment: string;
   accountId: string;
   documentType: typeof BACKUP_DOCUMENT_TYPE;
@@ -175,18 +202,37 @@ function serializeFixedJson(fields: readonly (readonly [string, unknown])[]): Ui
   return new TextEncoder().encode(JSON.stringify(object));
 }
 
-const manifestFieldOrder = [
-  "format", "formatVersion", "environment", "accountId", "documentType", "sourceGeneration",
-  "backupStreamId", "revision", "reason", "capturedAt", "sourceCommittedAt",
-  "previousCompletedRevision", "firstPendingRevision", "businessSchema", "syncProtocol",
-  "loroVersion", "snapshotMode", "snapshotBytes", "snapshotSha256", "historyVersionSha256",
-  "recordCount",
-] as const;
-
 export function serializeManifest(manifest: BackupManifest): Uint8Array {
+  if (manifest.formatVersion === BACKUP_FORMAT_VERSION_V2) {
+    return serializeFixedJson([
+      ["format", BACKUP_FORMAT_NAME],
+      ["formatVersion", BACKUP_FORMAT_VERSION_V2],
+      ["environment", manifest.environment],
+      ["accountId", manifest.accountId],
+      ["documentType", BACKUP_DOCUMENT_TYPE],
+      ["sourceGeneration", { kind: "document-generation-v1", id: manifest.sourceGeneration.id }],
+      ["generationOrigin", JSON.parse(serializeGenerationOrigin(manifest.generationOrigin))],
+      ["backupStreamId", manifest.backupStreamId],
+      ["revision", manifest.revision],
+      ["reason", manifest.reason],
+      ["capturedAt", manifest.capturedAt],
+      ["sourceCommittedAt", manifest.sourceCommittedAt],
+      ["previousCompletedRevision", manifest.previousCompletedRevision],
+      ["firstPendingRevision", manifest.firstPendingRevision],
+      ["businessSchema", BACKUP_BUSINESS_SCHEMA],
+      ["syncProtocol", 2],
+      ["loroVersion", BACKUP_LORO_VERSION],
+      ["snapshotMode", "snapshot"],
+      ["snapshotBytes", manifest.snapshotBytes],
+      ["snapshotSha256", manifest.snapshotSha256],
+      ["historyVersionSha256", manifest.historyVersionSha256],
+      ["recordCount", manifest.recordCount],
+    ]);
+  }
+  // v1 的固定字段顺序（历史兼容，字节级不变）。
   return serializeFixedJson([
     ["format", BACKUP_FORMAT_NAME],
-    ["formatVersion", BACKUP_FORMAT_VERSION],
+    ["formatVersion", BACKUP_FORMAT_VERSION_V1],
     ["environment", manifest.environment],
     ["accountId", manifest.accountId],
     ["documentType", BACKUP_DOCUMENT_TYPE],
@@ -199,7 +245,7 @@ export function serializeManifest(manifest: BackupManifest): Uint8Array {
     ["previousCompletedRevision", manifest.previousCompletedRevision],
     ["firstPendingRevision", manifest.firstPendingRevision],
     ["businessSchema", BACKUP_BUSINESS_SCHEMA],
-    ["syncProtocol", BACKUP_SYNC_PROTOCOL],
+    ["syncProtocol", 1],
     ["loroVersion", BACKUP_LORO_VERSION],
     ["snapshotMode", "snapshot"],
     ["snapshotBytes", manifest.snapshotBytes],
@@ -209,11 +255,33 @@ export function serializeManifest(manifest: BackupManifest): Uint8Array {
   ]);
 }
 
+const manifestV1FieldOrder = [
+  "format", "formatVersion", "environment", "accountId", "documentType", "sourceGeneration",
+  "backupStreamId", "revision", "reason", "capturedAt", "sourceCommittedAt",
+  "previousCompletedRevision", "firstPendingRevision", "businessSchema", "syncProtocol",
+  "loroVersion", "snapshotMode", "snapshotBytes", "snapshotSha256", "historyVersionSha256",
+  "recordCount",
+] as const;
+
+const manifestV2FieldOrder = [
+  "format", "formatVersion", "environment", "accountId", "documentType", "sourceGeneration",
+  "generationOrigin", "backupStreamId", "revision", "reason", "capturedAt", "sourceCommittedAt",
+  "previousCompletedRevision", "firstPendingRevision", "businessSchema", "syncProtocol",
+  "loroVersion", "snapshotMode", "snapshotBytes", "snapshotSha256", "historyVersionSha256",
+  "recordCount",
+] as const;
+
 export function parseManifest(bytes: Uint8Array): BackupManifest {
   const object = requireObject(decodeJson(bytes, MAX_MANIFEST_BYTES));
-  requireExactKeys(object, manifestFieldOrder);
+  const formatVersion = object.formatVersion;
+  if (formatVersion === BACKUP_FORMAT_VERSION_V1) return parseManifestV1(object);
+  if (formatVersion === BACKUP_FORMAT_VERSION_V2) return parseManifestV2(object);
+  throw new BackupFormatError("unexpected_field_value");
+}
+
+function parseManifestV1(object: Record<string, unknown>): BackupManifestV1 {
+  requireExactKeys(object, manifestV1FieldOrder);
   requireFixedString(object, "format", BACKUP_FORMAT_NAME);
-  if (requireSafeInteger(object, "formatVersion") !== BACKUP_FORMAT_VERSION) throw new BackupFormatError("unexpected_field_value");
   const reason = requireString(object, "reason");
   if (reason !== "baseline" && reason !== "history-change") throw new BackupFormatError("invalid_field_value");
   const sourceGeneration = requireObject(object.sourceGeneration);
@@ -223,7 +291,7 @@ export function parseManifest(bytes: Uint8Array): BackupManifest {
   if (snapshotBytes > MAX_SNAPSHOT_BYTES) throw new BackupFormatError("snapshot_too_large");
   return {
     format: BACKUP_FORMAT_NAME,
-    formatVersion: BACKUP_FORMAT_VERSION,
+    formatVersion: BACKUP_FORMAT_VERSION_V1,
     environment: requireString(object, "environment"),
     accountId: requireUuid(object, "accountId"),
     documentType: requireFixedString(object, "documentType", BACKUP_DOCUMENT_TYPE),
@@ -236,7 +304,47 @@ export function parseManifest(bytes: Uint8Array): BackupManifest {
     previousCompletedRevision: requireRevisionOrNull(object, "previousCompletedRevision"),
     firstPendingRevision: requireRevisionOrNull(object, "firstPendingRevision"),
     businessSchema: requireFixedString(object, "businessSchema", BACKUP_BUSINESS_SCHEMA),
-    syncProtocol: requireFixedInteger(object, "syncProtocol", BACKUP_SYNC_PROTOCOL),
+    syncProtocol: requireFixedInteger(object, "syncProtocol", 1),
+    loroVersion: requireFixedString(object, "loroVersion", BACKUP_LORO_VERSION),
+    snapshotMode: requireFixedString(object, "snapshotMode", "snapshot"),
+    snapshotBytes,
+    snapshotSha256: requireSha256Hex(object, "snapshotSha256"),
+    historyVersionSha256: requireSha256Hex(object, "historyVersionSha256"),
+    recordCount: requireSafeInteger(object, "recordCount"),
+  };
+}
+
+function parseManifestV2(object: Record<string, unknown>): BackupManifestV2 {
+  requireExactKeys(object, manifestV2FieldOrder);
+  requireFixedString(object, "format", BACKUP_FORMAT_NAME);
+  const reason = requireString(object, "reason");
+  if (reason !== "baseline" && reason !== "history-change" && reason !== "restore-baseline") {
+    throw new BackupFormatError("invalid_field_value");
+  }
+  const sourceGeneration = requireObject(object.sourceGeneration);
+  requireExactKeys(sourceGeneration, ["kind", "id"]);
+  requireFixedString(sourceGeneration, "kind", "document-generation-v1");
+  const origin = parseGenerationOrigin(object.generationOrigin);
+  if (origin === null) throw new BackupFormatError("invalid_field_value");
+  const snapshotBytes = requireSafeInteger(object, "snapshotBytes");
+  if (snapshotBytes > MAX_SNAPSHOT_BYTES) throw new BackupFormatError("snapshot_too_large");
+  return {
+    format: BACKUP_FORMAT_NAME,
+    formatVersion: BACKUP_FORMAT_VERSION_V2,
+    environment: requireString(object, "environment"),
+    accountId: requireUuid(object, "accountId"),
+    documentType: requireFixedString(object, "documentType", BACKUP_DOCUMENT_TYPE),
+    sourceGeneration: { kind: "document-generation-v1", id: requireUuid(sourceGeneration, "id") },
+    generationOrigin: origin,
+    backupStreamId: requireUuid(object, "backupStreamId"),
+    revision: requireSafeInteger(object, "revision"),
+    reason,
+    capturedAt: requireIsoUtc(object, "capturedAt"),
+    sourceCommittedAt: requireIsoUtcOrNull(object, "sourceCommittedAt"),
+    previousCompletedRevision: requireRevisionOrNull(object, "previousCompletedRevision"),
+    firstPendingRevision: requireRevisionOrNull(object, "firstPendingRevision"),
+    businessSchema: requireFixedString(object, "businessSchema", BACKUP_BUSINESS_SCHEMA),
+    syncProtocol: requireFixedInteger(object, "syncProtocol", 2),
     loroVersion: requireFixedString(object, "loroVersion", BACKUP_LORO_VERSION),
     snapshotMode: requireFixedString(object, "snapshotMode", "snapshot"),
     snapshotBytes,
@@ -275,7 +383,7 @@ const markerFieldOrder = [
 export function serializeMarker(marker: BackupCommitMarker): Uint8Array {
   return serializeFixedJson([
     ["format", BACKUP_FORMAT_NAME],
-    ["formatVersion", BACKUP_FORMAT_VERSION],
+    ["formatVersion", marker.formatVersion],
     ["environment", marker.environment],
     ["accountId", marker.accountId],
     ["documentType", BACKUP_DOCUMENT_TYPE],
@@ -291,12 +399,15 @@ export function parseMarker(bytes: Uint8Array): BackupCommitMarker {
   const object = requireObject(decodeJson(bytes, MAX_MARKER_BYTES));
   requireExactKeys(object, markerFieldOrder);
   requireFixedString(object, "format", BACKUP_FORMAT_NAME);
-  if (requireSafeInteger(object, "formatVersion") !== BACKUP_FORMAT_VERSION) throw new BackupFormatError("unexpected_field_value");
+  const formatVersion = requireSafeInteger(object, "formatVersion");
+  if (formatVersion !== BACKUP_FORMAT_VERSION_V1 && formatVersion !== BACKUP_FORMAT_VERSION_V2) {
+    throw new BackupFormatError("unexpected_field_value");
+  }
   const objectKey = requireString(object, "objectKey");
   if (objectKey.length === 0 || objectKey.length > 1024) throw new BackupFormatError("invalid_field_value");
   return {
     format: BACKUP_FORMAT_NAME,
-    formatVersion: BACKUP_FORMAT_VERSION,
+    formatVersion,
     environment: requireString(object, "environment"),
     accountId: requireUuid(object, "accountId"),
     documentType: requireFixedString(object, "documentType", BACKUP_DOCUMENT_TYPE),
@@ -310,19 +421,22 @@ export function parseMarker(bytes: Uint8Array): BackupCommitMarker {
 
 // ---------------------------------------------------------------------------
 // 二进制包：magic + manifest 长度 + manifest + snapshot；严格长度校验。
+// 魔数显式区分 v1/v2；v2 包内 manifest 的 formatVersion 必须为 2。
 // ---------------------------------------------------------------------------
 
 export interface ParsedBackupBundle {
   manifest: BackupManifest;
   manifestBytes: Uint8Array;
   snapshot: Uint8Array;
+  formatVersion: BackupFormatVersion;
 }
 
-export function encodeBundle(manifestBytes: Uint8Array, snapshot: Uint8Array): Uint8Array {
+export function encodeBundle(manifestBytes: Uint8Array, snapshot: Uint8Array, formatVersion: BackupFormatVersion = BACKUP_FORMAT_VERSION_V1): Uint8Array {
   if (manifestBytes.byteLength > MAX_MANIFEST_BYTES) throw new BackupFormatError("manifest_too_large");
+  const magic = formatVersion === BACKUP_FORMAT_VERSION_V2 ? BUNDLE_MAGIC_V2 : BUNDLE_MAGIC_V1;
   const total = BUNDLE_MAGIC_BYTES + MANIFEST_LENGTH_BYTES + manifestBytes.byteLength + snapshot.byteLength;
   const bundle = new Uint8Array(total);
-  bundle.set(new TextEncoder().encode(BUNDLE_MAGIC), 0);
+  bundle.set(new TextEncoder().encode(magic), 0);
   new DataView(bundle.buffer).setUint32(BUNDLE_MAGIC_BYTES, manifestBytes.byteLength, false);
   bundle.set(manifestBytes, BUNDLE_MAGIC_BYTES + MANIFEST_LENGTH_BYTES);
   bundle.set(snapshot, BUNDLE_MAGIC_BYTES + MANIFEST_LENGTH_BYTES + manifestBytes.byteLength);
@@ -334,9 +448,11 @@ export function parseBundle(bytes: Uint8Array): ParsedBackupBundle {
   if (bytes.byteLength > MAX_BUNDLE_BYTES) throw new BackupFormatError("bundle_too_large");
   const headerBytes = BUNDLE_MAGIC_BYTES + MANIFEST_LENGTH_BYTES;
   if (bytes.byteLength <= headerBytes) throw new BackupFormatError("bundle_too_short");
-  if (new TextDecoder().decode(bytes.slice(0, BUNDLE_MAGIC_BYTES)) !== BUNDLE_MAGIC) {
-    throw new BackupFormatError("bad_magic");
-  }
+  const magic = new TextDecoder().decode(bytes.slice(0, BUNDLE_MAGIC_BYTES));
+  let formatVersion: BackupFormatVersion;
+  if (magic === BUNDLE_MAGIC_V1) formatVersion = BACKUP_FORMAT_VERSION_V1;
+  else if (magic === BUNDLE_MAGIC_V2) formatVersion = BACKUP_FORMAT_VERSION_V2;
+  else throw new BackupFormatError("bad_magic");
   const manifestLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     .getUint32(BUNDLE_MAGIC_BYTES, false);
   if (manifestLength === 0 || manifestLength > MAX_MANIFEST_BYTES) {
@@ -347,8 +463,10 @@ export function parseBundle(bytes: Uint8Array): ParsedBackupBundle {
   const manifestBytes = bytes.slice(headerBytes, manifestEnd);
   const snapshot = bytes.slice(manifestEnd);
   const manifest = parseManifest(manifestBytes);
+  // 魔数与 manifest 的格式版本必须一致；不能靠 JSON 外观绕过魔数区分。
+  if (manifest.formatVersion !== formatVersion) throw new BackupFormatError("unexpected_field_value");
   if (manifest.snapshotBytes !== snapshot.byteLength) throw new BackupFormatError("snapshot_length_mismatch");
-  return { manifest, manifestBytes, snapshot };
+  return { manifest, manifestBytes, snapshot, formatVersion };
 }
 
 // ---------------------------------------------------------------------------

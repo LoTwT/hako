@@ -54,11 +54,18 @@ async function setupAccount(): Promise<void> {
 }
 
 async function syncWith(hash: string, subject: string, snapshot: Uint8Array, expected: string): Promise<SyncRefuelingResult> {
+  // 协议 v2：每次交换先以受控 bootstrap 取得当前代次（幂等，含 legacy 绑定），
+  // 再携带代次上传；与生产客户端的 bootstrap→同步顺序一致。
+  const bootstrap = await t.account.bootstrapRefueling({
+    sessionHash: hash, identity: { issuer: identity.issuer, subject }, nowMs: now, expectedAccountId: expected,
+  });
+  if (!bootstrap.ok) throw new Error(`bootstrap failed: ${bootstrap.error}`);
   return await t.account.syncRefueling({
     sessionHash: hash,
     identity: { issuer: identity.issuer, subject },
     nowMs: now,
     expectedAccountId: expected,
+    documentGeneration: bootstrap.documentGeneration,
     snapshot,
   });
 }
@@ -80,6 +87,25 @@ async function syncB(snapshot: Uint8Array): Promise<Uint8Array> {
 
 async function fireAlarm(): Promise<void> {
   await t.backups.onAlarm(now);
+}
+
+/**
+ * 模拟部署回退窗口的旧版本服务端写入：推进主库但不带代次标签（旧版 merge 的
+ * 显式三列插入），也不更新 revision/待备责任；升级后的读取按回退窗口语义接受
+ * 全 NULL 标签分块。
+ */
+function legacyWriteMainSnapshot(snapshot: Uint8Array): void {
+  t.storage.transactionSync(() => {
+    t.storage.sql.exec("DELETE FROM refueling_snapshots WHERE account_id = ?", accountId);
+    for (let offset = 0; offset < snapshot.byteLength; offset += 512 * 1024) {
+      t.storage.sql.exec(
+        "INSERT INTO refueling_snapshots (account_id, chunk_index, snapshot, document_generation) VALUES (?, ?, ?, NULL)",
+        accountId,
+        Math.floor(offset / (512 * 1024)),
+        snapshot.slice(offset, offset + 512 * 1024).buffer,
+      );
+    }
+  });
 }
 
 function cursorRow(): Record<string, unknown> {
@@ -243,10 +269,7 @@ describe("版本判定与待备责任", () => {
     // AccountDocuments.merge 在持久事务里推进主库（旧版没有 onSuccessfulMerge，
     // revision 计数器与待备责任不更新）。
     writeRecord(working, "legacy-window", syntheticRecord, true);
-    const documents = new AccountDocuments(t.storage);
-    const legacyOutcome = t.storage.transactionSync(() =>
-      documents.merge(accountId, working.export({ mode: "snapshot" })));
-    expect(legacyOutcome.historyAdvanced).toBe(true);
+    legacyWriteMainSnapshot(working.export({ mode: "snapshot" }));
 
     // 升级回新版本后客户端按当前快照空闲同步（无新历史）：合并结果包含旧版
     // 写入的历史，在同一同步事务内补登记为新的服务端 revision 并开启窗口，
@@ -684,10 +707,7 @@ describe("幂等、退避与长期故障", () => {
 
     // 回退窗口旧版服务端推进主库至第三段历史（客户端设备已写入并同步给旧版）。
     writeRecord(working, "old-code-three", syntheticRecord, true);
-    const documents = new AccountDocuments(t.storage);
-    const legacyOutcome = t.storage.transactionSync(() =>
-      documents.merge(accountId, working.export({ mode: "snapshot" })));
-    expect(legacyOutcome.historyAdvanced).toBe(true);
+    legacyWriteMainSnapshot(working.export({ mode: "snapshot" }));
 
     // 升级后旧客户端按既有快照同步（incoming 无新增）：合并结果未被冻结历史
     // 覆盖 → 成功同步的当场登记新的 revision/pending（不触碰冻结字节与重试计划），
@@ -732,8 +752,7 @@ describe("幂等、退避与长期故障", () => {
     // 未准备基线在途时旧版推进主库；旧客户端同步无法比对（无摘要）按设计跳过——
     // 该分支由确认内登记兜底。
     writeRecord(working, "old-code-while-unprepared", syntheticRecord, true);
-    const documents = new AccountDocuments(t.storage);
-    t.storage.transactionSync(() => documents.merge(accountId, working.export({ mode: "snapshot" })));
+    legacyWriteMainSnapshot(working.export({ mode: "snapshot" }));
     now += 1000;
     lastMerged = await sync(enablementInput);
     expect(cursorRow().pending_revision).toBeNull();
@@ -784,10 +803,7 @@ describe("幂等、退避与长期故障", () => {
 
     // 回退窗口旧版服务端推进主库（客户端设备写入并同步给旧版）。
     writeRecord(working, "old-code-during-baseline", syntheticRecord, true);
-    const documents = new AccountDocuments(t.storage);
-    const legacyOutcome = t.storage.transactionSync(() =>
-      documents.merge(accountId, working.export({ mode: "snapshot" })));
-    expect(legacyOutcome.historyAdvanced).toBe(true);
+    legacyWriteMainSnapshot(working.export({ mode: "snapshot" }));
 
     // 升级后旧客户端按启用时快照同步（incoming 无新增）：合并结果未被冻结基线
     // 覆盖 → 成功同步当场登记 revision 2/pending（无 latestCompleted 也适用），
@@ -826,10 +842,7 @@ describe("幂等、退避与长期故障", () => {
     // 冻结任务在途期间，回退到不认识备份的旧版本代码推进主库
     // （真实 AccountDocuments.merge，模拟旧版服务端行为，不产生待备责任）。
     writeRecord(working, "legacy-during-frozen", syntheticRecord, true);
-    const documents = new AccountDocuments(t.storage);
-    const legacyOutcome = t.storage.transactionSync(() =>
-      documents.merge(accountId, working.export({ mode: "snapshot" })));
-    expect(legacyOutcome.historyAdvanced).toBe(true);
+    legacyWriteMainSnapshot(working.export({ mode: "snapshot" }));
 
     // 恢复 R2：重试完成冻结版本（revision 1，内容为冻结时字节，不含旧版写入）。
     // 确认后立即按当前主文档核对覆盖：旧版写入的历史在完成时刻登记为
@@ -960,8 +973,11 @@ describe("幂等、退避与长期故障", () => {
         const recreated = new AccountSync(t.storage, t.state, documents, backups);
         now += 1000;
         writeRecord(working, "one", { stationName: "普通编辑" }, false);
+        const bootstrap = await recreated.bootstrap({ sessionHash, identity, nowMs: now, expectedAccountId: accountId });
+        expect(bootstrap.ok).toBe(true);
         const result = await recreated.exchange({
           sessionHash, identity, nowMs: now, expectedAccountId: accountId,
+          documentGeneration: bootstrap.ok ? bootstrap.documentGeneration : "",
           snapshot: working.export({ mode: "snapshot" }),
         });
         expect(result.ok).toBe(true);
@@ -1205,8 +1221,7 @@ describe("幂等、退避与长期故障", () => {
 
     // 冻结在途期间旧版推进主库（真实 AccountDocuments.merge）。
     writeRecord(working, "legacy-during-frozen", syntheticRecord, true);
-    const documents = new AccountDocuments(t.storage);
-    t.storage.transactionSync(() => documents.merge(accountId, working.export({ mode: "snapshot" })));
+    legacyWriteMainSnapshot(working.export({ mode: "snapshot" }));
 
     // 覆盖登记（backup_cursor 的 pending 列更新）持续失败：确认事务整体回滚，
     // 不存在「确认已提交、补登记未做」的中间状态。
@@ -1939,10 +1954,12 @@ describe("只读状态接口与账号隔离", () => {
     const rogueSnapshot = rogue.export({ mode: "snapshot" });
     for (let offset = 0; offset < rogueSnapshot.byteLength; offset += 512 * 1024) {
       t.storage.sql.exec(
-        "INSERT INTO refueling_snapshots VALUES (?, ?, ?)",
+        "INSERT INTO refueling_snapshots (account_id, chunk_index, snapshot, document_generation) VALUES (?, ?, ?, ?)",
         accountId,
         Math.floor(offset / (512 * 1024)),
         rogueSnapshot.slice(offset, offset + 512 * 1024).buffer,
+        // 模拟旧代码写入：不带代次标签（legacy NULL），与升级前生产状态一致。
+        null,
       );
     }
     const status = await t.account.readBackupStatus({ sessionHash, identity, nowMs: now });
@@ -1991,6 +2008,227 @@ function commitMarkerKeyOf(revision: number): string {
 function bundleKeyOf(revision: number): string {
   return t.bucket.storedKeys().find((key) => key.includes(`/objects/${String(revision).padStart(20, "0")}-`))!;
 }
+
+describe("代次兼容基础：捕获固定代次、覆盖判断与恢复基线消费", () => {
+  it("新捕获在冻结时固定源代次/格式/来源；完成缓存保存对应信息与快照哈希", async () => {
+    const working = doc();
+    writeRecord(working, "one", syntheticRecord, true);
+    lastMerged = await sync(working.export({ mode: "snapshot" }));
+    now += windowMs;
+    // 先注入一次 R2 故障：捕获后的任务保留在冻结表，验证捕获时固定字段。
+    t.bucket.addFault({ match: "prefix:hako-backup/", plan: { put: "throw" } });
+    await fireAlarm();
+    const head = t.storage.sql.exec(`SELECT * FROM refueling_document_heads WHERE account_id = ?`, accountId).toArray()[0] as { current_generation: string; legacy_generation: string };
+    expect(taskRow()).toMatchObject({
+      source_generation: head.current_generation,
+      format_version: 2,
+      generation_origin: JSON.stringify({ kind: "initial" }),
+    });
+    const frozenCapturedAt = taskRow()?.captured_at;
+    const frozenSnapshotSha = taskRow()?.snapshot_sha256;
+    t.bucket.clearFaults();
+    now += retryDelays[0];
+    await fireAlarm();
+    expect(completions()).toEqual([{ revision: 1 }]);
+    const completion = t.database.prepare(
+      "SELECT * FROM backup_completions WHERE account_id = ? AND revision = 1",
+    ).get(accountId) as Record<string, unknown>;
+    expect(completion).toMatchObject({
+      source_generation: head.current_generation,
+      format_version: 2,
+      generation_origin: JSON.stringify({ kind: "initial" }),
+      reason: "baseline",
+      captured_at: frozenCapturedAt,
+      snapshot_sha256: frozenSnapshotSha,
+    });
+    expect(cursorRow()).toMatchObject({
+      latest_completed_generation: head.current_generation,
+    });
+  });
+
+  it("不同代次即使历史摘要相同也不能互相确认覆盖：合成切换后状态报告覆盖缺口", async () => {
+    const working = doc();
+    writeRecord(working, "one", syntheticRecord, true);
+    lastMerged = await sync(working.export({ mode: "snapshot" }));
+    now += windowMs;
+    await fireAlarm();
+    expect(completions()).toEqual([{ revision: 1 }]);
+    const head = t.storage.sql.exec(`SELECT * FROM refueling_document_heads WHERE account_id = ?`, accountId).toArray()[0] as { current_generation: string; legacy_generation: string };
+    // 合成 B 切换：同一份历史内容换新代次（摘要不变），不推进 revision 的游标完成状态。
+    const newGeneration = crypto.randomUUID();
+    t.storage.transactionSync(() => {
+      t.storage.sql.exec(
+        `INSERT OR REPLACE INTO refueling_document_heads
+           (account_id, current_generation, legacy_generation, origin_kind, restore_origin, switched_at_ms)
+         VALUES (?, ?, ?, 'restore', ?, ?)`,
+        accountId, newGeneration, head.current_generation,
+        JSON.stringify({
+          kind: "restore", requestId: crypto.randomUUID(), previousGeneration: head.current_generation,
+          targetBackup: { backupStreamId: cursorRow().stream_id, revision: 1, bundleSha256: "a".repeat(64) },
+          protectionBackup: { backupStreamId: cursorRow().stream_id, revision: 1, bundleSha256: "b".repeat(64) },
+        }),
+        now,
+      );
+      t.storage.sql.exec("UPDATE refueling_snapshots SET document_generation = ? WHERE account_id = ?", newGeneration, accountId);
+    });
+    // 历史摘要与最新完成一致，但代次不同：不算已备份（报告 coverage_mismatch）。
+    const status = await t.account.readBackupStatus({ sessionHash, identity, nowMs: now });
+    expect(status.ok && status.status.currentBackedUp).toBe(false);
+    expect(status.ok ? status.status.blockedError : null).toBe("coverage_mismatch");
+    expect(status.ok ? status.status.currentGeneration : null).toBe(newGeneration);
+    // 空闲同步（同一历史）按未覆盖登记新 revision 并开启窗口，恢复覆盖责任。
+    now += 1000;
+    lastMerged = await sync(working.export({ mode: "snapshot" }));
+    expect(cursorRow()).toMatchObject({ current_revision: 2, pending_revision: 2 });
+    now += windowMs;
+    await fireAlarm();
+    expect(completions()).toEqual([{ revision: 1 }, { revision: 2 }]);
+    const afterSwitch = await t.account.readBackupStatus({ sessionHash, identity, nowMs: now });
+    expect(afterSwitch.ok && afterSwitch.ok && afterSwitch.status.currentBackedUp).toBe(true);
+  });
+
+  it("捕获前核对分块来源：标签与 head 不一致时不发新对象并进入 blocked", async () => {
+    const working = doc();
+    writeRecord(working, "one", syntheticRecord, true);
+    lastMerged = await sync(working.export({ mode: "snapshot" }));
+    now += windowMs;
+    // 破坏分块来源：标签与 head 当前代次不一致（可能来自带外/残缺状态）。
+    t.database.prepare("UPDATE refueling_snapshots SET document_generation = ? WHERE account_id = ?")
+      .run(crypto.randomUUID(), accountId);
+    await fireAlarm();
+    // 不发出新包与标记；责任保留并进入 blocked。
+    expect(t.bucket.storedKeys()).toHaveLength(0);
+    expect((await t.backups.readStatusSnapshot(accountId)).state).toBe("blocked");
+    expect((await t.backups.readStatusSnapshot(accountId)).blockedError).toBe("generation_state_unavailable");
+    expect(cursorRow().pending_revision).not.toBeNull();
+    // 只读覆盖结论同样不报告已备份（来源不可证明）。
+    const statusView = await t.account.readBackupStatus({ sessionHash, identity, nowMs: now });
+    expect(statusView.ok && statusView.status.currentBackedUp).toBe(false);
+  });
+
+  it("恢复代次下的全 NULL 分块在捕获时不可解释：不发新对象并进入 blocked", async () => {
+    const working = doc();
+    writeRecord(working, "one", syntheticRecord, true);
+    lastMerged = await sync(working.export({ mode: "snapshot" }));
+    now += windowMs;
+    await fireAlarm();
+    expect(completions()).toEqual([{ revision: 1 }]);
+    const head = t.storage.sql.exec(`SELECT * FROM refueling_document_heads WHERE account_id = ?`, accountId).toArray()[0] as { current_generation: string; legacy_generation: string };
+    // 合成 B 切换到新代次，同时把分块标签置 NULL：不能解释为恢复代次的当前文档。
+    const newGeneration = crypto.randomUUID();
+    t.storage.transactionSync(() => {
+      t.storage.sql.exec(
+        `INSERT OR REPLACE INTO refueling_document_heads
+           (account_id, current_generation, legacy_generation, origin_kind, restore_origin, switched_at_ms)
+         VALUES (?, ?, ?, 'restore', ?, ?)`,
+        accountId, newGeneration, head.legacy_generation,
+        JSON.stringify({
+          kind: "restore", requestId: crypto.randomUUID(), previousGeneration: head.current_generation,
+          targetBackup: { backupStreamId: cursorRow().stream_id, revision: 1, bundleSha256: "a".repeat(64) },
+          protectionBackup: { backupStreamId: cursorRow().stream_id, revision: 1, bundleSha256: "b".repeat(64) },
+        }),
+        now,
+      );
+      t.storage.sql.exec("UPDATE refueling_snapshots SET document_generation = NULL WHERE account_id = ?", accountId);
+      t.storage.sql.exec(
+        "UPDATE backup_cursor SET current_revision = 2, last_commit_at = ?, pending_revision = 2, pending_first_revision = 2, pending_first_at = ?, window_due_at = ? WHERE account_id = ?",
+        now, now, now - 1000, accountId,
+      );
+    });
+    await fireAlarm();
+    // 捕获拒绝：不发出新对象，blocked 保留责任。
+    expect(completions()).toEqual([{ revision: 1 }]);
+    expect(t.bucket.storedKeys().filter((key) => key.includes("/objects/"))).toHaveLength(1);
+    expect((await t.backups.readStatusSnapshot(accountId)).blockedError).toBe("generation_state_unavailable");
+  });
+
+  it("v2 任务的代次来源损坏不降级为 v1 发布：blocked 且零新对象", async () => {
+    const working = doc();
+    writeRecord(working, "one", syntheticRecord, true);
+    lastMerged = await sync(working.export({ mode: "snapshot" }));
+    now += windowMs;
+    t.bucket.addFault({ match: "prefix:hako-backup/", plan: { list: "throw" } });
+    await fireAlarm();
+    // 任务已捕获（v2 字段固定）但尚未准备。
+    const task = taskRow();
+    expect(task).toMatchObject({ format_version: 2, source_generation: expect.any(String) });
+    // 损坏 v2 任务的代次来源：不能当作 legacy v1 任务发布。
+    t.storage.sql.exec(
+      "UPDATE backup_frozen_task SET generation_origin = ?, manifest_json = NULL WHERE account_id = ?",
+      "corrupt-json", accountId,
+    );
+    t.bucket.clearFaults();
+    now += retryDelays[0];
+    await fireAlarm();
+    expect(completions()).toEqual([]);
+    expect(t.bucket.storedKeys()).toHaveLength(0);
+    expect((await t.backups.readStatusSnapshot(accountId)).blockedError).toBe("format_conflict");
+  });
+
+  it("A 消费合成 B 冻结的恢复基线任务：restore-baseline 以 v2 发布并携带 restore 来源", async () => {
+    const working = doc();
+    writeRecord(working, "one", syntheticRecord, true);
+    lastMerged = await sync(working.export({ mode: "snapshot" }));
+    now += windowMs;
+    await fireAlarm();
+    expect(completions()).toEqual([{ revision: 1 }]);
+    const head = t.storage.sql.exec(`SELECT * FROM refueling_document_heads WHERE account_id = ?`, accountId).toArray()[0] as { current_generation: string; legacy_generation: string };
+    const streamId = cursorRow().stream_id as string;
+    const newGeneration = crypto.randomUUID();
+    const requestId = crypto.randomUUID();
+    const origin = {
+      kind: "restore" as const, requestId, previousGeneration: head.current_generation as string,
+      targetBackup: { backupStreamId: streamId, revision: 1, bundleSha256: "a".repeat(64) },
+      protectionBackup: { backupStreamId: streamId, revision: 1, bundleSha256: "b".repeat(64) },
+    };
+    const restored = doc();
+    writeRecord(restored, "restored", { ...syntheticRecord, stationName: "恢复后" }, true);
+    const restoredSnapshot = restored.export({ mode: "snapshot" });
+    t.storage.transactionSync(() => {
+      t.storage.sql.exec(
+        `INSERT OR REPLACE INTO refueling_document_heads
+           (account_id, current_generation, legacy_generation, origin_kind, restore_origin, switched_at_ms)
+         VALUES (?, ?, ?, 'restore', ?, ?)`,
+        accountId, newGeneration, head.current_generation, JSON.stringify(origin), now,
+      );
+      t.storage.sql.exec("DELETE FROM refueling_snapshots WHERE account_id = ?", accountId);
+      for (let offset = 0; offset < restoredSnapshot.byteLength; offset += 512 * 1024) {
+        t.storage.sql.exec(
+          "INSERT INTO refueling_snapshots (account_id, chunk_index, snapshot, document_generation) VALUES (?, ?, ?, ?)",
+          accountId, Math.floor(offset / (512 * 1024)),
+          restoredSnapshot.slice(offset, offset + 512 * 1024).buffer, newGeneration,
+        );
+      }
+      t.storage.sql.exec(
+        "UPDATE backup_cursor SET current_revision = 2, last_commit_at = ?, pending_revision = NULL, pending_first_revision = NULL, pending_first_at = NULL, window_due_at = NULL WHERE account_id = ?",
+        now, accountId,
+      );
+      t.storage.sql.exec(
+        `INSERT INTO backup_frozen_task (account_id, stream_id, revision, reason, captured_at, source_committed_at,
+           previous_completed_revision, first_pending_revision, source_generation, format_version, generation_origin,
+           manifest_json, bundle_sha256, snapshot_sha256, snapshot_bytes, history_sha256, record_count,
+           bundle_key, marker_key, attempt_count, next_attempt_at)
+         VALUES (?, ?, 2, 'restore-baseline', ?, ?, 1, NULL, ?, 2, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL)`,
+        accountId, streamId, now, now, newGeneration, JSON.stringify(origin),
+      );
+      t.storage.sql.exec(
+        "INSERT INTO backup_frozen_task_chunks (account_id, chunk_index, chunk) SELECT ?, chunk_index, snapshot FROM refueling_snapshots WHERE account_id = ?",
+        accountId, accountId,
+      );
+    });
+    now += windowMs;
+    await fireAlarm();
+    expect(completions()).toEqual([{ revision: 1 }, { revision: 2 }]);
+    const parsed = parseBundle(t.bucket.storedBytes(bundleKeys().at(-1)!)!);
+    expect(parsed.formatVersion).toBe(2);
+    expect(parsed.manifest.formatVersion).toBe(2);
+    expect(parsed.manifest.reason).toBe("restore-baseline");
+    expect(parsed.manifest.sourceGeneration).toEqual({ kind: "document-generation-v1", id: newGeneration });
+    if (parsed.manifest.formatVersion !== 2) throw new Error("restore baseline must be v2");
+    expect(parsed.manifest.generationOrigin).toEqual(origin);
+    expect(cursorRow()).toMatchObject({ latest_completed_generation: newGeneration, current_revision: 2 });
+  });
+});
 
 async function sha256Of(bytes: Uint8Array): Promise<string> {
   const { createHash } = await import("node:crypto");
