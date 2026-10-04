@@ -8,6 +8,7 @@ import type { AuthEnvironment, AuthHandlerDependencies } from "./auth/routes";
 import { jsonResponse } from "./http";
 import { handleSyncRequest } from "./sync/routes";
 import { SYNC_PATH } from "../shared/sync-protocol";
+import { BACKUP_STATUS_PATH, handleBackupStatusRequest } from "./backup/routes";
 
 /** 健康检查路径。 */
 export const HEALTH_CHECK_PATH = "/api/health";
@@ -44,6 +45,7 @@ export async function handleApiRequest(
 ): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === SYNC_PATH) return handleSyncRequest(request, env, dependencies);
+  if (pathname === BACKUP_STATUS_PATH) return handleBackupStatusRequest(request, env, dependencies);
   if (pathname === HEALTH_CHECK_PATH) {
     if ((HEALTH_CHECK_ALLOWED_METHODS as readonly string[]).includes(request.method)) {
       return healthResponse(request.method);

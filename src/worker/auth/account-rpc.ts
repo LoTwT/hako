@@ -11,6 +11,7 @@ import type {
   LoginTransactionInput,
   RenewedHakoSession,
 } from "./account-state";
+import type { BackupStatusSnapshot } from "../backup/backup-engine";
 
 export interface ReadHakoSessionInput {
   sessionHash: string;
@@ -39,6 +40,11 @@ export type SyncRefuelingResult =
   | { ok: false; error: "unauthorized" | "account_changed" | "invalid_document" | "document_too_large" }
   | { ok: true; accountId: string; snapshot: Uint8Array };
 
+/** 只读备份状态：会话在 DO 内重验；无有效会话返回 unauthorized。 */
+export type ReadBackupStatusResult =
+  | { ok: false; error: "unauthorized" }
+  | { ok: true; status: BackupStatusSnapshot };
+
 export interface HakoAccountStub {
   createLoginTransaction(input: LoginTransactionInput): Promise<void>;
   consumeLoginTransaction(
@@ -49,6 +55,7 @@ export interface HakoAccountStub {
   readSession(input: ReadHakoSessionInput): Promise<HakoSessionRecord | null>;
   readAccountId(input: ReadHakoSessionInput): Promise<string | null>;
   syncRefueling(input: SyncRefuelingInput): Promise<SyncRefuelingResult>;
+  readBackupStatus(input: ReadHakoSessionInput): Promise<ReadBackupStatusResult>;
   renewSessionIfDue(input: RenewHakoSessionInput): Promise<RenewedHakoSession | null>;
   revokeSession(input: RevokeHakoSessionInput): Promise<void>;
 }
