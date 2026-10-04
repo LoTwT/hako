@@ -1,6 +1,6 @@
 # 本地最小验证进展
 
-更新：2026-10-04。设计文档 [PR #4](https://github.com/LoTwT/hako/pull/4)、本地验证版 [PR #5](https://github.com/LoTwT/hako/pull/5)、登录切片 PR1 至 PR3（[#7](https://github.com/LoTwT/hako/pull/7)、[#8](https://github.com/LoTwT/hako/pull/8)、[#9](https://github.com/LoTwT/hako/pull/9)）、页面门禁 [PR #10](https://github.com/LoTwT/hako/pull/10) 和账号同步 [PR #11](https://github.com/LoTwT/hako/pull/11) 均已合入；独立备份切片已于 2026-10-04 在隔离 worktree 完成本地实现与 workerd 集成验收（未提交、未部署，见下文独立备份切片一节）。本文件维护实现进度、历史本地验证和运行入口；最新同步发布候选、平台读回时间及真实协作验收统一由[同步发布与验收记录](./releases/2026-10-03-sync.md)维护，产品规则仍以[重新设计记录](./specs/redesign.md)和对应专项合同为准。
+更新：2026-10-04。设计文档 [PR #4](https://github.com/LoTwT/hako/pull/4)、本地验证版 [PR #5](https://github.com/LoTwT/hako/pull/5)、登录切片 PR1 至 PR3（[#7](https://github.com/LoTwT/hako/pull/7)、[#8](https://github.com/LoTwT/hako/pull/8)、[#9](https://github.com/LoTwT/hako/pull/9)）、页面门禁 [PR #10](https://github.com/LoTwT/hako/pull/10) 和账号同步 [PR #11](https://github.com/LoTwT/hako/pull/11) 均已合入；独立备份切片（[PR #13](https://github.com/LoTwT/hako/pull/13)、文案对齐 [PR #14](https://github.com/LoTwT/hako/pull/14)）已于 2026-10-04 合入、部署并完成首份真实备份读回，见[发布记录](./releases/2026-10-04-independent-backup.md)。本文件维护实现进度、历史本地验证和运行入口；最新同步发布候选、平台读回时间及真实协作验收统一由[同步发布与验收记录](./releases/2026-10-03-sync.md)维护，产品规则仍以[重新设计记录](./specs/redesign.md)和对应专项合同为准。
 
 当前状态：同源 Worker 承载 `/api`，登录、页面门禁、账号数据隔离与最小双副本同步均已部署。普通浏览器双向同步、不同字段离线合并、本机草稿退出重登，以及 iPhone 主屏幕 PWA 登录、同步与联网重开已在首轮真实协作验收中通过；电脑为工具观察，手机为本人回报，范围与未知项见发布记录。账号存储、导入和持久确认以[账号同步规格](./specs/account-sync.md)为准，登录及期限以[登录接入规格](./specs/eruoo-login-integration.md)为准。
 
@@ -428,7 +428,11 @@ namespace 已有真实事务 RPC 证据，10:59 UTC 的管理 API 对象枚举�
 
 本次仅整理文档，不改变账号同步合同或追加真实账号操作。模拟记录、历史、两端草稿与专用 profile 保留；真实旧记录导入未执行。后续发布或恢复须重新核对届时的版本、资源与授权，不能沿用历史授权执行新操作，也不能以删除数据解决旧前端兼容问题。
 
-## 独立备份切片（2026-10-04，隔离 worktree，未提交未部署）
+<a id="独立备份切片2026-10-04隔离-worktree未提交未部署"></a>
+
+## 独立备份切片（2026-10-04，隔离 worktree；已发布）
+
+该切片已随 PR #13/#14 发布（2026-10-04）并完成首份真实备份读回；发布与读回证据见[发布记录](./releases/2026-10-04-independent-backup.md)。以下为本地实现阶段的历史记录，保留原文。
 
 独立备份按[独立备份合同](./specs/backup.md)实现：复用账号 DO 增量建表，同步事务内一并持久化 revision、待备责任与必要 alarm（SQL 与 alarm 联合提交/回滚）；唯一冻结任务 + 单 alarm 生命周期，固定 30 秒窗口与 1/5/15/60 分钟后每小时的退避；R2 条件创建包与完成标记、全量读回验证（含全新 Loro 导入与业务校验）、最近 30 份精确裁剪（先删标记后删包、每步持久进展、重试前重新核对保留集合）；`GET /api/backups/refueling/status` 只读状态接口；格式/归属/校验冲突进入 blocked 且不阻塞同步。绑定 `HAKO_BACKUPS`（候选桶 `hako-backups-production`，`dev.remote: false`）仅为代码配置，真实桶未创建。
 
