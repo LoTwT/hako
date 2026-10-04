@@ -106,6 +106,8 @@
 
 ## 12. 恢复 PR 的前提（本轮不实现）
 
+接续方案见[加油文档恢复设计（评审稿）](./restore.md)，已完成内容复审，其新增取舍仍待用户确认，未改变本合同的已部署行为。
+
 - 恢复必须引入新 `documentGeneration`：拒绝旧代次与缺代次的 v1 上传，保护旧设备未同步副本；缺代次不解释为「当前代」。当前备份只在 manifest 记录 `sourceGeneration: { kind: legacy-account-v1, id: accountId }`。
 - 字段纠正走正常新编辑；整文档恢复切换代次并保存恢复前备份；跨代次的最近 30 版衔接、恢复中断/重复确认与身份重绑定由恢复 PR 定义。
 - 管理员可从私有 R2 直接取得包并用本文格式验证器核验（[backup-format.ts](../../src/worker/backup/backup-format.ts) 的解析不依赖 DO）；公开列表/下载/恢复 API 不在本合同。
