@@ -342,6 +342,28 @@ async function handleTestRequest(request: Request, env: Env): Promise<Response> 
       const { query } = await request.json() as { query: string };
       return Response.json({ rows: await debugStub(env).debugExecSql(query) });
     }
+    case "/test/bootstrap-direct": {
+      // 直连 DO bootstrap：隔离测试的第二合成身份绕过固定 owner 路由。
+      const url = new URL(request.url);
+      const subject = url.searchParams.get("subject") ?? "";
+      const token = url.searchParams.get("token") ?? "";
+      const expectedAccountId = url.searchParams.get("account") ?? "";
+      if (subject === "" || token === "" || !isAccountIdFormat(expectedAccountId)) {
+        return Response.json({ error: "invalid_request" }, { status: 400 });
+      }
+      const stub = env.HAKO_ACCOUNT.getByName(HAKO_ACCOUNT_OBJECT_NAME);
+      const result = await stub.bootstrapRefueling({
+        sessionHash: await hashSecret(token),
+        identity: { issuer, subject },
+        nowMs: Date.now(),
+        expectedAccountId,
+      });
+      if (!result.ok) return Response.json({ ok: false, error: result.error }, { status: 409 });
+      return Response.json({
+        documentGeneration: result.documentGeneration,
+        legacyGeneration: result.legacyGeneration,
+      });
+    }
     case "/test/sync-direct": {
       // 绕过路由层固定 owner 校验直连 DO：隔离测试需要第二合成身份。
       // 认证边界本身由生产路由与既有回归测试覆盖。
@@ -349,7 +371,9 @@ async function handleTestRequest(request: Request, env: Env): Promise<Response> 
       const subject = url.searchParams.get("subject") ?? "";
       const token = url.searchParams.get("token") ?? "";
       const expectedAccountId = url.searchParams.get("account") ?? "";
-      if (subject === "" || token === "" || !isAccountIdFormat(expectedAccountId)) {
+      const generation = url.searchParams.get("generation") ?? "";
+      if (subject === "" || token === "" || !isAccountIdFormat(expectedAccountId)
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(generation)) {
         return Response.json({ error: "invalid_request" }, { status: 400 });
       }
       const stub = env.HAKO_ACCOUNT.getByName(HAKO_ACCOUNT_OBJECT_NAME);
@@ -359,10 +383,17 @@ async function handleTestRequest(request: Request, env: Env): Promise<Response> 
         identity: { issuer, subject },
         nowMs: Date.now(),
         expectedAccountId,
+        documentGeneration: generation,
         snapshot,
       });
       if (!result.ok) return Response.json({ ok: false, error: result.error }, { status: 409 });
-      return new Response(new Uint8Array(result.snapshot), { headers: { "Content-Type": "application/octet-stream" } });
+      return new Response(new Uint8Array(result.snapshot), {
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Hako-Document-Generation": result.documentGeneration,
+          "X-Hako-Revision": String(result.revision),
+        },
+      });
     }
     case "/test/debug/r2-counters": {
       return Response.json(r2Counters);

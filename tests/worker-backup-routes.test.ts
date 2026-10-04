@@ -77,8 +77,12 @@ describe("只读备份状态接口", () => {
   it("有映射与备份状态时返回元数据；不触发上传，响应不缓存", async () => {
     const doc = new LoroDoc();
     writeRecord(doc, "one", syntheticRecord, true);
+    const bootstrap = await t.account.bootstrapRefueling({ sessionHash, identity, nowMs: now, expectedAccountId: accountId });
+    expect(bootstrap.ok).toBe(true);
     const result = await t.account.syncRefueling({
-      sessionHash, identity, nowMs: now, expectedAccountId: accountId, snapshot: doc.export({ mode: "snapshot" }),
+      sessionHash, identity, nowMs: now, expectedAccountId: accountId,
+      documentGeneration: bootstrap.ok ? bootstrap.documentGeneration : "",
+      snapshot: doc.export({ mode: "snapshot" }),
     });
     expect(result.ok).toBe(true);
     const response = await handleApiRequest(request(), environment(), { now: () => now });

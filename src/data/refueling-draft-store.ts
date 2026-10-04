@@ -100,6 +100,46 @@ export async function openRefuelingDraftStore(databaseName = refuelingDraftDatab
   };
 }
 
+export interface ReadOnlyDraftList {
+  drafts: StoredRefuelingDraft[];
+  /** 格式版本不受支持的条目数量；这些条目被保留在原库中。 */
+  unsupportedCount: number;
+}
+
+/**
+ * 只读草稿列表（保留副本/旧版本草稿查看）：不创建数据库（不存在时返回 null）、
+ * 不占用任何草稿锁、不做已保存清理、不修改原库——旧窗口继续落盘不受影响。
+ */
+export async function listRefuelingDraftsReadOnly(databaseName: string): Promise<ReadOnlyDraftList | null> {
+  let absent = false;
+  const database = await openDB<RefuelingDraftDatabase>(databaseName, undefined, {
+    upgrade(_db, _old, _next, transaction) {
+      absent = true;
+      void transaction.done.catch(() => undefined);
+      transaction.abort();
+    },
+  }).catch((error) => {
+    if (absent) return null;
+    throw error;
+  });
+  if (database === null) return null;
+  try {
+    const transaction = database.transaction("drafts", "readonly");
+    const values = await transaction.store.getAll();
+    await transaction.done;
+    const drafts: StoredRefuelingDraft[] = [];
+    let unsupportedCount = 0;
+    for (const value of values) {
+      const normalized = normalizeDraft(value);
+      if (normalized === null) unsupportedCount += 1;
+      else drafts.push(normalized);
+    }
+    return { drafts, unsupportedCount };
+  } finally {
+    database.close();
+  }
+}
+
 /** 校验并归一化存储条目；结构不可用或版本不受支持时返回 null（保留原数据）。 */
 function normalizeDraft(value: unknown): StoredRefuelingDraft | null {
   if (typeof value !== "object" || value === null) return null;

@@ -12,7 +12,7 @@ import {
 } from "../data/refueling-draft-session";
 import type { DraftFormContext } from "../domain/refueling/draft-recovery";
 import type { RefuelingDraft, SavedRefuelingRecord } from "../domain/refueling/form";
-import { accountStorageNames } from "../data/account-storage";
+import { accountStorageNamesV2 } from "../data/account-storage";
 
 export interface RefuelingDraftSnapshot {
   status: "loading" | "ready";
@@ -23,12 +23,14 @@ export interface RefuelingDraftSnapshot {
 }
 
 /**
- * 草稿接线：独立 IndexedDB 草稿库 + 页面占用 + 合并写。
+ * 草稿接线（v2，按账号+代次隔离）：独立 IndexedDB 草稿库 + 页面占用 + 合并写。
+ * 工作区按代次挂载（AccountWorkspace 以活动代次为 key），因此每个实例的
+ * generation 在生命周期内固定；代次切换后旧实例的待写内容在 flush 完成后才
+ * 卸载，旧代次草稿库原样保留、只读查看。
  * knownRecords 由业务记录列表提供，用于识别已保存草稿、找不到记录的编辑草稿
  * 与内容已经一致的草稿。
  */
-export function useRefuelingDrafts(options: { accountId: string; knownRecords: () => ReadonlyMap<string, SavedRefuelingRecord> }) {
-  const names = accountStorageNames(options.accountId);
+export function useRefuelingDrafts(options: { accountId: string; generation: string | null; knownRecords: () => ReadonlyMap<string, SavedRefuelingRecord> }) {
   const snapshot = shallowRef<RefuelingDraftSnapshot>({
     status: "loading",
     recovery: { status: "loading" },
@@ -55,16 +57,27 @@ export function useRefuelingDrafts(options: { accountId: string; knownRecords: (
   }
 
   async function initialize() {
-    if (session !== null) return;
+    if (session !== null || options.generation === null) {
+      // 没有活动代次（保护流程/全新打开）：草稿按各自代次保留，本实例无可恢复内容。
+      snapshot.value = {
+        status: "ready",
+        recovery: { status: "ready", candidates: [], notice: "" },
+        writeError: "",
+        orphanedEditCount: 0,
+        unsupportedCount: 0,
+      };
+      return;
+    }
+    const names = accountStorageNamesV2(options.accountId);
     const claim =
       typeof navigator !== "undefined" && "locks" in navigator
-        ? createWebLocksPageClaim(navigator.locks, names.draftScope)
+        ? createWebLocksPageClaim(navigator.locks, names.draftScopeFor(options.generation))
         : createUnclaimedPageClaim();
     try {
-      const store = await openRefuelingDraftStore(names.drafts);
+      const store = await openRefuelingDraftStore(names.draftsFor(options.generation));
       session = new RefuelingDraftSession({
         store,
-        locator: createSessionLocatorStorage(names.draftScope),
+        locator: createSessionLocatorStorage(names.draftScopeFor(options.generation)),
         claim,
         knownRecords: options.knownRecords,
         onChange: sync,
@@ -98,7 +111,6 @@ export function useRefuelingDrafts(options: { accountId: string; knownRecords: (
     sync();
   }
 
-  // 页面在业务记录加载完成后调用 initialize()，以便区分已保存草稿与找不到记录的编辑草稿
   onUnmounted(() => {
     session?.close();
     session = null;
@@ -107,10 +119,10 @@ export function useRefuelingDrafts(options: { accountId: string; knownRecords: (
   return {
     drafts: readonly(snapshot),
     initialize,
-    attachForm: (context: DraftFormContext, options?: { keepLocator?: boolean }) => {
+    attachForm: (context: DraftFormContext, attachOptions?: { keepLocator?: boolean }) => {
       pendingContext = context;
-      pendingContextOptions = options;
-      session?.attachForm(context, options);
+      pendingContextOptions = attachOptions;
+      session?.attachForm(context, attachOptions);
     },
     updateDraft: (draft: RefuelingDraft) => {
       if (session === null) {
@@ -123,7 +135,7 @@ export function useRefuelingDrafts(options: { accountId: string; knownRecords: (
     adoptedDraft: () => session?.adoptedDraft ?? null,
     flush: async () => {
       // 草稿库未就绪或挂载早期输入还没补写：不放行登录跳转
-      if (session === null) return false;
+      if (session === null) return deferredDraft === null && options.generation === null;
       const flushed = await session.flush();
       if (!flushed) return false;
       return deferredDraft === null;

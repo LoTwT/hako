@@ -1,6 +1,7 @@
-// 账号级 SQLite Durable Object：持久保存登录事务、会话、账号文档与独立备份状态。
-// SQL 与规则在 auth/account-state.ts、sync/ 与 backup/ 中，实现与测试共用同一份逻辑；
-// 本类只负责把逻辑接到 Durable Object 运行时并按 RPC 合同暴露。
+// 账号级 SQLite Durable Object：持久保存登录事务、会话、账号文档、文档代次、
+// 独立备份状态与恢复回执。SQL 与规则在 auth/account-state.ts、sync/、backup/ 和
+// restore/ 中，实现与测试共用同一份逻辑；本类只负责把逻辑接到 Durable Object
+// 运行时并按 RPC 合同暴露。
 
 import { DurableObject } from "cloudflare:workers";
 import { HakoAccountState } from "./auth/account-state";
@@ -13,25 +14,36 @@ import type {
   RenewedHakoSession,
 } from "./auth/account-state";
 import type {
+  BootstrapRefuelingInput,
+  BootstrapRefuelingResult,
   ReadBackupStatusResult,
   ReadHakoSessionInput,
+  ReadRefuelingSnapshotInput,
+  ReadRefuelingSnapshotResult,
+  ReadRestoreReceiptInput,
+  ReadRestoreReceiptResult,
   RenewHakoSessionInput,
   RevokeHakoSessionInput,
+  SubmitRestoreInput,
+  SubmitRestoreResult,
   SyncRefuelingInput,
   SyncRefuelingResult,
 } from "./auth/account-rpc";
 import { SESSION_RENEWAL_INTERVAL_MS, SESSION_TTL_MS } from "./auth/session-policy";
 import { AccountSync } from "./sync/account-sync";
-import { AccountDocuments } from "./sync/account-documents";
+import { AccountDocuments, GenerationStateUnavailableError } from "./sync/account-documents";
 import { initializeWorkerLoro } from "./sync/loro-runtime";
 import { BackupEngine, type BackupSchedulePolicy } from "./backup/backup-engine";
 import { PRODUCTION_BACKUP_SCHEDULE } from "./backup/backup-schedule";
 import { R2BackupObjectStore } from "./backup/backup-object-store";
+import { RestoreService } from "./restore/restore-service";
+import { RestoreStore } from "./restore/restore-store";
 
 export class HakoAccountDurableObject extends DurableObject<Env> {
   private readonly accountState: HakoAccountState;
   private readonly accountSync: AccountSync;
   private readonly backupEngine: BackupEngine;
+  private readonly restoreService: RestoreService;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -39,6 +51,7 @@ export class HakoAccountDurableObject extends DurableObject<Env> {
     // 也不在只读请求里启动备份（运行中的 alarm 也可能读到 null）。
     this.accountState = new HakoAccountState(ctx.storage);
     const documents = new AccountDocuments(ctx.storage);
+    const restoreStore = new RestoreStore(ctx.storage);
     this.backupEngine = new BackupEngine({
       storage: ctx.storage,
       objectStore: new R2BackupObjectStore(env.HAKO_BACKUPS),
@@ -49,6 +62,7 @@ export class HakoAccountDurableObject extends DurableObject<Env> {
       log: (event) => console.info(JSON.stringify(event)),
     });
     this.accountSync = new AccountSync(ctx.storage, this.accountState, documents, this.backupEngine);
+    this.restoreService = new RestoreService(this.accountState, documents, restoreStore);
   }
 
   /** 生产固定节奏；仅隔离测试子类覆盖以加速，持久语义不变。 */
@@ -91,13 +105,48 @@ export class HakoAccountDurableObject extends DurableObject<Env> {
     return accountId;
   }
 
+  /** 幂等 bootstrap：短事务内初始化/读取代次；并发调用复用同一 G0。 */
+  async bootstrapRefueling(input: BootstrapRefuelingInput): Promise<BootstrapRefuelingResult> {
+    try {
+      // bootstrap 为 async（事务在 Promise 内提交）：必须先等事务完成再
+      // storage.sync，否则同步发生在提交之前，破坏「提交后等待 sync」的持久
+      // 确认语义（与 syncRefueling 的顺序一致）。
+      const result = await this.accountSync.bootstrap({ ...input, nowMs: Date.now() });
+      await this.ctx.storage.sync();
+      return result;
+    } catch (error) {
+      if (error instanceof GenerationStateUnavailableError) return { ok: false, error: "generation_state_unavailable" };
+      throw error;
+    }
+  }
+
+  /** 只读当前快照：重验会话、只查已有映射；不续期、不初始化、不上传。 */
+  async readRefuelingSnapshot(input: ReadRefuelingSnapshotInput): Promise<ReadRefuelingSnapshotResult> {
+    try {
+      return this.accountSync.readSnapshot({ ...input, nowMs: Date.now() });
+    } catch (error) {
+      if (error instanceof GenerationStateUnavailableError) return { ok: false, error: "generation_state_unavailable" };
+      throw error;
+    }
+  }
+
   async syncRefueling(input: SyncRefuelingInput): Promise<SyncRefuelingResult> {
-    // RPC 到达时重验会话。授权、合并、待备责任与续期在同一个 storage.transaction 内，
+    // RPC 到达时重验会话。授权、代次、合并、待备责任与续期在同一个 storage.transaction 内，
     // 相互之间不等待 R2 等外部 I/O；SQL 与 alarm 安排共同提交或回滚。
     initializeWorkerLoro();
     const result = await this.accountSync.exchange({ ...input, nowMs: Date.now() });
     await this.ctx.storage.sync();
     return result;
+  }
+
+  /** A 的恢复提交：鉴权 + requestId 查重 + 回执读回；无回执返回 unknown，零写入。 */
+  async submitRestore(input: SubmitRestoreInput): Promise<SubmitRestoreResult> {
+    return this.restoreService.submit({ ...input, nowMs: Date.now() });
+  }
+
+  /** 回执只读查询；不存在返回 receipt=null（HTTP 404）。 */
+  async readRestoreReceipt(input: ReadRestoreReceiptInput): Promise<ReadRestoreReceiptResult> {
+    return this.restoreService.read({ ...input, nowMs: Date.now() });
   }
 
   /** 只读备份状态：重验会话、只查已有映射；不续期、不写 Cookie、不初始化、不上传。 */

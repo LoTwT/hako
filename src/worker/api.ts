@@ -6,9 +6,11 @@
 import { handleAuthRequest } from "./auth/routes";
 import type { AuthEnvironment, AuthHandlerDependencies } from "./auth/routes";
 import { jsonResponse } from "./http";
-import { handleSyncRequest } from "./sync/routes";
-import { SYNC_PATH } from "../shared/sync-protocol";
+import { handleBootstrapRequest, handleSyncRequest, handleSyncSnapshotRequest } from "./sync/routes";
+import { BOOTSTRAP_PATH, SYNC_PATH } from "../shared/sync-protocol";
 import { BACKUP_STATUS_PATH, handleBackupStatusRequest } from "./backup/routes";
+import { RESTORE_PATH, RESTORE_REQUEST_PATH_PREFIX } from "../shared/restore-protocol";
+import { handleRestoreRequest } from "./restore/routes";
 
 /** 健康检查路径。 */
 export const HEALTH_CHECK_PATH = "/api/health";
@@ -44,7 +46,15 @@ export async function handleApiRequest(
   dependencies: AuthHandlerDependencies = {},
 ): Promise<Response> {
   const { pathname } = new URL(request.url);
-  if (pathname === SYNC_PATH) return handleSyncRequest(request, env, dependencies);
+  if (pathname === SYNC_PATH) {
+    // 同一路径按方法分流：POST 业务上传（协议 2 + 代次）与 GET 只读当前快照。
+    if (request.method === "GET") return handleSyncSnapshotRequest(request, env, dependencies);
+    return handleSyncRequest(request, env, dependencies);
+  }
+  if (pathname === BOOTSTRAP_PATH) return handleBootstrapRequest(request, env, dependencies);
+  if (pathname === RESTORE_PATH || pathname.startsWith(RESTORE_REQUEST_PATH_PREFIX)) {
+    return handleRestoreRequest(request, env, dependencies);
+  }
   if (pathname === BACKUP_STATUS_PATH) return handleBackupStatusRequest(request, env, dependencies);
   if (pathname === HEALTH_CHECK_PATH) {
     if ((HEALTH_CHECK_ALLOWED_METHODS as readonly string[]).includes(request.method)) {

@@ -32,7 +32,8 @@ import {
   BACKUP_DOCUMENT_TYPE,
   BACKUP_ENVIRONMENT,
   BACKUP_FORMAT_NAME,
-  BACKUP_FORMAT_VERSION,
+  BACKUP_FORMAT_VERSION_V1,
+  BACKUP_FORMAT_VERSION_V2,
   accountIdFromBackupKey,
   backupAccountsPrefix,
   bundleObjectKey,
@@ -48,11 +49,15 @@ import {
   type BackupCaptureReason,
   type BackupCommitMarker,
   type BackupManifest,
+  type BackupManifestV1,
+  type BackupManifestV2,
 } from "./backup-format";
 import { R2BackupObjectStore } from "./backup-object-store";
 import { backupRetryDelayMs, type BackupSchedulePolicy } from "./backup-schedule";
 export type { BackupSchedulePolicy } from "./backup-schedule";
 import { BackupStore, type BackupCompletionRecord, type BackupCursorState, type FrozenBackupTask } from "./backup-store";
+import type { DocumentGenerationHead } from "../sync/account-documents";
+import { GenerationStateUnavailableError } from "../sync/account-documents";
 import {
   analyzeBackupSnapshot,
   verifyBundleReadBack,
@@ -61,10 +66,21 @@ import {
   type BackupBlockedCode,
 } from "./backup-verify";
 
-/** 捕获时读取主文档快照的来源；由账号文档层实现，与同步存储同库。 */
+/**
+ * 捕获时读取主文档快照与文档代次的来源；由账号文档层实现，与同步存储同库。
+ * 捕获事务先调用 ensureDocumentGeneration（同一事务级初始化规则，与
+ * bootstrap/同步一致）：head 缺失且状态不可解释时停止捕获进入 blocked。
+ * snapshotGenerationExplainable 是捕获、同步/GET 与覆盖判断共享的分块来源
+ * 核对：标签与 head 不一致或不可证明（非 legacy 边界的 NULL）时不发新对象。
+ */
 export interface BackupSnapshotSource {
   readSnapshotBytes(accountId: string): Uint8Array | null;
   hasSnapshot(accountId: string): boolean;
+  ensureDocumentGeneration(accountId: string, nowMs: number): DocumentGenerationHead;
+  readDocumentHead(accountId: string): DocumentGenerationHead | null;
+  snapshotGenerationExplainable(accountId: string, expectedGeneration: string): boolean;
+  /** 已持有 head 时只核对分块标签，避免重复读取 head。 */
+  snapshotLabelsExplainable(accountId: string, expectedGeneration: string, head: DocumentGenerationHead): boolean;
 }
 
 export type BackupLogEvent = Record<string, string | number | boolean | null>;
@@ -82,9 +98,13 @@ export interface BackupStatusSnapshot {
   initialized: boolean;
   state: BackupStatusState;
   currentRevision: number | null;
+  /** 当前有效代次（head）；无 head 的未初始化账号为 null。 */
+  currentGeneration: string | null;
   frozenTaskRevision: number | null;
   frozenTaskBytes: number | null;
   latestCompletedRevision: number | null;
+  /** 最新完成版本的有效源代次；v1 完成按 legacy 绑定解释。 */
+  latestCompletedGeneration: string | null;
   pendingFromRevision: number | null;
   pendingToRevision: number | null;
   pendingSinceMs: number | null;
@@ -158,6 +178,11 @@ export class BackupEngine {
     return this.store.getCursor(accountId) === null && this.snapshotSource.hasSnapshot(accountId);
   }
 
+  /** 当前已持久的服务端 revision；游标尚未初始化时为 0（读取接口/同步响应使用）。 */
+  currentRevision(accountId: string): number {
+    return this.store.getCursor(accountId)?.currentRevision ?? 0;
+  }
+
   /**
    * 成功合并后更新备份责任。必须在同步的外层事务内调用：
    * 无外层事务时写入不是原子的。没有新历史时按当前合并结果核对覆盖
@@ -182,6 +207,13 @@ export class BackupEngine {
       } else {
         // 启用前已有文档：在同一提交冻结启用前快照为唯一基线任务；
         // 若本次输入还推进了历史，同时留下新版本的待备责任。
+        // head 由同步段的 ensureDocumentGeneration 先行创建（legacy 分块已绑定 G0），
+        // 新冻结任务按捕获时固定代次记录为 v2；启用基线同样先核对分块来源。
+        const head = this.snapshotSource.readDocumentHead(accountId);
+        if (head === null) throw new Error("backup_enablement_generation_missing");
+        if (!this.snapshotSource.snapshotLabelsExplainable(accountId, head.currentGeneration, head)) {
+          throw new GenerationStateUnavailableError("snapshot_generation_not_explainable");
+        }
         const advanced = outcome.historyAdvanced;
         this.store.createCursor({
           accountId, streamId, createdAtMs: nowMs,
@@ -197,6 +229,9 @@ export class BackupEngine {
           accountId, streamId, revision: 1, reason: "baseline",
           capturedAtMs: nowMs, sourceCommittedAtMs: null,
           previousCompletedRevision: null, firstPendingRevision: null,
+          sourceGeneration: head.currentGeneration,
+          formatVersion: BACKUP_FORMAT_VERSION_V2,
+          generationOrigin: head.origin,
         });
         this.store.writeTaskChunksFromBytes(accountId, outcome.preMergeSnapshot);
         this.logEvent({ event: "backup_stream_enabled", streamId, baseline: "frozen-premerge", snapshotBytes: outcome.preMergeSnapshot.byteLength });
@@ -226,13 +261,14 @@ export class BackupEngine {
 
   /**
    * 覆盖核对共用核心（两个入口共用：空闲同步对合并结果、备份确认后对当前主文档）：
-   * 与「覆盖基准」的历史摘要不一致（旧代码在部署回退窗口或冻结任务在途期间写入、
-   * 或主表被外部替换）时，把该未覆盖内容登记为新的服务端 revision 并开启待备窗口，
-   * 在成功同步/完成确认的当下持久留下责任，不依赖未来的前台访问。覆盖基准取最近的
-   * 待发布上界：冻结任务在途时用其冻结历史摘要（登记不触碰冻结字节与重试计划），
-   * 否则用最新完成备份的摘要。已有待备或 blocked 时跳过；未准备的冻结任务（尚无
-   * 摘要）无法比对，由确认后入口兜底；摘要分析失败不阻塞调用方，缺口仍可由只读
-   * 状态观察。登记本身在独立事务中以新鲜读数防重复提交。
+   * 与「覆盖基准」的有效源代次与历史摘要都一致（旧代码在部署回退窗口或冻结任务
+   * 在途期间写入、或主表被外部替换）时才算覆盖，否则把该未覆盖内容登记为新的
+   * 服务端 revision 并开启待备窗口，在成功同步/完成确认的当下持久留下责任，不依赖
+   * 未来的前台访问。覆盖基准取最近的待发布上界：冻结任务在途时用其冻结历史摘要
+   * 与固定代次（登记不触碰冻结字节与重试计划），否则用最新完成备份的代次与摘要。
+   * v1 完成行按固定 legacyGeneration 解释有效代次。已有待备或 blocked 时跳过；
+   * 未准备的冻结任务（尚无摘要）无法比对，由确认后入口兜底；摘要分析失败不阻塞
+   * 调用方，缺口仍可由只读状态观察。登记本身在独立事务中以新鲜读数防重复提交。
    */
   private async registerUncoveredHistory(
     accountId: string,
@@ -243,20 +279,28 @@ export class BackupEngine {
     if (cursor === null) return;
     if (cursor.blockedError !== null) return;
     if (cursor.pendingRevision !== null) return;
+    const head = this.snapshotSource.readDocumentHead(accountId);
+    if (head === null) return;
     const task = this.store.getTask(accountId);
     let expectedDigest: string | null;
+    let expectedGeneration: string | null;
     if (task !== null) {
-      // 冻结任务在途：以其冻结历史为基准；登记为更新的 revision，不动任务本身。
+      // 冻结任务在途：以其冻结历史与固定代次为基准；登记为更新的 revision，不动任务本身。
       if (task.historySha256 === null) return;
       expectedDigest = task.historySha256;
+      expectedGeneration = task.sourceGeneration ?? head.legacyGeneration;
     } else {
       if (cursor.latestCompletedRevision === null || cursor.latestCompletedHistorySha256 === null) return;
       expectedDigest = cursor.latestCompletedHistorySha256;
+      // 不同代次即使历史摘要相同也不能互相确认覆盖。
+      expectedGeneration = cursor.latestCompletedGeneration ?? head.legacyGeneration;
     }
     let covered: boolean;
     try {
       const analysis = await analyzeBackupSnapshot(snapshot);
-      covered = analysis.historyVersionSha256 === expectedDigest;
+      // 覆盖判断共享分块来源核对：不可证明属于当前代次的字节不能确认覆盖。
+      const explainable = this.snapshotSource.snapshotLabelsExplainable(accountId, head.currentGeneration, head);
+      covered = explainable && analysis.historyVersionSha256 === expectedDigest && expectedGeneration === head.currentGeneration;
     } catch {
       // 分析失败不阻塞调用方，但显式记录：覆盖责任不无声结束，由后续同步
       // 入口与只读状态继续观察。
@@ -331,18 +375,23 @@ export class BackupEngine {
 
   async readStatusSnapshot(accountId: string | null): Promise<BackupStatusSnapshot> {
     const uninitialized: BackupStatusSnapshot = {
-      initialized: false, state: "uninitialized", currentRevision: null, frozenTaskRevision: null,
-      frozenTaskBytes: null, latestCompletedRevision: null, pendingFromRevision: null,
+      initialized: false, state: "uninitialized", currentRevision: null, currentGeneration: null,
+      frozenTaskRevision: null, frozenTaskBytes: null, latestCompletedRevision: null,
+      latestCompletedGeneration: null, pendingFromRevision: null,
       pendingToRevision: null, pendingSinceMs: null, windowDueAtMs: null, nextAttemptAtMs: null,
       blockedError: null, cleanupPendingCount: 0, currentBackedUp: false,
     };
     if (accountId === null) return uninitialized;
     const cursor = this.store.getCursor(accountId);
     if (cursor === null) return uninitialized;
+    // head 不可读（来源损坏等）时不猜测：状态只报告备份事实，代次字段为 null；
+    // 真正的失败由同步/预览路径显式暴露。
+    let head: DocumentGenerationHead | null = null;
+    try { head = this.snapshotSource.readDocumentHead(accountId); } catch { head = null; }
     const task = this.store.getTask(accountId);
     const cleanupPendingCount = (this.store.getRetention(accountId) !== null ? 1 : 0)
       + this.store.listPrunePlan(accountId).length;
-    const currentBackedUp = await this.computeCurrentBackedUp(accountId, cursor);
+    const currentBackedUp = await this.computeCurrentBackedUp(accountId, cursor, head);
     let state: BackupStatusState;
     let blockedError = cursor.blockedError;
     if (cursor.blockedError !== null) state = "blocked";
@@ -359,9 +408,11 @@ export class BackupEngine {
       initialized: true,
       state,
       currentRevision: cursor.currentRevision,
+      currentGeneration: head?.currentGeneration ?? null,
       frozenTaskRevision: task?.revision ?? null,
       frozenTaskBytes: task !== null ? this.store.taskSnapshotBytes(accountId) : null,
       latestCompletedRevision: cursor.latestCompletedRevision,
+      latestCompletedGeneration: cursor.latestCompletedGeneration ?? head?.legacyGeneration ?? null,
       pendingFromRevision: cursor.pendingFirstRevision,
       pendingToRevision: cursor.pendingRevision,
       pendingSinceMs: cursor.pendingFirstAtMs,
@@ -381,6 +432,12 @@ export class BackupEngine {
     try {
       return await this.captureTransaction(accountId, nowMs);
     } catch (error) {
+      if (error instanceof GenerationStateUnavailableError) {
+        // 捕获阶段的代次状态不可解释（head 缺失但已有现代代次痕迹等）：
+        // 进入 blocked，保留责任与已有备份，停止本账号自动备份，不影响其他账号。
+        await this.enterBlocked(accountId, "generation_state_unavailable", error.detail, null);
+        return false;
+      }
       if (!(error instanceof BackupVerificationError)) throw error;
       // 捕获阶段的确定性源文档故障：进入 blocked（事务已回滚，未写入任何捕获状态）。
       await this.enterBlocked(accountId, error.blockedCode, error.detail, null);
@@ -401,6 +458,14 @@ export class BackupEngine {
         // blocked 不影响正常有效同步，也不解除其他账号的调度。
         throw new BackupVerificationError("invalid_source_document", "main_snapshot_missing_at_capture");
       }
+      // 新捕获对有有效身份映射的账号调用同一事务级初始化规则：
+      // head 缺失且状态不可解释时不捕获（blocked），不凭内存代次改写。
+      const head = this.snapshotSource.ensureDocumentGeneration(accountId, nowMs);
+      // 冻结前核对分块来源：每块标签必须可证明属于当前代次（或 legacy G0 回退
+      // 窗口的全 NULL）。不可解释/混代时不发出新包与标记，保留责任进入 blocked。
+      if (!this.snapshotSource.snapshotLabelsExplainable(accountId, head.currentGeneration, head)) {
+        throw new GenerationStateUnavailableError("snapshot_generation_not_explainable");
+      }
       const revision = cursor.currentRevision;
       const reason: BackupCaptureReason = cursor.latestCompletedRevision === null ? "baseline" : "history-change";
       this.store.insertTask({
@@ -412,6 +477,10 @@ export class BackupEngine {
         sourceCommittedAtMs: cursor.lastCommitAtMs,
         previousCompletedRevision: cursor.latestCompletedRevision,
         firstPendingRevision: cursor.pendingFirstRevision,
+        // 捕获时固定源代次、格式版本与代次来源；重试不读取当前代次改标签。
+        sourceGeneration: head.currentGeneration,
+        formatVersion: BACKUP_FORMAT_VERSION_V2,
+        generationOrigin: head.origin,
       });
       this.store.copyMainSnapshotIntoTask(accountId);
       this.store.clearPendingIfCovered(accountId, revision);
@@ -511,6 +580,11 @@ export class BackupEngine {
         if (freshCursor.latestCompletedRevision !== null && freshCursor.latestCompletedRevision >= freshTask.revision) {
           throw new BackupVerificationError("sequence_conflict", "completed_revision_regression");
         }
+        // 完成缓存保存任务固定的代次信息、捕获时间、reason 与快照哈希；
+        // v1 任务（升级前冻结）按 legacy 绑定解释有效代次（传 null，不改写语义）。
+        // head 不可读时不阻塞确认：有效代次退化为未知，覆盖判断保守处理。
+        const legacyGeneration = this.readHeadSafely(accountId)?.legacyGeneration ?? null;
+        const effectiveGeneration = freshTask.sourceGeneration ?? legacyGeneration;
         this.store.upsertCompletion({
           accountId,
           revision: freshTask.revision,
@@ -521,30 +595,47 @@ export class BackupEngine {
           historySha256: freshTask.historySha256 ?? "",
           recordCount: freshTask.recordCount ?? 0,
           completedAtMs,
+          sourceGeneration: freshTask.sourceGeneration,
+          formatVersion: freshTask.formatVersion,
+          generationOrigin: freshTask.generationOrigin,
+          capturedAtMs: freshTask.capturedAtMs,
+          reason: freshTask.reason,
+          snapshotSha256: freshTask.snapshotSha256,
         });
-        this.store.markCompleted(accountId, freshTask.revision, freshTask.historySha256 ?? "");
+        this.store.markCompleted(accountId, freshTask.revision, freshTask.historySha256 ?? "", effectiveGeneration);
         this.store.deleteTask(accountId);
         this.store.clearPendingIfCovered(accountId, freshTask.revision);
         this.store.registerRetention(accountId, freshTask.revision, completedAtMs);
-        // 确认事务内一并完成覆盖核对：以刚完成任务的冻结历史为基准，当前主文档
-        // 未被覆盖则在同一事务登记新的待备责任——确认与补登记原子提交，不存在
-        // 「确认后、补登记前」的崩溃窗口（回滚则整个确认重做）。
+        // 确认事务内一并完成覆盖核对：以刚完成任务的冻结历史与固定代次为基准，
+        // 当前主文档未被覆盖（历史不同或代次不同——例如旧代次任务确认时主文档
+        // 已是新代次）则在同一事务登记新的待备责任——确认与补登记原子提交，
+        // 不存在「确认后、补登记前」的崩溃窗口（回滚则整个确认重做）。
         if (freshCursor.pendingRevision === null && freshCursor.blockedError === null
           && freshTask.historySha256 !== null) {
+          const head = this.readHeadSafely(accountId);
           const mainSnapshot = this.snapshotSource.readSnapshotBytes(accountId);
           if (mainSnapshot !== null) {
             // 只吞摘要分析失败（不阻塞确认，但显式记录事件——不无声结束覆盖
             // 责任，缺口由下一次合格同步入口与只读状态继续兜底）；登记写入本身
             // 失败必须让整个确认事务回滚——确认与补登记要么原子同时提交，要么
-            // 整体重做。
+            // 整体重做。分块来源不可证明属于当前代次时同样按未覆盖登记（捕获
+            // 会在窗口到期时以真实原因 blocked，不发布不可解释来源的新对象）。
             let mainHistorySha256: string | null = null;
+            let sourceExplainable = false;
+            if (head !== null) {
+              sourceExplainable = this.snapshotSource.snapshotLabelsExplainable(accountId, head.currentGeneration, head);
+            }
             try {
               mainHistorySha256 = (await analyzeBackupSnapshot(mainSnapshot)).historyVersionSha256;
             } catch {
               mainHistorySha256 = null;
               this.logEvent({ event: "backup_uncovered_analysis_failed", at: "confirm" });
             }
-            if (mainHistorySha256 !== null && mainHistorySha256 !== freshTask.historySha256) {
+            // 不同代次即使历史摘要相同也不能互相确认覆盖。
+            const generationUncovered = head !== null && effectiveGeneration !== null
+              && effectiveGeneration !== head.currentGeneration;
+            if ((mainHistorySha256 !== null && (mainHistorySha256 !== freshTask.historySha256 || generationUncovered))
+              || (mainHistorySha256 !== null && !sourceExplainable)) {
               const uncoveredRevision = freshCursor.currentRevision + 1;
               this.store.advanceCursorForHistory(accountId, uncoveredRevision, completedAtMs, {
                 revision: uncoveredRevision,
@@ -583,32 +674,52 @@ export class BackupEngine {
     const snapshot = this.store.readTaskSnapshot(task.accountId);
     if (snapshot === null) throw new BackupVerificationError("invalid_source_document", "frozen_snapshot_missing");
     const analysis = await analyzeBackupSnapshot(snapshot);
-    const manifest: BackupManifest = {
+    const common = {
       format: BACKUP_FORMAT_NAME,
-      formatVersion: BACKUP_FORMAT_VERSION,
       environment: BACKUP_ENVIRONMENT,
       accountId: task.accountId,
       documentType: BACKUP_DOCUMENT_TYPE,
-      sourceGeneration: { kind: "legacy-account-v1", id: task.accountId },
       backupStreamId: task.streamId,
       revision: task.revision,
-      reason: task.reason,
       capturedAt: toIsoUtc(task.capturedAtMs),
       sourceCommittedAt: task.sourceCommittedAtMs === null ? null : toIsoUtc(task.sourceCommittedAtMs),
       previousCompletedRevision: task.previousCompletedRevision,
       firstPendingRevision: task.firstPendingRevision,
       businessSchema: "hako-refueling-records-v1",
-      syncProtocol: 1,
       loroVersion: "1.16.3",
       snapshotMode: "snapshot",
       snapshotBytes: snapshot.byteLength,
       snapshotSha256: await sha256Hex(snapshot),
       historyVersionSha256: analysis.historyVersionSha256,
       recordCount: analysis.recordCount,
-    };
+    } as const;
+    // 升级前已冻结的任务（无捕获代次/格式字段）继续用 legacy 来源生成 v1；
+    // 捕获时固定了代次的任务生成 v2。不能在重试时读取当前代次给旧快照贴新标签。
+    // v2 任务的代次来源损坏/缺失时不允许降级为 v1 发布：格式与代次来源必须自洽，
+    // 不可解释的任务进入 blocked，不发出新包或标记。
+    if (task.formatVersion === BACKUP_FORMAT_VERSION_V2 && (task.sourceGeneration === null || task.generationOrigin === null)) {
+      throw new BackupVerificationError("format_conflict", "v2_task_generation_metadata_unreadable");
+    }
+    const manifest: BackupManifest = task.formatVersion === BACKUP_FORMAT_VERSION_V2 && task.sourceGeneration !== null && task.generationOrigin !== null
+      ? {
+        ...common,
+        formatVersion: BACKUP_FORMAT_VERSION_V2,
+        sourceGeneration: { kind: "document-generation-v1", id: task.sourceGeneration },
+        generationOrigin: task.generationOrigin,
+        reason: task.reason,
+        syncProtocol: 2,
+      } satisfies BackupManifestV2
+      : {
+        ...common,
+        formatVersion: BACKUP_FORMAT_VERSION_V1,
+        sourceGeneration: { kind: "legacy-account-v1", id: task.accountId },
+        // legacy 任务只承载既有 reason；restore-baseline 只可能出现在 v2 任务上。
+        reason: task.reason === "restore-baseline" ? "history-change" : task.reason,
+        syncProtocol: 1,
+      } satisfies BackupManifestV1;
     const manifestBytes = serializeManifest(manifest);
     const manifestJson = new TextDecoder().decode(manifestBytes);
-    const bundle = encodeBundle(manifestBytes, snapshot);
+    const bundle = encodeBundle(manifestBytes, snapshot, manifest.formatVersion);
     const bundleSha256 = await sha256Hex(bundle);
     return {
       manifestJson,
@@ -629,10 +740,12 @@ export class BackupEngine {
     const snapshot = this.store.readTaskSnapshot(task.accountId);
     if (snapshot === null) throw new BackupVerificationError("invalid_source_document", "frozen_snapshot_missing");
     const manifestBytes = new TextEncoder().encode(task.manifestJson);
-    const bundle = encodeBundle(manifestBytes, snapshot);
+    // 已准备任务沿用原 manifest 字节；包与标记的格式版本以任务固定值为准。
+    const formatVersion = task.formatVersion === BACKUP_FORMAT_VERSION_V2 ? BACKUP_FORMAT_VERSION_V2 : BACKUP_FORMAT_VERSION_V1;
+    const bundle = encodeBundle(manifestBytes, snapshot, formatVersion);
     const marker: BackupCommitMarker = {
       format: BACKUP_FORMAT_NAME,
-      formatVersion: BACKUP_FORMAT_VERSION,
+      formatVersion,
       environment: BACKUP_ENVIRONMENT,
       accountId: task.accountId,
       documentType: BACKUP_DOCUMENT_TYPE,
@@ -907,7 +1020,8 @@ export class BackupEngine {
   private buildExpectedMarker(completion: BackupCompletionRecord): BackupCommitMarker {
     return {
       format: BACKUP_FORMAT_NAME,
-      formatVersion: BACKUP_FORMAT_VERSION,
+      // v1/v2 混合序列按各自完成缓存记录的格式验证；旧缓存行缺失时按 v1。
+      formatVersion: completion.formatVersion === BACKUP_FORMAT_VERSION_V2 ? BACKUP_FORMAT_VERSION_V2 : BACKUP_FORMAT_VERSION_V1,
       environment: BACKUP_ENVIRONMENT,
       accountId: completion.accountId,
       documentType: BACKUP_DOCUMENT_TYPE,
@@ -917,6 +1031,15 @@ export class BackupEngine {
       bundleBytes: completion.bundleBytes,
       bundleSha256: completion.bundleSha256,
     };
+  }
+
+  /** head 读取的宽容包装：不可读时返回 null，不阻塞备份生命周期与只读状态。 */
+  private readHeadSafely(accountId: string): DocumentGenerationHead | null {
+    try {
+      return this.snapshotSource.readDocumentHead(accountId);
+    } catch {
+      return null;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1096,13 +1219,20 @@ export class BackupEngine {
 
   // -------------------------------------------------------------------------
 
-  private async computeCurrentBackedUp(accountId: string, cursor: BackupCursorState): Promise<boolean> {
+  private async computeCurrentBackedUp(accountId: string, cursor: BackupCursorState, head: DocumentGenerationHead | null): Promise<boolean> {
     if (cursor.latestCompletedRevision === null || cursor.latestCompletedHistorySha256 === null) return false;
+    if (head === null) return false;
     const snapshot = this.snapshotSource.readSnapshotBytes(accountId);
     if (snapshot === null) return false;
+    // 只读状态的覆盖结论同样要求分块来源可证明属于当前代次；不可解释时不报告已备份。
+    if (!this.snapshotSource.snapshotLabelsExplainable(accountId, head.currentGeneration, head)) return false;
     try {
       const analysis = await analyzeBackupSnapshot(snapshot);
-      return analysis.historyVersionSha256 === cursor.latestCompletedHistorySha256;
+      // 有效源代次与历史摘要都匹配才算覆盖；不同代次即使摘要相同也不互相确认。
+      // v1 完成行（latestCompletedGeneration 为 null）按固定 legacyGeneration 解释。
+      const effectiveGeneration = cursor.latestCompletedGeneration ?? head.legacyGeneration;
+      return analysis.historyVersionSha256 === cursor.latestCompletedHistorySha256
+        && effectiveGeneration === head.currentGeneration;
     } catch {
       return false;
     }

@@ -1,12 +1,25 @@
 // 独立备份的持久状态层：与既有会话同库、独立表的增量建表与全部读写。
 // 本层只做 SQL，不拥有事务边界，也不做任何 R2 I/O；事务边界由引擎与同步段维护。
 // 表结构按账号（account_id）隔离；同一 DO 中的不同账号互不可见对方的备份状态。
+//
+// 代次兼容基础（A）的增量：
+// - 冻结任务在捕获时固定源代次、格式版本与代次来源；升级前已冻结的旧任务
+//   这些字段为 NULL，按 legacy 来源生成 v1，不能在重试时改贴新标签。
+// - 完成缓存保存对应代次信息、捕获时间、reason 与快照哈希；旧缓存缺失的
+//   展示字段保持 NULL，不猜测、不为展示改写旧对象。
+// - 游标记录最新完成版本的有效源代次：覆盖判断要求代次与历史摘要都匹配，
+//   v1 完成按固定 legacyGeneration 解释（读取侧合成，不改写旧行）。
 
 import type {
   AccountStateRow,
   AccountStateSqlStorage,
   AccountStateStorage,
 } from "../auth/account-state";
+import {
+  parseGenerationOrigin,
+  serializeGenerationOrigin,
+  type GenerationOrigin,
+} from "../../shared/document-generation";
 import type { BackupCaptureReason } from "./backup-format";
 
 const CHUNK_BYTES = 512 * 1024;
@@ -21,6 +34,8 @@ export interface BackupCursorState {
   lastCommitAtMs: number | null;
   latestCompletedRevision: number | null;
   latestCompletedHistorySha256: string | null;
+  /** 最新完成版本的有效源代次；v1 完成行保持 NULL（读取侧按 legacy 绑定解释）。 */
+  latestCompletedGeneration: string | null;
   pendingRevision: number | null;
   pendingFirstRevision: number | null;
   pendingFirstAtMs: number | null;
@@ -44,6 +59,12 @@ export interface FrozenBackupTask {
   sourceCommittedAtMs: number | null;
   previousCompletedRevision: number | null;
   firstPendingRevision: number | null;
+  /** 捕获时固定的源代次；NULL 表示升级前冻结的 legacy 任务（按 v1 完成）。 */
+  sourceGeneration: string | null;
+  /** 捕获时固定的包格式版本；NULL 表示 legacy 任务（生成 v1）。 */
+  formatVersion: number | null;
+  /** 捕获时固定的代次来源；NULL 表示 legacy 任务。 */
+  generationOrigin: GenerationOrigin | null;
   /** null 表示尚未完成哈希与 manifest 固化（captured 阶段）。 */
   manifestJson: string | null;
   bundleSha256: string | null;
@@ -67,6 +88,18 @@ export interface BackupCompletionRecord {
   historySha256: string;
   recordCount: number;
   completedAtMs: number;
+  /** 任务携带的源代次；NULL 为 v1 完成行（按 legacy 绑定解释，不改写旧行）。 */
+  sourceGeneration: string | null;
+  /** 任务携带的包格式版本；NULL 为旧缓存行（展示时保持未知，不猜测）。 */
+  formatVersion: number | null;
+  /** 任务携带的代次来源；NULL 为旧缓存行。 */
+  generationOrigin: GenerationOrigin | null;
+  /** 任务捕获时间；旧缓存行缺失时保持 NULL。 */
+  capturedAtMs: number | null;
+  /** 任务 reason；旧缓存行缺失时保持 NULL。 */
+  reason: BackupCaptureReason | null;
+  /** 快照 SHA-256；旧缓存行缺失时保持 NULL。 */
+  snapshotSha256: string | null;
 }
 
 export interface BackupPrunePlanEntry {
@@ -91,6 +124,7 @@ interface CursorRow extends AccountStateRow {
   last_commit_at: number | null;
   latest_completed_revision: number | null;
   latest_completed_history_sha256: string | null;
+  latest_completed_generation: string | null;
   pending_revision: number | null;
   pending_first_revision: number | null;
   pending_first_at: number | null;
@@ -110,6 +144,9 @@ interface TaskRow extends AccountStateRow {
   source_committed_at: number | null;
   previous_completed_revision: number | null;
   first_pending_revision: number | null;
+  source_generation: string | null;
+  format_version: number | null;
+  generation_origin: string | null;
   manifest_json: string | null;
   bundle_sha256: string | null;
   snapshot_sha256: string | null;
@@ -132,6 +169,12 @@ interface CompletionRow extends AccountStateRow {
   history_sha256: string;
   record_count: number;
   completed_at: number;
+  source_generation: string | null;
+  format_version: number | null;
+  generation_origin: string | null;
+  captured_at: number | null;
+  reason: string | null;
+  snapshot_sha256: string | null;
 }
 
 interface PrunePlanRow extends AccountStateRow {
@@ -162,6 +205,7 @@ export class BackupStore {
       last_commit_at INTEGER,
       latest_completed_revision INTEGER,
       latest_completed_history_sha256 TEXT,
+      latest_completed_generation TEXT,
       pending_revision INTEGER,
       pending_first_revision INTEGER,
       pending_first_at INTEGER,
@@ -171,6 +215,7 @@ export class BackupStore {
       blocked_error TEXT,
       retry_floor_at INTEGER
     )`);
+    ensureColumn(storage, "backup_cursor", "latest_completed_generation", "TEXT");
     ensureColumn(storage, "backup_cursor", "retry_floor_at", "INTEGER");
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS backup_frozen_task (
       account_id TEXT PRIMARY KEY,
@@ -181,6 +226,9 @@ export class BackupStore {
       source_committed_at INTEGER,
       previous_completed_revision INTEGER,
       first_pending_revision INTEGER,
+      source_generation TEXT,
+      format_version INTEGER,
+      generation_origin TEXT,
       manifest_json TEXT,
       bundle_sha256 TEXT,
       snapshot_sha256 TEXT,
@@ -192,6 +240,9 @@ export class BackupStore {
       attempt_count INTEGER NOT NULL DEFAULT 0,
       next_attempt_at INTEGER
     )`);
+    ensureColumn(storage, "backup_frozen_task", "source_generation", "TEXT");
+    ensureColumn(storage, "backup_frozen_task", "format_version", "INTEGER");
+    ensureColumn(storage, "backup_frozen_task", "generation_origin", "TEXT");
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS backup_frozen_task_chunks (
       account_id TEXT NOT NULL,
       chunk_index INTEGER NOT NULL,
@@ -208,8 +259,20 @@ export class BackupStore {
       history_sha256 TEXT NOT NULL,
       record_count INTEGER NOT NULL,
       completed_at INTEGER NOT NULL,
+      source_generation TEXT,
+      format_version INTEGER,
+      generation_origin TEXT,
+      captured_at INTEGER,
+      reason TEXT,
+      snapshot_sha256 TEXT,
       PRIMARY KEY (account_id, revision)
     )`);
+    ensureColumn(storage, "backup_completions", "source_generation", "TEXT");
+    ensureColumn(storage, "backup_completions", "format_version", "INTEGER");
+    ensureColumn(storage, "backup_completions", "generation_origin", "TEXT");
+    ensureColumn(storage, "backup_completions", "captured_at", "INTEGER");
+    ensureColumn(storage, "backup_completions", "reason", "TEXT");
+    ensureColumn(storage, "backup_completions", "snapshot_sha256", "TEXT");
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS backup_retention_check (
       account_id TEXT PRIMARY KEY,
       pending_revision INTEGER NOT NULL,
@@ -258,6 +321,7 @@ export class BackupStore {
       lastCommitAtMs: row.last_commit_at,
       latestCompletedRevision: row.latest_completed_revision,
       latestCompletedHistorySha256: row.latest_completed_history_sha256,
+      latestCompletedGeneration: row.latest_completed_generation,
       pendingRevision: row.pending_revision,
       pendingFirstRevision: row.pending_first_revision,
       pendingFirstAtMs: row.pending_first_at,
@@ -284,10 +348,10 @@ export class BackupStore {
     this.sql.exec(
       `INSERT INTO backup_cursor
          (account_id, stream_id, created_at, current_revision, last_commit_at,
-          latest_completed_revision, latest_completed_history_sha256,
+          latest_completed_revision, latest_completed_history_sha256, latest_completed_generation,
           pending_revision, pending_first_revision, pending_first_at, window_due_at,
           cleanup_attempt_count, cleanup_next_attempt_at, blocked_error)
-       VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, 0, NULL, NULL)`,
+       VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, 0, NULL, NULL)`,
       state.accountId,
       state.streamId,
       state.createdAtMs,
@@ -332,12 +396,15 @@ export class BackupStore {
     );
   }
 
-  markCompleted(accountId: string, revision: number, historySha256: string): void {
+  /** 完成确认：更新最新完成版本与有效源代次（v1 完成行传 null，读取侧按 legacy 绑定解释）。 */
+  markCompleted(accountId: string, revision: number, historySha256: string, generation: string | null): void {
     this.sql.exec(
-      `UPDATE backup_cursor SET latest_completed_revision = ?, latest_completed_history_sha256 = ?, retry_floor_at = NULL
+      `UPDATE backup_cursor SET latest_completed_revision = ?, latest_completed_history_sha256 = ?,
+         latest_completed_generation = ?, retry_floor_at = NULL
        WHERE account_id = ?`,
       revision,
       historySha256,
+      generation,
       accountId,
     );
   }
@@ -403,11 +470,14 @@ export class BackupStore {
       accountId: row.account_id,
       streamId: row.stream_id,
       revision: row.revision,
-      reason: row.reason === "baseline" ? "baseline" : "history-change",
+      reason: parseCaptureReason(row.reason),
       capturedAtMs: row.captured_at,
       sourceCommittedAtMs: row.source_committed_at,
       previousCompletedRevision: row.previous_completed_revision,
       firstPendingRevision: row.first_pending_revision,
+      sourceGeneration: row.source_generation,
+      formatVersion: row.format_version === 1 || row.format_version === 2 ? row.format_version : null,
+      generationOrigin: row.generation_origin === null ? null : parseGenerationOrigin(safeJsonParse(row.generation_origin)),
       manifestJson: row.manifest_json,
       bundleSha256: row.bundle_sha256,
       snapshotSha256: row.snapshot_sha256,
@@ -430,15 +500,20 @@ export class BackupStore {
     sourceCommittedAtMs: number | null;
     previousCompletedRevision: number | null;
     firstPendingRevision: number | null;
+    /** 捕获时固定的源代次/格式/来源；legacy 任务（升级前冻结）传 null。 */
+    sourceGeneration: string | null;
+    formatVersion: number | null;
+    generationOrigin: GenerationOrigin | null;
   }): void {
     this.sql.exec(
       `INSERT INTO backup_frozen_task
          (account_id, stream_id, revision, reason, captured_at, source_committed_at,
           previous_completed_revision, first_pending_revision,
+          source_generation, format_version, generation_origin,
           manifest_json, bundle_sha256, snapshot_sha256, snapshot_bytes,
           history_sha256, record_count, bundle_key, marker_key,
           attempt_count, next_attempt_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL)`,
       task.accountId,
       task.streamId,
       task.revision,
@@ -447,6 +522,9 @@ export class BackupStore {
       task.sourceCommittedAtMs,
       task.previousCompletedRevision,
       task.firstPendingRevision,
+      task.sourceGeneration,
+      task.formatVersion,
+      task.generationOrigin === null ? null : serializeGenerationOrigin(task.generationOrigin),
     );
   }
 
@@ -536,8 +614,9 @@ export class BackupStore {
     this.sql.exec(
       `INSERT OR REPLACE INTO backup_completions
          (account_id, revision, stream_id, bundle_key, bundle_bytes, bundle_sha256,
-          history_sha256, record_count, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          history_sha256, record_count, completed_at,
+          source_generation, format_version, generation_origin, captured_at, reason, snapshot_sha256)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       record.accountId,
       record.revision,
       record.streamId,
@@ -547,6 +626,12 @@ export class BackupStore {
       record.historySha256,
       record.recordCount,
       record.completedAtMs,
+      record.sourceGeneration,
+      record.formatVersion,
+      record.generationOrigin === null ? null : serializeGenerationOrigin(record.generationOrigin),
+      record.capturedAtMs,
+      record.reason,
+      record.snapshotSha256,
     );
   }
 
@@ -554,37 +639,16 @@ export class BackupStore {
     return this.sql.exec<CompletionRow>(
       "SELECT * FROM backup_completions WHERE account_id = ? ORDER BY revision DESC",
       accountId,
-    ).toArray().map((row) => ({
-      accountId: row.account_id,
-      revision: row.revision,
-      streamId: row.stream_id,
-      bundleKey: row.bundle_key,
-      bundleBytes: row.bundle_bytes,
-      bundleSha256: row.bundle_sha256,
-      historySha256: row.history_sha256,
-      recordCount: row.record_count,
-      completedAtMs: row.completed_at,
-    }));
+    ).toArray().map(mapCompletionRow);
   }
 
   getCompletion(accountId: string, revision: number): BackupCompletionRecord | null {
     const row = this.sql.exec<CompletionRow>(
       "SELECT * FROM backup_completions WHERE account_id = ? AND revision = ?",
-      accountId,
-      revision,
+      accountId, revision,
     ).toArray()[0];
     if (row === undefined) return null;
-    return {
-      accountId: row.account_id,
-      revision: row.revision,
-      streamId: row.stream_id,
-      bundleKey: row.bundle_key,
-      bundleBytes: row.bundle_bytes,
-      bundleSha256: row.bundle_sha256,
-      historySha256: row.history_sha256,
-      recordCount: row.record_count,
-      completedAtMs: row.completed_at,
-    };
+    return mapCompletionRow(row);
   }
 
   deleteCompletion(accountId: string, revision: number): void {
@@ -633,6 +697,39 @@ export class BackupStore {
       accountId,
       revision,
     );
+  }
+}
+
+function mapCompletionRow(row: CompletionRow): BackupCompletionRecord {
+  return {
+    accountId: row.account_id,
+    revision: row.revision,
+    streamId: row.stream_id,
+    bundleKey: row.bundle_key,
+    bundleBytes: row.bundle_bytes,
+    bundleSha256: row.bundle_sha256,
+    historySha256: row.history_sha256,
+    recordCount: row.record_count,
+    completedAtMs: row.completed_at,
+    sourceGeneration: row.source_generation,
+    formatVersion: row.format_version,
+    generationOrigin: row.generation_origin === null ? null : parseGenerationOrigin(safeJsonParse(row.generation_origin)),
+    capturedAtMs: row.captured_at,
+    reason: row.reason === null ? null : parseCaptureReason(row.reason),
+    snapshotSha256: row.snapshot_sha256,
+  };
+}
+
+function parseCaptureReason(reason: string): BackupCaptureReason {
+  if (reason === "baseline" || reason === "history-change" || reason === "restore-baseline") return reason;
+  return "history-change";
+}
+
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }
 

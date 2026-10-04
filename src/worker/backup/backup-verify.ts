@@ -22,7 +22,8 @@ export type BackupBlockedCode =
   | "ownership_conflict"
   | "sequence_conflict"
   | "retention_verify_failed"
-  | "invalid_source_document";
+  | "invalid_source_document"
+  | "generation_state_unavailable";
 
 export class BackupVerificationError extends Error {
   constructor(readonly blockedCode: BackupBlockedCode, readonly detail: string) {

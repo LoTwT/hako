@@ -375,9 +375,18 @@ describe("GET /api/auth/callback 正常路径", () => {
     const sessionBody = await (await readSession(sessionCookie)).json() as { accountId: string };
     const doc = new LoroDoc();
     const snapshot = doc.export({ mode: "snapshot" }); doc.free();
+    // 协议 v2：先 bootstrap 取得代次，再携带代次同步（续期语义不变）。
+    const bootstrap = await handleApiRequest(new Request(`${MOCK_WEB_ORIGIN}/api/sync/refueling/bootstrap`, {
+      method: "POST", headers: { Origin: MOCK_WEB_ORIGIN, Cookie: sessionCookie,
+        "X-Hako-Account": sessionBody.accountId, "Content-Type": "application/json" },
+      body: "{}",
+    }), environment(), dependencies());
+    expect(bootstrap.status).toBe(200);
+    const generation = ((await bootstrap.json()) as { documentGeneration: string }).documentGeneration;
     const synchronize = () => handleApiRequest(new Request(`${MOCK_WEB_ORIGIN}/api/sync/refueling`, {
       method: "POST", headers: { Origin: MOCK_WEB_ORIGIN, Cookie: sessionCookie,
-        "Content-Type": "application/octet-stream", "X-Hako-Sync-Protocol": "1", "X-Hako-Account": sessionBody.accountId },
+        "Content-Type": "application/octet-stream", "X-Hako-Sync-Protocol": "2",
+        "X-Hako-Document-Generation": generation, "X-Hako-Account": sessionBody.accountId },
       body: new Uint8Array(snapshot),
     }), environment(), dependencies());
     // 模拟首个成功响应在到达浏览器之前丢失，浏览器 Cookie 仍是登录时的值及期限。

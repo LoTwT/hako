@@ -1,15 +1,18 @@
 // 草稿接线测试：草稿库打开完成前收到的输入不能丢，也不能让登录跳转
-// 在草稿未落盘时放行。
+// 在草稿未落盘时放行。v2 起草稿库按账号+代次隔离。
 
 import "fake-indexeddb/auto";
 import { deleteDB } from "idb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { accountStorageNames } from "../src/data/account-storage";
+import { accountStorageNamesV2 } from "../src/data/account-storage";
 import { useRefuelingDrafts } from "../src/composables/useRefuelingDrafts";
 import { createDraft, updateDraft } from "../src/domain/refueling/form";
 
-function createDrafts() {
-  return useRefuelingDrafts({ accountId: "00000000-0000-4000-8000-000000000001", knownRecords: () => new Map() });
+const accountId = "00000000-0000-4000-8000-000000000001";
+const generation = "00000000-0000-4000-8000-0000000000e1";
+
+function createDrafts(draftGeneration: string | null = generation) {
+  return useRefuelingDrafts({ accountId, generation: draftGeneration, knownRecords: () => new Map() });
 }
 
 beforeEach(() => {
@@ -18,7 +21,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await deleteDB(accountStorageNames("00000000-0000-4000-8000-000000000001").drafts);
+  if (generation !== null) await deleteDB(accountStorageNamesV2(accountId).draftsFor(generation));
   vi.restoreAllMocks();
 });
 
@@ -50,5 +53,15 @@ describe("草稿接线", () => {
     await drafts.initialize();
     await expect(drafts.flush()).resolves.toBe(true);
     expect(drafts.currentDraftId()).toBeNull();
+  });
+
+  it("无活动代次（保护流程/全新打开）时不建草稿会话，flush 放行且不写入任何库", async () => {
+    const drafts = createDrafts(null);
+    drafts.attachForm({ mode: "create", recordId: "record-none", base: null });
+    await drafts.initialize();
+    await expect(drafts.flush()).resolves.toBe(true);
+    expect(drafts.currentDraftId()).toBeNull();
+    const databases = await indexedDB.databases();
+    expect(databases.map((db) => db.name)).toEqual([]);
   });
 });

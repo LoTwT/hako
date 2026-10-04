@@ -29,10 +29,25 @@ import { SESSION_RENEWAL_INTERVAL_MS, SESSION_TTL_MS } from "../../src/worker/au
 import { AccountSync } from "../../src/worker/sync/account-sync";
 import { AccountDocuments } from "../../src/worker/sync/account-documents";
 import { BackupEngine, type BackupLogEvent } from "../../src/worker/backup/backup-engine";
-import type { SyncRefuelingInput, SyncRefuelingResult, ReadBackupStatusResult } from "../../src/worker/auth/account-rpc";
+import type {
+  BootstrapRefuelingInput,
+  BootstrapRefuelingResult,
+  ReadRefuelingSnapshotInput,
+  ReadRefuelingSnapshotResult,
+  ReadRestoreReceiptInput,
+  ReadRestoreReceiptResult,
+  SubmitRestoreInput,
+  SubmitRestoreResult,
+  SyncRefuelingInput,
+  SyncRefuelingResult,
+  ReadBackupStatusResult,
+} from "../../src/worker/auth/account-rpc";
+import type { RestoreReceiptInput } from "../../src/worker/restore/restore-store";
 import { R2BackupObjectStore } from "../../src/worker/backup/backup-object-store";
 import { FakeBackupBucket } from "./fake-backup-bucket";
 import { PRODUCTION_BACKUP_SCHEDULE, type BackupSchedulePolicy } from "../../src/worker/backup/backup-schedule";
+import { RestoreService } from "../../src/worker/restore/restore-service";
+import { RestoreStore } from "../../src/worker/restore/restore-store";
 
 class NodeSqliteCursor<T extends AccountStateRow> implements AccountStateSqlCursor<T> {
   constructor(private readonly rows: T[]) {}
@@ -150,6 +165,7 @@ export interface TestAccount {
   storage: NodeSqliteAccountStorage;
   backups: BackupEngine;
   bucket: FakeBackupBucket;
+  restoreStore: RestoreStore;
 }
 
 export interface CreateTestAccountOptions {
@@ -167,6 +183,7 @@ export function createTestAccount(path = ":memory:", options: CreateTestAccountO
   const storage = new NodeSqliteAccountStorage(database);
   const state = new HakoAccountState(storage);
   const documents = new AccountDocuments(storage);
+  const restoreStore = new RestoreStore(storage);
   const bucket = options.bucket ?? new FakeBackupBucket();
   const now = options.now ?? Date.now;
   const backups = new BackupEngine({
@@ -178,19 +195,50 @@ export function createTestAccount(path = ":memory:", options: CreateTestAccountO
     log: options.log ?? (() => undefined),
   });
   const sync = new AccountSync(storage, state, documents, backups);
-  return { account: new TestHakoAccount(state, sync, backups), state, database, storage, backups, bucket };
+  const restore = new RestoreService(state, documents, restoreStore);
+  return {
+    account: new TestHakoAccount(state, sync, backups, restore, restoreStore),
+    state, database, storage, backups, bucket, restoreStore,
+  };
 }
 
 /** 按 HakoAccountStub 合同包装真实状态逻辑；路由测试通过它访问 SQLite。 */
 export class TestHakoAccount implements HakoAccountStub {
-  constructor(readonly state: HakoAccountState, readonly sync: AccountSync, private readonly backups: BackupEngine) {}
+  constructor(
+    readonly state: HakoAccountState,
+    readonly sync: AccountSync,
+    private readonly backups: BackupEngine,
+    private readonly restore: RestoreService,
+    private readonly restoreStore: RestoreStore,
+  ) {}
 
   async readAccountId(input: ReadHakoSessionInput): Promise<string | null> {
     return this.sync.readAccountId(input);
   }
 
+  async bootstrapRefueling(input: BootstrapRefuelingInput): Promise<BootstrapRefuelingResult> {
+    return this.sync.bootstrap(input);
+  }
+
+  async readRefuelingSnapshot(input: ReadRefuelingSnapshotInput): Promise<ReadRefuelingSnapshotResult> {
+    return this.sync.readSnapshot(input);
+  }
+
   async syncRefueling(input: SyncRefuelingInput): Promise<SyncRefuelingResult> {
     return this.sync.exchange(input);
+  }
+
+  async submitRestore(input: SubmitRestoreInput): Promise<SubmitRestoreResult> {
+    return this.restore.submit(input);
+  }
+
+  async readRestoreReceipt(input: ReadRestoreReceiptInput): Promise<ReadRestoreReceiptResult> {
+    return this.restore.read(input);
+  }
+
+  /** 测试注入合成 B 回执（生产路径只在恢复切换事务内写入）。 */
+  async insertRestoreReceiptForTest(input: RestoreReceiptInput): Promise<void> {
+    this.restoreStore.insertReceipt(input);
   }
 
   async readBackupStatus(input: ReadHakoSessionInput): Promise<ReadBackupStatusResult> {
