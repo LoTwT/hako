@@ -1,11 +1,11 @@
 # 独立备份合同（refueling）
 
-状态：**已实现并通过本地 workerd 集成验收，未部署**。本文是该功能的唯一技术合同：状态模型、事务边界、调度、格式、保留策略、错误语义与验证证据。产品取舍（按变化备份、最近 30 份、故障期间继续同步）由[重新设计记录](./redesign.md#备份与恢复)维护；同步与账号语义见[账号同步合同](./account-sync.md)；设计依据与二次审查见[独立备份方案分析](../analysis/2026-10-03-independent-backup.md)。真实 R2 桶、部署与恢复写入操作不在当前授权内。
+状态：**已实现、已部署（production，2026-10-04），首份真实备份读回通过；恢复写入仍未实现**。本文是该功能的唯一技术合同：状态模型、事务边界、调度、格式、保留策略、错误语义与验证证据。发布与首份真实备份证据见[发布记录](../releases/2026-10-04-independent-backup.md)；产品取舍（按变化备份、最近 30 份、故障期间继续同步）由[重新设计记录](./redesign.md#备份与恢复)维护；同步与账号语义见[账号同步合同](./account-sync.md)；设计依据与二次审查见[独立备份方案分析](../analysis/2026-10-03-independent-backup.md)。
 
 ## 1. 范围与部署前提
 
 - 复用既有 `HakoAccountDurableObject`、`owner-account` 实例与 SQLite 库；增量建表，不新增 DO namespace、Queue、Workflow、Cron 或外部服务。
-- 唯一新资源为私有 R2 Standard 桶绑定 `HAKO_BACKUPS`（候选桶名 `hako-backups-production`，仅在 [cloudflare.config.ts](../../cloudflare.config.ts) 声明，`dev.remote: false`）；真实桶的创建、开通与权限在发布准备时核实。
+- 唯一新资源为私有 R2 Standard 桶绑定 `HAKO_BACKUPS`（桶名 `hako-backups-production`，声明于 [cloudflare.config.ts](../../cloudflare.config.ts)，`dev.remote: false`）；该桶已于 2026-10-04 创建并读回（Standard、私有、无公开访问），见[发布记录](../releases/2026-10-04-independent-backup.md)。
 - 桶保持私有：无 `r2.dev`、自定义域名、浏览器 CORS、公开下载或持久 S3 Key；不设置按天 lifecycle 或与裁剪冲突的 bucket lock。
 - 本地实现、验证与依赖均不升级锁文件版本；运行时绑定调用不产生入口请求，但 R2 操作计量真实存在。
 
@@ -112,4 +112,4 @@
 
 ## 13. 明确不包含
 
-恢复 UI 与恢复写入、`documentGeneration` 协议落地、AI、统计、通用导入、历史查看 UI、同步状态 UI 调整（现有「独立备份未接入」静态提示的对齐由父会话在发布时协调）、端到端加密、依赖升级、真实 R2 桶创建与任何云端写入。
+恢复 UI 与恢复写入、`documentGeneration` 协议落地、AI、统计、通用导入、历史查看 UI、同步状态 UI 调整、端到端加密、依赖升级、恢复写入之外的云端操作扩展；建桶与本次部署已完成（见[发布记录](../releases/2026-10-04-independent-backup.md)）。
