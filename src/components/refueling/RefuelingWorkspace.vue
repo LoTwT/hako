@@ -269,7 +269,7 @@ onUnmounted(() =>
       @persist="requestPersistence"
     />
     <button class="text-button sync-now" :disabled="locked || !ready" @click="retrySync">立即同步</button>
-    <p class="local-notice">服务端同步副本不等于独立备份；本版尚未接入独立备份。</p>
+    <p class="local-notice">同步成功不代表独立备份已完成；本版暂不提供备份恢复。</p>
     <LegacyImport :disabled="locked || saving || !ready" :imported-ids="importedLegacyIds" :import-records="importLegacy" />
   </div>
 </template>
