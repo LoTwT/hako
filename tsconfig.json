@@ -29,6 +29,9 @@
     "src/**/*.vue",
     "tests/**/*.ts"
   ],
-  "exclude": ["src/worker"],
+  "exclude": [
+    "src/worker",
+    "tests/integration/worker-entry.ts"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

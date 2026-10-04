@@ -33,6 +33,19 @@ export interface AccountStateStorage {
   transactionSync<T>(closure: () => T): T;
 }
 
+/**
+ * Durable Object 运行时存储子集：在 `transaction()`（异步事务）内执行的 SQL 语句、
+ * `transactionSync` 嵌套以及 alarm 安排会共同提交或一起回滚（已由本地 workerd 探针验证）。
+ * 同步路径（登录事务、会话续期）继续只依赖 `AccountStateStorage`。
+ */
+export interface AccountDurableStorage extends AccountStateStorage {
+  /** 闭包必须为异步函数；事务内只允许 storage 操作，不等待 R2 等外部 I/O。 */
+  transaction<T>(closure: () => Promise<T>): Promise<T>;
+  setAlarm(scheduledTimeMs: number): Promise<void>;
+  getAlarm(): Promise<number | null>;
+  deleteAlarm(): Promise<void>;
+}
+
 /** 会话绑定的固定身份键（规格第 4.2 节：固定 issuer 与稳定 sub 的组合）。 */
 export interface HakoIdentity {
   issuer: string;

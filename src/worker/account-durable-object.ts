@@ -1,5 +1,5 @@
-// 账号级 SQLite Durable Object：持久保存登录事务、会话及账号文档。
-// SQL 与规则在 auth/account-state.ts 和 sync/，实现与测试共用同一份逻辑；
+// 账号级 SQLite Durable Object：持久保存登录事务、会话、账号文档与独立备份状态。
+// SQL 与规则在 auth/account-state.ts、sync/ 与 backup/ 中，实现与测试共用同一份逻辑；
 // 本类只负责把逻辑接到 Durable Object 运行时并按 RPC 合同暴露。
 
 import { DurableObject } from "cloudflare:workers";
@@ -13,6 +13,7 @@ import type {
   RenewedHakoSession,
 } from "./auth/account-state";
 import type {
+  ReadBackupStatusResult,
   ReadHakoSessionInput,
   RenewHakoSessionInput,
   RevokeHakoSessionInput,
@@ -21,17 +22,45 @@ import type {
 } from "./auth/account-rpc";
 import { SESSION_RENEWAL_INTERVAL_MS, SESSION_TTL_MS } from "./auth/session-policy";
 import { AccountSync } from "./sync/account-sync";
+import { AccountDocuments } from "./sync/account-documents";
 import { initializeWorkerLoro } from "./sync/loro-runtime";
+import { BackupEngine, type BackupSchedulePolicy } from "./backup/backup-engine";
+import { PRODUCTION_BACKUP_SCHEDULE } from "./backup/backup-schedule";
+import { R2BackupObjectStore } from "./backup/backup-object-store";
 
 export class HakoAccountDurableObject extends DurableObject<Env> {
   private readonly accountState: HakoAccountState;
   private readonly accountSync: AccountSync;
+  private readonly backupEngine: BackupEngine;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    // 幂等建表与补列；SQLite 写入由 DO 输出门确认后才返回响应。
+    // 构造只做幂等建表与补列；不依据 getAlarm()==null 初始化或修复任何任务，
+    // 也不在只读请求里启动备份（运行中的 alarm 也可能读到 null）。
     this.accountState = new HakoAccountState(ctx.storage);
-    this.accountSync = new AccountSync(ctx.storage, this.accountState);
+    const documents = new AccountDocuments(ctx.storage);
+    this.backupEngine = new BackupEngine({
+      storage: ctx.storage,
+      objectStore: new R2BackupObjectStore(env.HAKO_BACKUPS),
+      snapshotSource: documents,
+      schedule: this.resolveBackupSchedule(),
+      now: () => Date.now(),
+      // 脱敏事件日志：只记 backupId、大小、耗时与错误码，不记快照、身份或 Cookie。
+      log: (event) => console.info(JSON.stringify(event)),
+    });
+    this.accountSync = new AccountSync(ctx.storage, this.accountState, documents, this.backupEngine);
+  }
+
+  /** 生产固定节奏；仅隔离测试子类覆盖以加速，持久语义不变。 */
+  protected resolveBackupSchedule(): BackupSchedulePolicy {
+    return PRODUCTION_BACKUP_SCHEDULE;
+  }
+
+  /** 唯一 alarm：按优先级推进冻结任务 > 未收尾清理 > 窗口到期捕获。 */
+  async alarm(): Promise<void> {
+    initializeWorkerLoro();
+    await this.backupEngine.onAlarm(Date.now());
+    await this.ctx.storage.sync();
   }
 
   async createLoginTransaction(input: LoginTransactionInput): Promise<void> {
@@ -63,11 +92,22 @@ export class HakoAccountDurableObject extends DurableObject<Env> {
   }
 
   async syncRefueling(input: SyncRefuelingInput): Promise<SyncRefuelingResult> {
-    // RPC 到达时重验会话。授权、合并与续期之间没有 await，退出不能穿插进来。
+    // RPC 到达时重验会话。授权、合并、待备责任与续期在同一个 storage.transaction 内，
+    // 相互之间不等待 R2 等外部 I/O；SQL 与 alarm 安排共同提交或回滚。
     initializeWorkerLoro();
-    const result = this.accountSync.exchange({ ...input, nowMs: Date.now() });
+    const result = await this.accountSync.exchange({ ...input, nowMs: Date.now() });
     await this.ctx.storage.sync();
     return result;
+  }
+
+  /** 只读备份状态：重验会话、只查已有映射；不续期、不写 Cookie、不初始化、不上传。 */
+  async readBackupStatus(input: ReadHakoSessionInput): Promise<ReadBackupStatusResult> {
+    initializeWorkerLoro();
+    if (this.accountState.readSession(input) === null) {
+      return { ok: false, error: "unauthorized" };
+    }
+    const accountId = this.accountSync.findExistingAccountId({ ...input, nowMs: Date.now() });
+    return { ok: true, status: await this.backupEngine.readStatusSnapshot(accountId) };
   }
 
   async renewSessionIfDue(input: RenewHakoSessionInput): Promise<RenewedHakoSession | null> {

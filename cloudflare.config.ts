@@ -38,6 +38,13 @@ const baseWorker = defineWorker({
     // 真实 owner 主体只通过部署 Secret（或本地 .dev.vars）输入，
     // 不进入前端、日志、公共配置或文档。
     HAKO_OWNER_SUBJECT: bindings.secret(),
+    // 独立备份的私有 R2 Standard 桶绑定（备份合同见 docs/specs/backup.md）。
+    // 仅作为代码配置；真实资源创建与开通状态留待发布准备核实。
+    // 本地开发始终使用隔离的本地模拟存储，不访问远端 R2。
+    HAKO_BACKUPS: bindings.r2({
+      name: "hako-backups-production",
+      dev: { remote: false },
+    }),
   },
 });
 

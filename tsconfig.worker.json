@@ -20,5 +20,10 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true
   },
-  "include": ["src/worker", "cloudflare.config.ts", ".cloudflare/types"]
+  "include": [
+    "src/worker",
+    "cloudflare.config.ts",
+    ".cloudflare/types",
+    "tests/integration/worker-entry.ts"
+  ]
 }
