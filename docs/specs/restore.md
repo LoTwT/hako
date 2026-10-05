@@ -1,10 +1,10 @@
 # 加油文档恢复设计
 
-状态：**交付 A「代次兼容基础」已实施并通过本地验证，并已由 PR #18 squash 合并至 `main`（`0dce2b42`，未部署）；交付 B「恢复操作」已完成本地实施、四轮审阅修复与最终内容复审（2026-10-05，隔离 worktree `feat/refueling-restore`，未部署）**。六项产品取舍已由用户确认采用（2026-10-04）。本稿整理与复审基线为 `c6cf7b5f967ae36f1afb5796fe462fe4455efed2`；A 的实施基线为其后合并的 `59d7d6687664b8d0b49c4016398d90d697e0f853`（PR #17 文档补充）。
+状态：**交付 A「代次兼容基础」与交付 B「恢复操作」均已实施、合并并部署到 production（2026-10-05，见[恢复发布记录](../releases/2026-10-05-restore.md)）：A 为 PR #18（squash `0dce2b42c0e44b7f9441471dd36a10b3128f4113`，version `c13b7b31-06a5-4a81-9c5c-7b45c7ead561`，2026-10-05 10:28:41Z 上线）；B 为 PR #19 恢复操作加 PR #20 浏览器修复（squash `4b93432f8f8e4665e3e66bc58ed064d58249dcfd`，version `8d66124c-3fa1-4f20-bb85-ad42ecd9e304`，2026-10-05 14:41:49Z 上线，当前生产）。A 完成两端设备接受，B 完成两端备份列表与无变化预览的用户验收；生产真实恢复未执行。** 六项产品取舍已由用户确认采用（2026-10-04）。本稿整理与复审基线为 `c6cf7b5f967ae36f1afb5796fe462fe4455efed2`；A 的实施基线为其后合并的 `59d7d6687664b8d0b49c4016398d90d697e0f853`（PR #17 文档补充）。
 
 推荐实现本人账号内的整文档恢复：先验证所选备份并预览，确认当前服务端版本已有可读的保护备份，再以一次 SQLite 事务替换文档、切换代次、登记恢复结果与后续备份责任。设备按代次隔离副本，旧设备的记录和草稿保留供本人核对。
 
-本文维护恢复设计及其接口变更。已上线的账号、同步、备份规则仍分别由[账号同步合同](./account-sync.md)、[独立备份合同](./backup.md)维护；发布事实见[备份发布记录](../releases/2026-10-04-independent-backup.md)。实施并验证后，再把已生效的协议与格式变更归入对应合同，本文保留恢复流程，避免维护两套规则。
+本文维护恢复设计及其接口变更。已上线的账号、同步、备份规则仍分别由[账号同步合同](./account-sync.md)、[独立备份合同](./backup.md)维护；发布事实见[备份发布记录](../releases/2026-10-04-independent-backup.md)与[恢复发布记录](../releases/2026-10-05-restore.md)。实施并验证后，再把已生效的协议与格式变更归入对应合同，本文保留恢复流程，避免维护两套规则。
 
 ## 1. 范围与成功标准
 
@@ -21,7 +21,7 @@
 
 ## 2. 沿用的前提与已确认取舍
 
-沿用[备份合同 §12](./backup.md#12-恢复-pr-的前提本轮不实现)：整文档恢复使用新 `documentGeneration`；拒绝旧代次和缺代次上传；保护旧设备未同步副本；恢复前保存保护备份。继续保留完整 Loro 历史，复用当前 DO、私有 R2 Standard 与唯一 alarm；既有窗口、退避、blocked 和保留规则不重新选型。
+沿用[备份合同 §12](./backup.md#12-恢复-pr-的前提)：整文档恢复使用新 `documentGeneration`；拒绝旧代次和缺代次上传；保护旧设备未同步副本；恢复前保存保护备份。继续保留完整 Loro 历史，复用当前 DO、私有 R2 Standard 与唯一 alarm；既有窗口、退避、blocked 和保留规则不重新选型。
 
 以下六项取舍已由用户于 2026-10-04 确认采用：
 
@@ -374,7 +374,7 @@ v2 manifest 保留原业务校验和长度/摘要字段，明确变更：
 
 拟修改现有入口：`src/shared/sync-protocol.ts`、`src/worker/sync/`、`src/worker/auth/account-rpc.ts`、`src/worker/account-durable-object.ts`、`src/worker/api.ts`、`src/worker/backup/`、`src/data/account-storage.ts`、`local-refueling.ts`、`refueling-sync.ts`、草稿相关模块、`useLocalRefueling.ts`、`useRefuelingDrafts.ts`、账号/加油工作区组件与 `App.vue`。
 
-实际实施入口（A + B，本地验证，未部署）：`src/shared/restore-protocol.ts`（接口与固定错误码）、`src/worker/restore/restore-store.ts`（A 的回执存储）、`restore-service.ts`、`restore-preview-store.ts`（B 的固定预览暂存）、`routes.ts`、`src/data/refueling-restore.ts`、`restore-comparison.ts`、`BackupRestore.vue`、`RetainedRefuelingCopy.vue`，以及离线 CLI `scripts/backup-verify.ts` 与 `scripts/run-backup-verify.mjs`（`pnpm run backup:verify`）。纯验证逻辑复用 `backup/` 的严格验证器；正常同步不依赖恢复 UI；不增加云端绑定。实现范围与验证证据统一由[本地验证进展](../local-validation.md)维护。
+实际实施入口（A + B，已合并并部署）：`src/shared/restore-protocol.ts`（接口与固定错误码）、`src/worker/restore/restore-store.ts`（A 的回执存储）、`restore-service.ts`、`restore-preview-store.ts`（B 的固定预览暂存）、`routes.ts`、`src/data/refueling-restore.ts`、`restore-comparison.ts`、`BackupRestore.vue`、`RetainedRefuelingCopy.vue`，以及离线 CLI `scripts/backup-verify.ts` 与 `scripts/run-backup-verify.mjs`（`pnpm run backup:verify`）。纯验证逻辑复用 `backup/` 的严格验证器；正常同步不依赖恢复 UI；不增加云端绑定。实现范围与验证证据统一由[本地验证进展](../local-validation.md)维护。
 
 A 实施时同步更新账号同步合同和备份格式合同；B 实施时把本稿中已批准且实测的恢复规则转为正式合同。发布记录只有实际发布后才写“已部署”。Git/PR 标题继续英文，当前设计稿不产生提交、推送或部署授权。
 
@@ -445,3 +445,5 @@ B 的生产检查先做有界只读列表与包验证；产品的 POST 预览会
 2026-10-05 交付 A 已由 PR #18 squash 合并至 `main`（`0dce2b42`，未部署；本节上方 A 记录的验证范围与证据不变）。交付 B「恢复操作」在同一隔离 worktree 实施（分支 `feat/refueling-restore`，基线 `0dce2b42`）并完成本地验证：受控备份列表、精确备份引用与固定预览（服务端 previewId、15 分钟不续期、事务外 I/O 与哈希、事务内重验与迟到请求不覆盖新预览）、保护门禁与唯一切换事务（最终 POST 重新验证精确覆盖当前主快照的最新保护包，任一写入失败整体回滚，`storage.sync()` 成功后才确认）、§7.3 结果裁决与回退 A 后按回执/持久条件区分 committed/not_committed/unknown、恢复基线冻结与消费、跨代次保留、本人可用「备份与恢复」面板与不联网 `backup:verify` CLI。B 另用 `git archive` 解出的精确 A 源码（`0dce2b42`）在项目外完成真实 B → A → B 两条丢响应路径回退门禁，并在此过程中发现与修复「冷启动进程提交恢复缺少 Loro 运行时初始化」的缺陷（已补冷启动回归）。实现范围、命令、结果与未验边界由[本地验证进展](../local-validation.md#恢复操作b2026-10-05隔离-worktree未合并未部署)的新节维护；本文 §4–§12 的规则不变，B 未合并、未部署。
 
 2026-10-05 父侧第一轮内容审阅结论为 CHANGES_REQUIRED（B-R1/B-R5 P1；B-R2/B-R3/B-R4/B-R6 P2；另有 B-V1/V2 补证与 B-D1/D2 文档/UI 完整项），已在本 worktree 完成修复与补证：固定正文的目标与预期源六字段与预览逐字段绑定，入口、最终事务与短裁决共用同一资格判断（外部故障不改变永久失格裁决）；有界序列解释与归属核对成为预览与提交的共同门禁（保留可解释裁剪后固定暂存继续可用）；面板以持久 pending 驱动查询/原请求重试入口、保护未覆盖时禁用确认并显示版本/原因/下次尝试时间、轮询改用只读备份状态元数据、flush 异步边界后重验本机同步与请求归属；`backup:verify` 明确接受 pnpm 传入的首位 `--` 分隔符并以真实 pnpm 命令覆盖成功/失败；补齐 tombstone、近 4 MiB 恢复主路径、预览时钟到期与保护门禁未就绪分支证据。修复范围与验证结果见[本地验证进展](../local-validation.md#恢复操作b2026-10-05隔离-worktree未合并未部署)。
+
+2026-10-05 后续各轮审阅修复、最终内容复审、真实浏览器补验收发现的两项产品缺陷修复（PR #20）及无绕过浏览器复验，均记录在[本地验证进展](../local-validation.md)对应各节，本文规则未再变更。交付 A 已由 PR #18 squash 合并（`0dce2b42c0e44b7f9441471dd36a10b3128f4113`），交付 B 由 PR #19 合并（`34c5fa8b5540858c8a3ea045bd554318e8a8ff03`）并随后并入 PR #20 浏览器修复（`4b93432f8f8e4665e3e66bc58ed064d58249dcfd`）；两者已分阶段部署到 production——A version `c13b7b31-06a5-4a81-9c5c-7b45c7ead561`（2026-10-05 10:28:41Z，已接受并登记为回退候选）、B version `8d66124c-3fa1-4f20-bb85-ad42ecd9e304`（2026-10-05 14:41:49Z，当前生产）。A 完成两端设备接受（记录保留与同步、更新提示消失；原本无草稿，草稿保留分支未验），B 完成两端备份列表与无变化预览的用户验收；既有 v1 真实备份独立读回通过（A 阶段执行、B 复用）。生产真实恢复、有差异预览/保护门禁与生产新 v2 备份未验证。本节上方各条目中的「未部署/未合并」为当时状态记录；发布与验收事实统一见[恢复发布记录](../releases/2026-10-05-restore.md)，本文 §4–§12 规则不变。
