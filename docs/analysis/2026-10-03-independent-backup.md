@@ -373,7 +373,7 @@ DO Free 的单实例存储上限在官方 FAQ 中为 1 GB，账号总量 5 GB；
 | R2 短暂不可用、写后断联、DO 重启 | 冻结任务保留，确定 key 和阶段检查可重试 | 完成前存在 RPO 窗口，不能把“已同步”称作“已独立备份” |
 | 同账号整体丢失、封禁，平台整体故障，管理员同时删除两份 | 无跨账号／跨云承诺 | 本轮不新增外部备份或密钥恢复系统 |
 
-未来恢复不能只是清空 `refueling_snapshots` 再导入旧快照：现有协议 1 会继续合并旧设备完整历史，可能重新引入恢复点之后的编辑／删除。仅执行 Loro checkout 也只是历史浏览。[已部署同步版本边界](../specs/account-sync.md#同步接口-v1)、[Loro 时间旅行](https://www.loro.dev/docs/tutorial/time_travel)。
+未来恢复不能只是清空 `refueling_snapshots` 再导入旧快照：现有协议 1 会继续合并旧设备完整历史，可能重新引入恢复点之后的编辑／删除。仅执行 Loro checkout 也只是历史浏览。[已部署同步版本边界](../specs/account-sync.md#同步接口协议-v2)、[Loro 时间旅行](https://www.loro.dev/docs/tutorial/time_travel)。
 
 本次必须固定：包格式及验证规则、完整历史、随机账号归属、legacy 文档空间描述、schema／库／协议版本分离、稳定 backupId、完成标记的意义、相同版本幂等与错误类型。新旧格式不得只靠文件扩展名或当前值外观判断。
 

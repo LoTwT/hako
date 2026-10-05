@@ -1,6 +1,6 @@
 # 独立备份合同（refueling）
 
-状态：**已实现、已部署（production，2026-10-04），首份真实备份读回通过；恢复写入仍未实现**。本文是该功能的唯一技术合同：状态模型、事务边界、调度、格式、保留策略、错误语义与验证证据。发布与首份真实备份证据见[发布记录](../releases/2026-10-04-independent-backup.md)；产品取舍（按变化备份、最近 30 份、故障期间继续同步）由[重新设计记录](./redesign.md#备份与恢复)维护；同步与账号语义见[账号同步合同](./account-sync.md)；设计依据与二次审查见[独立备份方案分析](../analysis/2026-10-03-independent-backup.md)。
+状态：**已实现、已部署（production，2026-10-04），首份真实备份读回通过；恢复写入已随恢复交付 A/B 实现、合并并部署（2026-10-05），生产真实恢复尚未执行**。本文是该功能的唯一技术合同：状态模型、事务边界、调度、格式、保留策略、错误语义与验证证据。发布与首份真实备份证据见[发布记录](../releases/2026-10-04-independent-backup.md)；恢复发布与验收见[恢复发布记录](../releases/2026-10-05-restore.md)；产品取舍（按变化备份、最近 30 份、故障期间继续同步）由[重新设计记录](./redesign.md#备份与恢复)维护；同步与账号语义见[账号同步合同](./account-sync.md)；设计依据与二次审查见[独立备份方案分析](../analysis/2026-10-03-independent-backup.md)。
 
 ## 1. 范围与部署前提
 
@@ -11,7 +11,7 @@
 
 ## 2. 备份什么与版本判定
 
-- 权威内容是 **DO 验证、合并后已持久保存的完整业务文档**：完整 Loro snapshot（记录 ID、合同字段、PeerID/操作 ID/因果历史及删除历史）。不重新创建 PeerID、不从当前 JSON 反建文档、不使用浅快照、不另存可写业务投影。字段校验复用[账号同步合同](./account-sync.md#同步接口-v1)的既有验证器，备份格式不复制字段清单。
+- 权威内容是 **DO 验证、合并后已持久保存的完整业务文档**：完整 Loro snapshot（记录 ID、合同字段、PeerID/操作 ID/因果历史及删除历史）。不重新创建 PeerID、不从当前 JSON 反建文档、不使用浅快照、不另存可写业务投影。字段校验复用[账号同步合同](./account-sync.md#同步接口协议-v2)的既有验证器，备份格式不复制字段清单。
 - **不导出整个 DO SQLite**：身份映射、登录事务、会话、Token/verifier/Secret、Cookie、浏览器资料、草稿、本机确认游标与旧库导入映射一律不进入备份。
 - 「变化」按合并前后 **OpLog 版本向量**判定：相同表示没有新增已保存操作；严格推进（包括被 LWW 隐藏的并发操作）表示新的服务端历史版本。不按当前值、保存点击、请求顺序或记录数量判等。
 - 覆盖判断按**有效源代次与历史摘要**共同判定（格式 v2 起）：最新完成版本与当前主文档的代次一致且历史摘要匹配才算覆盖；不同代次即使历史摘要相同也不能互相确认覆盖。v1 完成行按固定 legacyGeneration（G0 绑定）解释有效代次，不改写旧对象。覆盖补登记的两个入口（空闲同步与确认事务内）同样比较代次。
@@ -54,7 +54,7 @@
 实现与严格解析的唯一来源是 [backup-format.ts](../../src/worker/backup/backup-format.ts)（v1/v2 双格式显式区分）。要点：
 
 - 键布局：`hako-backup/layout-v1/<environment>/accounts/<accountId>/refueling/<backupStreamId>/objects/<20位补零revision>-<bundleSha256>.hakobak` 与 `.../commits/<20位补零revision>.json`；环境标签固定 `production`。
-- 二进制包：8 字节魔数 + 4 字节大端 manifest 长度 + UTF-8 JSON manifest + 原始 snapshot；总长精确匹配，无尾随数据。格式 v1 魔数 `HAKOBK1\n`（已部署）；格式 v2 魔数 `HAKOBK2\n`（已实现未部署），其余二进制长度结构与上限沿用，对象布局仍为 `layout-v1`、继续使用原 stream 与全局递增 revision。manifest ≤ 16 KiB，snapshot ≤ 4 MiB（沿用同步合同限额），标记 ≤ 4 KiB。魔数与 manifest 的 `formatVersion` 必须一致，不能靠 JSON 外观绕过魔数区分。
+- 二进制包：8 字节魔数 + 4 字节大端 manifest 长度 + UTF-8 JSON manifest + 原始 snapshot；总长精确匹配，无尾随数据。格式 v1 魔数 `HAKOBK1\n`（2026-10-04 起部署）；格式 v2 魔数 `HAKOBK2\n`（2026-10-05 起部署），其余二进制长度结构与上限沿用，对象布局仍为 `layout-v1`、继续使用原 stream 与全局递增 revision。manifest ≤ 16 KiB，snapshot ≤ 4 MiB（沿用同步合同限额），标记 ≤ 4 KiB。魔数与 manifest 的 `formatVersion` 必须一致，不能靠 JSON 外观绕过魔数区分。
 - manifest 固定字段顺序序列化（v1/v2 各自固定顺序）；捕获时间、版本与 schema 一旦入库不再改变，重试不重新取时间或换编码。**格式 v1**：`sourceGeneration: { kind: legacy-account-v1, id: accountId }`、`syncProtocol: 1`、reason 仅 `baseline`/`history-change`，严格校验不变。**格式 v2**：`sourceGeneration: { kind: document-generation-v1, id: <捕获时固定的文档代次> }`、`syncProtocol: 2`、新增 `generationOrigin`——`initial`，或固定保存 requestId、前一代次、目标/保护备份引用的 `restore` 来源（新代次后续普通备份不丢失该来源）；reason 新增 `restore-baseline`，仅用于恢复切换事务冻结的首份恢复快照。解析显式区分 v1/v2，不放宽 v1 的严格字段校验，也不根据账号 ID 猜测现代次；manifest 与 marker 的 `formatVersion` 必须彼此匹配。版本向量摘要规范：PeerID 与计数均为十进制字符串，按 PeerID 整数值排序（64 位精度不经 Number），无空白 JSON 二元组数组做 SHA-256。
 - 完成标记是经过验证的不可变索引引用（格式、归属、精确键、字节与包哈希），在包读回验证之后才条件创建；manifest 与标记交叉核对一致。
 - 条件创建用 `onlyIf: { etagDoesNotMatch: "*" }`（RFC 7232 `If-None-Match: *` 语义，本地 Miniflare R2 与官方合同一致）；**条件 PUT 返回 `null` 不是写入成功**，须读取原对象核对；读取前按对象上限检查长度，不做无界缓冲；ETag 不作为内容哈希。上传附带 SHA-256 校验，读回仍独立完整验证。
@@ -107,12 +107,12 @@
 
 ## 12. 恢复 PR 的前提
 
-接续方案见[加油文档恢复设计](./restore.md)。交付 A「代次兼容基础」已在本仓库实现（未部署）：格式 v2 与捕获代次、受控 G0、协议 2 与拒绝 v1 上传、跨代次最近 30 份衔接及恢复回执读取（只查重）已落地，上文已并入合同；恢复切换、列表/预览/保护校验与恢复 UI 仍属交付 B，未实现、未部署，未改变生产运行行为。
+接续方案见[加油文档恢复设计](./restore.md)。交付 A「代次兼容基础」与交付 B「恢复操作」已实现、合并（PR #18/#19，含 PR #20 浏览器修复）并部署到 production（2026-10-05）：格式 v2 与捕获代次、受控 G0、协议 2 与拒绝 v1 上传、跨代次最近 30 份衔接、恢复回执读取，以及恢复切换、列表/预览/保护校验与恢复 UI 均已上线；上文已并入合同。生产真实恢复与生产新 v2 备份尚未验证，发布与验收范围见[恢复发布记录](../releases/2026-10-05-restore.md)。
 
-- 恢复必须引入新 `documentGeneration`：拒绝旧代次与缺代次的 v1 上传，保护旧设备未同步副本；缺代次不解释为「当前代」。当前备份只在 manifest 记录 `sourceGeneration: { kind: legacy-account-v1, id: accountId }`。
+- 恢复必须引入新 `documentGeneration`：拒绝旧代次与缺代次的 v1 上传，保护旧设备未同步副本；缺代次不解释为「当前代」。既有 v1 备份只在 manifest 记录 `sourceGeneration: { kind: legacy-account-v1, id: accountId }`。
 - 字段纠正走正常新编辑；整文档恢复切换代次并保存恢复前备份；跨代次的最近 30 版衔接、恢复中断/重复确认与身份重绑定由恢复 PR 定义。
 - 管理员可从私有 R2 直接取得包并用本文格式验证器核验（[backup-format.ts](../../src/worker/backup/backup-format.ts) 的解析不依赖 DO）；公开列表/下载/恢复 API 不在本合同。
 
 ## 13. 明确不包含
 
-恢复 UI 与恢复写入、`documentGeneration` 协议落地、AI、统计、通用导入、历史查看 UI、同步状态 UI 调整、端到端加密、依赖升级、恢复写入之外的云端操作扩展；建桶与本次部署已完成（见[发布记录](../releases/2026-10-04-independent-backup.md)）。
+恢复 UI 与恢复写入、`documentGeneration` 协议落地（三者后由恢复交付 A/B 实现、合并并部署，见[恢复发布记录](../releases/2026-10-05-restore.md)与[恢复设计](./restore.md)）、AI、统计、通用导入、历史查看 UI、同步状态 UI 调整、端到端加密、依赖升级、恢复写入之外的云端操作扩展；建桶与本次部署已完成（见[发布记录](../releases/2026-10-04-independent-backup.md)）。本节边界描述独立备份切片（PR #13/#14）当时的范围，不随恢复交付自动改写。
