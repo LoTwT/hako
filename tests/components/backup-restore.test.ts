@@ -635,6 +635,88 @@ describe("B 修复回归（第三轮父审）：请求归属与 busy 收尾", ()
   });
 });
 
+describe("浏览器验收缺陷回归：预览失败的可读原因保留与归属", () => {
+  it("预览失败后的列表刷新不清掉可读原因（backup_not_found）：预览 1 次、列表 2 次", async () => {
+    listBackupsMock
+      .mockResolvedValueOnce({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(1)] } })
+      .mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2), versionEntry(1)] } });
+    createPreviewMock.mockResolvedValue({ ok: false, error: "backup_not_found" });
+    const root = mountPanel(baseLocal(), async () => ({ ok: true, message: "" }));
+    await flushPanel();
+    await selectOldestVersion(root);
+    expect(createPreviewMock).toHaveBeenCalledTimes(1);
+    expect(listBackupsMock).toHaveBeenCalledTimes(2);
+    expect(collectText(root.subTree)).toContain("所选备份已不可用（可能正在清理），请重新选择。");
+  });
+
+  it("预览失效（当前版本变化）分支的提示同样在列表刷新后保留", async () => {
+    const snapshots = await buildSnapshots();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2), versionEntry(1)] } });
+    createPreviewMock.mockResolvedValue({ ok: true, preview: previewResponse(1) });
+    fetchPreviewSnapshotMock.mockResolvedValue({ ok: true, snapshot: snapshots.target, snapshotSha256: "b".repeat(64) });
+    fetchSnapshotMock.mockResolvedValue({ ok: true, snapshot: { documentGeneration: generation, revision: 3, snapshot: snapshots.current } });
+    const root = mountPanel(baseLocal(), async () => ({ ok: true, message: "" }));
+    await flushPanel();
+    await selectOldestVersion(root);
+    expect(collectText(root.subTree)).toContain("账号数据已变化，本次预览已失效；请重新选择。");
+    expect(buttonByText(root.subTree, "恢复到此版本")).toBeUndefined();
+  });
+
+  it("预览失败在途时归属被新的待确认流程推进：迟到的失败原因不写回新界面", async () => {
+    const local = baseLocal();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(1)] } });
+    let resolvePreview: (value: unknown) => void = () => undefined;
+    createPreviewMock.mockImplementation(() => new Promise((resolve) => { resolvePreview = resolve; }));
+    const root = mountPanel(local, async () => ({ ok: true, message: "" }));
+    await flushPanel();
+    await selectOldestVersion(root);
+    // 另一窗口登记待确认请求：本面板归属被推进（旧操作作废）。
+    local.pendingRestore.value = { requestId: "00000000-0000-4000-8000-0000000000f5" };
+    await flushPanel();
+    resolvePreview({ ok: false, error: "backup_not_found" });
+    await flushPanel();
+    const text = collectText(root.subTree);
+    expect(text).not.toContain("所选备份已不可用");
+    expect(text).toContain("待确认");
+  });
+});
+
+describe("浏览器验收缺陷修复（第二轮父审）：旧预览 finally 的 loading 归属", () => {
+  it("旧预览迟到收尾不得结束当前仍在途的列表刷新", async () => {
+    const local = baseLocal();
+    const firstList = { ok: true as const, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(1)] } };
+    let finishPreview: (result: unknown) => void = () => undefined;
+    createPreviewMock.mockImplementation(() => new Promise((resolve) => { finishPreview = resolve; }));
+    let finishNewList: (result: typeof firstList) => void = () => undefined;
+    listBackupsMock
+      .mockResolvedValueOnce(firstList)
+      .mockResolvedValueOnce(firstList)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishNewList = resolve; }));
+    const root = mountPanel(local, async () => ({ ok: true, message: "" }));
+    await flushPanel();
+    await selectOldestVersion(root);
+    expect(createPreviewMock).toHaveBeenCalledTimes(1);
+    // 另一标签页登记 pending：旧预览操作的归属作废。
+    local.pendingRestore.value = { requestId: "00000000-0000-4000-8000-0000000000f5" };
+    await flushPanel();
+    expect(listBackupsMock).toHaveBeenCalledTimes(2);
+    // 该请求随后取得 not_committed 并解除：当前面板开始新的列表刷新（仍在途）。
+    local.pendingRestore.value = null;
+    await flushPanel();
+    expect(listBackupsMock).toHaveBeenCalledTimes(3);
+    expect(collectText(root.subTree)).toContain("正在读取备份列表");
+    expect(buttonsByText(root.subTree, "预览此版本")).toHaveLength(0);
+    // 当前列表仍在途时旧预览迟到返回：正文出口与 finally 都必须复核归属。
+    finishPreview({ ok: false, error: "backup_not_found" });
+    await flushPanel();
+    expect(collectText(root.subTree), "旧预览收尾不得结束新列表的加载提示").toContain("正在读取备份列表");
+    expect(buttonsByText(root.subTree, "预览此版本"), "新列表未完成前旧缓存版本不得重新可点").toHaveLength(0);
+    finishNewList(firstList);
+    await flushPanel();
+    expect(collectText(root.subTree)).not.toContain("正在读取备份列表");
+  });
+});
+
 describe("B 修复回归（第四轮父审）：异步列表刷新与换人归属", () => {
   it("P1 终态收尾的列表响应迟到：不把 P1 终态文案写到 P2，且旧响应不改共享状态", async () => {
     const local = baseLocal();
