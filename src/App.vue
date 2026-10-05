@@ -212,7 +212,7 @@ onUnmounted(() => {
           <span class="feature-action">进入加油记录 <span aria-hidden="true">→</span></span>
         </span>
       </a>
-      <p class="device-note">当前账号的记录在前台联网时自动同步。旧验证数据保留，需在加油页主动选择导入；草稿仅保存在本机，独立备份暂不提供恢复入口。</p>
+      <p class="device-note">当前账号的记录在前台联网时自动同步。旧验证数据保留，需在加油页主动选择导入；草稿仅保存在本机，可在加油页的「备份与恢复」中查看备份并恢复历史版本。</p>
     </section>
 
     <!-- 首次进入才挂载，之后只隐藏：表单、待写草稿与 Web Locks 随页面继续存活。 -->

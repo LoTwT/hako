@@ -16,7 +16,7 @@ export interface BackupObjectBucket {
     options: { onlyIf: { etagDoesNotMatch: "*" }; sha256: string },
   ): Promise<object | null>;
   get(key: string): Promise<BackupObjectBodyLike | null>;
-  list(options: { prefix: string; cursor?: string }): Promise<{
+  list(options: { prefix: string; cursor?: string; limit?: number }): Promise<{
     objects: readonly { key: string }[];
     truncated: boolean;
     cursor?: string;
@@ -67,6 +67,26 @@ export class R2BackupObjectStore {
       if (cursor === undefined) throw new Error("r2_list_missing_cursor");
     } while (cursor !== undefined);
     return keys;
+  }
+
+  /**
+   * 有界分页列出对象 key（恢复列表用）：单页上限与遍历页数由调用方固定；
+   * 超出页数上限仍截断时返回 truncated=true，调用方必须报告读取不完整，
+   * 不能截断后声称已核对整个序列。cursor 缺失视为协议异常。
+   */
+  async listKeysBounded(prefix: string, options: { pageSize: number; maxPages: number }): Promise<{ keys: string[]; truncated: boolean }> {
+    const keys: string[] = [];
+    let cursor: string | undefined;
+    for (let page_index = 0; ; page_index += 1) {
+      if (page_index >= options.maxPages) return { keys, truncated: true };
+      const page = await this.bucket.list(
+        cursor === undefined ? { prefix, limit: options.pageSize } : { prefix, cursor, limit: options.pageSize },
+      );
+      for (const object of page.objects) keys.push(object.key);
+      if (!page.truncated) return { keys, truncated: false };
+      cursor = page.cursor;
+      if (cursor === undefined) throw new Error("r2_list_missing_cursor");
+    }
   }
 
   async delete(key: string): Promise<void> {

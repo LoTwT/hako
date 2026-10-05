@@ -9,8 +9,14 @@ import { jsonResponse } from "./http";
 import { handleBootstrapRequest, handleSyncRequest, handleSyncSnapshotRequest } from "./sync/routes";
 import { BOOTSTRAP_PATH, SYNC_PATH } from "../shared/sync-protocol";
 import { BACKUP_STATUS_PATH, handleBackupStatusRequest } from "./backup/routes";
-import { RESTORE_PATH, RESTORE_REQUEST_PATH_PREFIX } from "../shared/restore-protocol";
-import { handleRestoreRequest } from "./restore/routes";
+import {
+  BACKUP_LIST_PATH,
+  RESTORE_PATH,
+  RESTORE_PREVIEW_PATH,
+  RESTORE_PREVIEW_PATH_PREFIX,
+  RESTORE_REQUEST_PATH_PREFIX,
+} from "../shared/restore-protocol";
+import { handleBackupListRequest, handleRestoreRequest } from "./restore/routes";
 
 /** 健康检查路径。 */
 export const HEALTH_CHECK_PATH = "/api/health";
@@ -52,9 +58,11 @@ export async function handleApiRequest(
     return handleSyncRequest(request, env, dependencies);
   }
   if (pathname === BOOTSTRAP_PATH) return handleBootstrapRequest(request, env, dependencies);
-  if (pathname === RESTORE_PATH || pathname.startsWith(RESTORE_REQUEST_PATH_PREFIX)) {
+  if (pathname === RESTORE_PATH || pathname === RESTORE_PREVIEW_PATH
+    || pathname.startsWith(RESTORE_REQUEST_PATH_PREFIX) || pathname.startsWith(RESTORE_PREVIEW_PATH_PREFIX)) {
     return handleRestoreRequest(request, env, dependencies);
   }
+  if (pathname === BACKUP_LIST_PATH) return handleBackupListRequest(request, env, dependencies);
   if (pathname === BACKUP_STATUS_PATH) return handleBackupStatusRequest(request, env, dependencies);
   if (pathname === HEALTH_CHECK_PATH) {
     if ((HEALTH_CHECK_ALLOWED_METHODS as readonly string[]).includes(request.method)) {

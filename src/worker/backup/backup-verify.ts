@@ -5,8 +5,13 @@
 import { LoroDoc } from "loro-crdt/web";
 import { importSyncSnapshot, InvalidSyncDocument } from "../../data/sync-document";
 import { readRecords } from "../../data/refueling-document";
+import type { BackupCompletionRecord } from "./backup-store";
 import {
   BackupFormatError,
+  BACKUP_DOCUMENT_TYPE,
+  BACKUP_ENVIRONMENT,
+  BACKUP_FORMAT_VERSION_V1,
+  BACKUP_FORMAT_VERSION_V2,
   computeHistoryVersionDigest,
   parseBundle,
   parseMarker,
@@ -62,6 +67,120 @@ export async function analyzeBackupSnapshot(snapshot: Uint8Array): Promise<Backu
 export interface BackupBundleReadBack {
   manifest: BackupManifest;
   snapshot: Uint8Array;
+}
+
+/**
+ * 由完成缓存构造期望的完成标记：保留检查、恢复预览与恢复保护读回共用同一构造。
+ * v1/v2 混合序列按各自完成缓存记录的格式验证；旧缓存行缺失时按 v1。
+ */
+export function buildCompletionMarker(completion: BackupCompletionRecord): BackupCommitMarker {
+  return {
+    format: "hako-independent-backup",
+    formatVersion: completion.formatVersion === BACKUP_FORMAT_VERSION_V2 ? BACKUP_FORMAT_VERSION_V2 : BACKUP_FORMAT_VERSION_V1,
+    environment: BACKUP_ENVIRONMENT,
+    accountId: completion.accountId,
+    documentType: BACKUP_DOCUMENT_TYPE,
+    backupStreamId: completion.streamId,
+    revision: completion.revision,
+    objectKey: completion.bundleKey,
+    bundleBytes: completion.bundleBytes,
+    bundleSha256: completion.bundleSha256,
+  };
+}
+
+/**
+ * 已完成备份的读回验证（恢复预览、恢复保护与离线 CLI 共用）：整包哈希与长度 →
+ * 严格格式解析 → 归属匹配 → manifest 内部一致（快照长度/哈希）→ 全新 Loro 导入
+ * 与业务校验 → 版本摘要与记录数 → 完成缓存/标记交叉核对（期望为 null 的字段
+ * 只核对 manifest 内部一致性，不做外部交叉核对）。
+ */
+export interface CompletedBackupExpectations {
+  environment: string;
+  accountId: string;
+  documentType: string;
+  streamId: string;
+  revision: number;
+  bundleSha256: string;
+  bundleBytes: number;
+  /** 完成缓存/标记携带的格式版本；null 表示无外部来源（如离线 CLI 的部分核对）。 */
+  formatVersion: number | null;
+  historySha256: string | null;
+  recordCount: number | null;
+  snapshotSha256: string | null;
+}
+
+export async function verifyCompletedBackup(options: {
+  bytes: Uint8Array;
+  expected: CompletedBackupExpectations;
+}): Promise<BackupBundleReadBack> {
+  const bundleSha256 = await sha256Hex(options.bytes);
+  if (bundleSha256 !== options.expected.bundleSha256) {
+    throw new BackupVerificationError("content_conflict", "bundle_sha256_mismatch");
+  }
+  if (options.bytes.byteLength !== options.expected.bundleBytes) {
+    throw new BackupVerificationError("content_conflict", "bundle_length_mismatch");
+  }
+  let parsed: ReturnType<typeof parseBundle>;
+  try {
+    parsed = parseBundle(options.bytes);
+  } catch (error) {
+    if (error instanceof BackupFormatError) throw new BackupVerificationError("format_conflict", error.message);
+    throw error;
+  }
+  const manifest = parsed.manifest;
+  if (options.expected.formatVersion !== null && manifest.formatVersion !== options.expected.formatVersion) {
+    throw new BackupVerificationError("content_conflict", "format_version_mismatch");
+  }
+  if (manifest.environment !== options.expected.environment
+    || manifest.accountId !== options.expected.accountId
+    || manifest.documentType !== options.expected.documentType
+    || manifest.backupStreamId !== options.expected.streamId
+    || manifest.revision !== options.expected.revision) {
+    throw new BackupVerificationError("ownership_conflict", "manifest_ownership_mismatch");
+  }
+  if (parsed.snapshot.byteLength !== manifest.snapshotBytes) {
+    throw new BackupVerificationError("content_conflict", "snapshot_length_mismatch");
+  }
+  const snapshotSha256 = await sha256Hex(parsed.snapshot);
+  if (snapshotSha256 !== manifest.snapshotSha256) {
+    throw new BackupVerificationError("content_conflict", "snapshot_sha256_mismatch");
+  }
+  if (options.expected.snapshotSha256 !== null && manifest.snapshotSha256 !== options.expected.snapshotSha256) {
+    throw new BackupVerificationError("content_conflict", "cached_snapshot_sha_mismatch");
+  }
+  const doc = new LoroDoc();
+  try {
+    try {
+      importSyncSnapshot(doc, parsed.snapshot);
+    } catch (error) {
+      if (error instanceof InvalidSyncDocument) {
+        throw new BackupVerificationError("content_conflict", "snapshot_import_failed");
+      }
+      throw error;
+    }
+    const version = doc.version();
+    try {
+      const digest = await computeHistoryVersionDigest(version.toJSON());
+      if (digest !== manifest.historyVersionSha256) {
+        throw new BackupVerificationError("content_conflict", "history_digest_mismatch");
+      }
+      if (options.expected.historySha256 !== null && digest !== options.expected.historySha256) {
+        throw new BackupVerificationError("content_conflict", "cached_history_digest_mismatch");
+      }
+    } finally {
+      version.free();
+    }
+    const recordCount = readRecords(doc).length;
+    if (recordCount !== manifest.recordCount) {
+      throw new BackupVerificationError("content_conflict", "record_count_mismatch");
+    }
+    if (options.expected.recordCount !== null && recordCount !== options.expected.recordCount) {
+      throw new BackupVerificationError("content_conflict", "cached_record_count_mismatch");
+    }
+  } finally {
+    doc.free();
+  }
+  return { manifest, snapshot: parsed.snapshot };
 }
 
 /**

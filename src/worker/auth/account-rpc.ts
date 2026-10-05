@@ -13,7 +13,13 @@ import type {
 } from "./account-state";
 import type { BackupStatusSnapshot } from "../backup/backup-engine";
 import type { GenerationOrigin } from "../../shared/document-generation";
-import type { RestoreReceipt } from "../../shared/restore-protocol";
+import type {
+  BackupVersionSummary,
+  NotCommittedReason,
+  RestorePreviewDescriptor,
+  RestoreReceipt,
+  RestoreRequestBody,
+} from "../../shared/restore-protocol";
 
 export interface ReadHakoSessionInput {
   sessionHash: string;
@@ -79,18 +85,25 @@ export type ReadRefuelingSnapshotResult =
   | { ok: false; error: "unauthorized" | "account_changed" | "generation_state_unavailable" }
   | { ok: true; accountId: string; documentGeneration: string; revision: number; snapshot: Uint8Array | null };
 
-/** A 的恢复提交只做鉴权、请求查重与回执读回；无回执返回 unknown，不执行切换。 */
+/**
+ * 恢复提交（B 版本）：固定正文 + 请求指纹。入口先鉴权与 requestId 查回执
+ * （同指纹回放 committed、不同指纹 request_id_conflict、早于代次变化检查）；
+ * 再完整验证暂存目标与保护包，最终在同一事务内原子切换。失败出口按 §7.3
+ * 短裁决重新鉴权与查回执：只有持久失去资格才返回 not_committed，否则 unknown。
+ */
 export interface SubmitRestoreInput extends ReadHakoSessionInput {
   expectedAccountId: string;
   requestId: string;
   requestFingerprint: string;
+  body: RestoreRequestBody;
 }
 
 export type SubmitRestoreResult =
   | { ok: false; error: "unauthorized" | "account_changed" }
   | { ok: true; outcome: "committed"; receipt: RestoreReceipt }
   | { ok: true; outcome: "request_id_conflict" }
-  | { ok: true; outcome: "unknown" };
+  | { ok: true; outcome: "not_committed"; reason: NotCommittedReason }
+  | { ok: true; outcome: "unknown"; errorCode?: string };
 
 /** 只读查询已提交回执；不存在返回 receipt=null（HTTP 404），不代表请求未提交。 */
 export interface ReadRestoreReceiptInput extends ReadHakoSessionInput {
@@ -101,6 +114,57 @@ export interface ReadRestoreReceiptInput extends ReadHakoSessionInput {
 export type ReadRestoreReceiptResult =
   | { ok: false; error: "unauthorized" | "account_changed" }
   | { ok: true; receipt: RestoreReceipt | null };
+
+/** 当前账号备份列表：只读核对 R2 标记清单与完成缓存；不初始化、不写删 R2。 */
+export interface ListRefuelingBackupsInput extends ReadHakoSessionInput {
+  expectedAccountId: string;
+}
+
+export type ListRefuelingBackupsResult =
+  | {
+    ok: false;
+    error: "unauthorized" | "account_changed" | "generation_state_unavailable"
+      | "backup_invalid" | "restore_unavailable";
+  }
+  | {
+    ok: true;
+    initialized: boolean;
+    currentGeneration: string | null;
+    legacyGeneration: string | null;
+    currentRevision: number | null;
+    versions: BackupVersionSummary[];
+  };
+
+/** 创建固定预览：输入精确备份引用；R2 验证在事务外，写入前重验会话与替换条件。 */
+export interface CreateRestorePreviewInput extends ReadHakoSessionInput {
+  expectedAccountId: string;
+  backupStreamId: string;
+  revision: number;
+  bundleSha256: string;
+}
+
+export type RestorePreviewErrorCode =
+  | "unauthorized" | "account_changed" | "invalid_request" | "backup_not_found"
+  | "backup_invalid" | "backup_not_ready" | "no_restore_change" | "source_changed"
+  | "preview_replaced" | "restore_unavailable" | "generation_state_unavailable";
+
+export type CreateRestorePreviewResult =
+  | { ok: false; error: RestorePreviewErrorCode }
+  | { ok: true; preview: RestorePreviewDescriptor };
+
+/** 读取/取消预览：只匹配本账号且仍存在的 previewId；已消费/替换的 ID 返回 not_found。 */
+export interface ReadRestorePreviewInput extends ReadHakoSessionInput {
+  expectedAccountId: string;
+  previewId: string;
+}
+
+export type ReadRestorePreviewSnapshotResult =
+  | { ok: false; error: "unauthorized" | "account_changed" | "preview_not_found" | "restore_unavailable" }
+  | { ok: true; snapshot: Uint8Array; preview: RestorePreviewDescriptor };
+
+export type CancelRestorePreviewResult =
+  | { ok: false; error: "unauthorized" | "account_changed" | "restore_unavailable" }
+  | { ok: true; cancelled: boolean };
 
 /** 只读备份状态：会话在 DO 内重验；无有效会话返回 unauthorized。 */
 export type ReadBackupStatusResult =
@@ -119,6 +183,10 @@ export interface HakoAccountStub {
   bootstrapRefueling(input: BootstrapRefuelingInput): Promise<BootstrapRefuelingResult>;
   readRefuelingSnapshot(input: ReadRefuelingSnapshotInput): Promise<ReadRefuelingSnapshotResult>;
   syncRefueling(input: SyncRefuelingInput): Promise<SyncRefuelingResult>;
+  listRefuelingBackups(input: ListRefuelingBackupsInput): Promise<ListRefuelingBackupsResult>;
+  createRestorePreview(input: CreateRestorePreviewInput): Promise<CreateRestorePreviewResult>;
+  readRestorePreviewSnapshot(input: ReadRestorePreviewInput): Promise<ReadRestorePreviewSnapshotResult>;
+  cancelRestorePreview(input: ReadRestorePreviewInput): Promise<CancelRestorePreviewResult>;
   submitRestore(input: SubmitRestoreInput): Promise<SubmitRestoreResult>;
   readRestoreReceipt(input: ReadRestoreReceiptInput): Promise<ReadRestoreReceiptResult>;
   readBackupStatus(input: ReadHakoSessionInput): Promise<ReadBackupStatusResult>;

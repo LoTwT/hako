@@ -2,9 +2,18 @@
 // A 版本交付回执表读取、只查重的恢复 POST 与结果查询；恢复切换由 B 实现，
 // 两侧共用同一份请求/指纹定义，避免 B 引入 A 无法读取的结构。
 
+import type { BackupCaptureReason } from "../worker/backup/backup-format";
+import type { GenerationOrigin } from "./document-generation";
+
 export const RESTORE_PATH = "/api/restores/refueling";
 export const RESTORE_REQUEST_PATH_PREFIX = "/api/restores/refueling/requests/";
+export const RESTORE_PREVIEW_PATH = "/api/restores/refueling/previews";
+export const RESTORE_PREVIEW_PATH_PREFIX = "/api/restores/refueling/previews/";
+export const BACKUP_LIST_PATH = "/api/backups/refueling";
 export const MAX_RESTORE_JSON_BYTES = 16 * 1024;
+
+/** 一份预览的有效期：固定 15 分钟，不随轮询续期、不新增配置项。 */
+export const RESTORE_PREVIEW_TTL_MS = 15 * 60 * 1000;
 
 /** 确认恢复的固定请求正文；字段顺序即指纹顺序，未知字段拒绝。 */
 export interface RestoreRequestBody {
@@ -103,10 +112,68 @@ export interface BackupReferenceLike {
 
 export const RESTORE_ERROR_CODES = [
   "unauthorized", "origin_not_allowed", "invalid_request",
-  "backup_not_found", "restore_request_not_found",
+  "backup_not_found", "restore_request_not_found", "preview_not_found",
   "account_changed", "source_changed", "preview_replaced", "request_id_conflict",
   "backup_not_ready", "backup_blocked", "preview_expired", "body_too_large",
   "backup_invalid", "no_restore_change",
   "restore_unavailable", "generation_state_unavailable",
 ] as const;
 export type RestoreErrorCode = typeof RESTORE_ERROR_CODES[number];
+
+/** not_committed 的固定裁决原因；随响应绑定 requestId 与正文指纹。 */
+export type NotCommittedReason = "source_changed" | "preview_replaced" | "preview_expired";
+
+/** 列表展示的完成版本摘要；全部来自完成缓存与 R2 标记清单核对，不含业务字段。 */
+export interface BackupVersionSummary {
+  backupStreamId: string;
+  revision: number;
+  bundleSha256: string;
+  /** 完成确认时间（完成缓存）；与捕获时间区分展示。 */
+  completedAtMs: number;
+  /** 任务捕获时间；旧缓存行缺失时为 null，展示端保持未知。 */
+  capturedAtMs: number | null;
+  recordCount: number;
+  /** 包格式版本；旧缓存行缺失时为 null。 */
+  formatVersion: number | null;
+  /** 有效源代次（v1 完成按固定 legacy 绑定解释，读取侧合成）。 */
+  effectiveSourceGeneration: string;
+  /** 代次来源；旧缓存行缺失时为 null。 */
+  generationOrigin: GenerationOrigin | null;
+  reason: BackupCaptureReason | null;
+  /** 是否为恢复基线（reason === restore-baseline）。 */
+  restoreBaseline: boolean;
+  snapshotSha256: string | null;
+  /** 清理中的版本不可作为新的可选目标。 */
+  selectable: boolean;
+}
+
+export interface RestorePreviewDescriptor {
+  previewId: string;
+  /** 预览过期时刻；不随轮询续期。 */
+  expiresAtMs: number;
+  createdAtMs: number;
+  target: {
+    backupStreamId: string;
+    revision: number;
+    bundleSha256: string;
+    snapshotSha256: string;
+    historySha256: string;
+    recordCount: number;
+    capturedAtMs: number | null;
+  };
+  /** 预览创建时的当前服务端版本；最终确认必须精确匹配。 */
+  expected: {
+    generation: string;
+    revision: number;
+    snapshotSha256: string;
+    historySha256: string;
+  };
+  /** 保护等待原因：当前版本是否已有精确覆盖的完成备份，及等待说明。 */
+  protection: {
+    covered: boolean;
+    waitingReason: string | null;
+    nextAttemptAtMs: number | null;
+    /** 服务端当前最新完成版本（界面展示的保护版本；执行时仍完整重新验证）。 */
+    protectionRevision: number | null;
+  };
+}

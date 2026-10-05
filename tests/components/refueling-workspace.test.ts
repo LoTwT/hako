@@ -48,6 +48,7 @@ function mountWorkspace(): { state: SetupState; local: Record<string, unknown> }
     records: shallowRef([current]), ready: shallowRef(true), saving: shallowRef(false), error: shallowRef(""),
     notice: shallowRef(""), persistent: shallowRef(false), importedLegacyIds: shallowRef([]), pendingSync: shallowRef(false), confirmed: shallowRef(false),
     pendingRestore: shallowRef(null), importConflicts: shallowRef({}), migrationPending: shallowRef(null),
+    restoreWritesAvailable: shallowRef(false),
     generationFlow: shallowRef({ phase: "active", generation, serverConfirmed: true }), workspaceGeneration: shallowRef(generation),
     save: vi.fn(), initialize: vi.fn(), requestPersistence: vi.fn(), importLegacy: vi.fn(), retrySync: vi.fn(),
     openCurrentGeneration: vi.fn(), recheckRestoreReceipt: vi.fn(), listRetainedGenerations: vi.fn(), readRetainedGeneration: vi.fn(), retryOpen: vi.fn(), recheckMigration: vi.fn(),

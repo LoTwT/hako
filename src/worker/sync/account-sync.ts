@@ -58,8 +58,8 @@ export class AccountSync {
       legacyGeneration: head.legacyGeneration,
       origin: head.origin,
       snapshotAvailable: this.documents.hasSnapshot(accountId),
-      // A 不提供恢复切换；B 部署后改为 true，不新增运行时开关。
-      restoreWritesAvailable: false,
+      // B 提供恢复切换（预览、保护校验与幂等切换事务）；不新增运行时开关。
+      restoreWritesAvailable: true,
     };
   }
 

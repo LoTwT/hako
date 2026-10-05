@@ -386,6 +386,24 @@ export class BackupStore {
     );
   }
 
+  /**
+   * 恢复切换的 revision 递增：占用一个新 revision（即使选中快照的历史向量更小），
+   * 不开启待备窗口——该 revision 由切换事务冻结的恢复基线任务承担；后续普通编辑
+   * 另外登记待备责任。调用方保证同一事务内已核对无待备区间。
+   */
+  advanceRevisionForRestore(accountId: string, newRevision: number, committedAtMs: number): void {
+    this.sql.exec(
+      `UPDATE backup_cursor SET
+         current_revision = ?, last_commit_at = ?,
+         pending_revision = NULL, pending_first_revision = NULL, pending_first_at = NULL, window_due_at = NULL,
+         retry_floor_at = NULL
+       WHERE account_id = ?`,
+      newRevision,
+      committedAtMs,
+      accountId,
+    );
+  }
+
   clearPendingIfCovered(accountId: string, coveredThroughRevision: number): void {
     this.sql.exec(
       `UPDATE backup_cursor SET pending_revision = NULL, pending_first_revision = NULL,
@@ -525,6 +543,19 @@ export class BackupStore {
       task.sourceGeneration,
       task.formatVersion,
       task.generationOrigin === null ? null : serializeGenerationOrigin(task.generationOrigin),
+    );
+  }
+
+  /**
+   * 恢复基线任务在切换事务内创建后的首次发布时间（恢复设计 §7.3）：初始化
+   * attemptCount = 0、nextAttemptAt = switchedAt + 窗口时间；切换时待备区间为空，
+   * 该 revision 由冻结任务承担，后续普通编辑另外登记待备责任。
+   */
+  scheduleRestoreBaselineTask(accountId: string, firstAttemptAtMs: number): void {
+    this.sql.exec(
+      "UPDATE backup_frozen_task SET next_attempt_at = ? WHERE account_id = ? AND attempt_count = 0",
+      firstAttemptAtMs,
+      accountId,
     );
   }
 

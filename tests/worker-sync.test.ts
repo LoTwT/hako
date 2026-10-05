@@ -106,10 +106,10 @@ afterEach(() => {
 });
 
 describe("bootstrap 与受控代次初始化", () => {
-  it("幂等 bootstrap：重复调用返回同一 G0；空账号无主文档，restoreWritesAvailable=false", async () => {
+  it("幂等 bootstrap：重复调用返回同一 G0；空账号无主文档，restoreWritesAvailable=true（B 起提供恢复切换）", async () => {
     const first = await bootstrap();
     expect(first).toMatchObject({
-      accountId, snapshotAvailable: false, restoreWritesAvailable: false, generationOrigin: { kind: "initial" },
+      accountId, snapshotAvailable: false, restoreWritesAvailable: true, generationOrigin: { kind: "initial" },
     });
     expect(first.documentGeneration).toBe(first.legacyGeneration);
     for (let index = 0; index < 3; index += 1) {

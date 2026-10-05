@@ -34,6 +34,9 @@ export interface R2FaultConfiguration {
 
 let r2Fault: R2FaultConfiguration | null = null;
 
+/** storage.sync 故障注入（仅测试入口）：验证提交路径的持久确认降级。 */
+let storageSyncFault = false;
+
 /** worker 侧 R2 调用计数：验证实际 A/B/DELETE 次数（DELETE 在 R2 计费中免费）。 */
 const r2Counters = { put: 0, get: 0, list: 0, delete: 0 };
 
@@ -97,6 +100,20 @@ function installSqlMeter(state: DurableObjectState): void {
   const storage = state.storage as unknown as { sql: unknown };
   const originalSql = storage.sql;
   if (typeof originalSql !== "object" || originalSql === null) return;
+  // storage.sync 故障注入：包装 DO 持久确认边界（生产类的调用点不变）。
+  try {
+    const storageObject = state.storage as unknown as { sync: () => Promise<void> };
+    const originalSync = storageObject.sync.bind(state.storage);
+    Object.defineProperty(state.storage, "sync", {
+      configurable: true,
+      value: async (): Promise<void> => {
+        if (storageSyncFault) throw new Error("injected storage sync failure");
+        return await originalSync();
+      },
+    });
+  } catch {
+    // storage 对象不可配置：sync 故障注入不可用，相关测试会显式失败。
+  }
   const meteredSql = new Proxy(originalSql, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
@@ -200,6 +217,15 @@ class TestHakoAccountDurableObject extends HakoAccountDurableObject {
   }
 
   protected resolveBackupSchedule(): BackupSchedulePolicy {
+    // 绑定注入的节奏先于运行时覆盖：重启后持久告警可能在 /test/schedule 之前触发。
+    const fromBinding = (this.env as Env & { HAKO_TEST_SCHEDULE?: string }).HAKO_TEST_SCHEDULE;
+    if (fromBinding !== undefined) {
+      try {
+        return JSON.parse(fromBinding) as BackupSchedulePolicy;
+      } catch {
+        // 绑定损坏时回退运行时覆盖/生产节奏。
+      }
+    }
     return scheduleOverride ?? PRODUCTION_BACKUP_SCHEDULE;
   }
 
@@ -336,6 +362,11 @@ async function handleTestRequest(request: Request, env: Env): Promise<Response> 
     case "/test/fault": {
       const body = await request.json() as R2FaultConfiguration | null;
       r2Fault = body;
+      return Response.json({ ok: true });
+    }
+    case "/test/sync-fault": {
+      const body = await request.json() as { enabled: boolean };
+      storageSyncFault = body.enabled;
       return Response.json({ ok: true });
     }
     case "/test/debug/sql": {
