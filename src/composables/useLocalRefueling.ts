@@ -5,6 +5,7 @@ import {
   type GenerationWriteResult,
   type LocalRefuelingState,
   type LocalRefuelingV2Repository,
+  type PendingRestoreIdentity,
   type RetainedGenerationSummary,
   type RetainedGenerationView,
 } from "../data/local-refueling-v2";
@@ -12,11 +13,14 @@ import { accountStorageNamesV2 } from "../data/account-storage";
 import { RefuelingSyncClient, type SyncStatus } from "../data/refueling-sync";
 import { bootstrapRefueling, fetchRefuelingSnapshot, type BootstrapInfo } from "../data/refueling-server-api";
 import {
+  fingerprintRestoreRequest,
+  notCommittedOutcome,
   outcomeFromCommittedReceipt,
   queryRestoreReceipt,
+  submitRestoreRequest,
 } from "../data/refueling-restore";
 import type { RefuelingRecord, SavedRefuelingRecord } from "../domain/refueling/form";
-import type { PendingRestoreRequest, RestoreOutcomeRecord } from "../data/refueling-restore";
+import type { PendingRestoreRequest, RestoreOutcomeRecord, RestoreRequestBody } from "../data/refueling-restore";
 
 /**
  * 代次工作流状态：
@@ -46,6 +50,17 @@ export type GenerationFlow =
     message: string;
   }
   | { phase: "failed"; message: string };
+
+/** 面板提交结果：服务端终态、待确认、本机保存门禁、请求已失效或本机终态落盘失败分别表达。 */
+export type PanelSubmitOutcome =
+  | { kind: "committed" }
+  | { kind: "not_committed"; reason: string }
+  | { kind: "conflict" }
+  | { kind: "unknown"; errorCode: string | null }
+  | { kind: "waiting_local_sync" }
+  | { kind: "stale_request" }
+  | { kind: "local-failed"; message: string }
+  | { kind: "error"; message: string };
 
 export function useLocalRefueling(options: { accountId: string; active: () => boolean; onSessionRejected: () => void }) {
   const records = shallowRef<SavedRefuelingRecord[]>([]);
@@ -621,6 +636,110 @@ export function useLocalRefueling(options: { accountId: string; active: () => bo
     }
   }
 
+  /** 当前应用/服务端是否提供恢复切换（bootstrap 元数据 + 联网确认）。 */
+  const restoreWritesAvailable = computed(() => {
+    const flow = generationFlow.value;
+    return flow.phase === "active" && flow.serverConfirmed && (bootstrapInfo?.restoreWritesAvailable ?? false);
+  });
+
+  /**
+   * 恢复确认前的本机持久（§7.3/§7.5）：随机 requestId 与不可变正文先在严格事务内
+   * 落盘才发送。已有待确认请求时所有窗口复用原记录，不能用另一请求覆盖 control；
+   * 返回复用提示供界面展示。
+   */
+  async function beginRestoreRequest(body: RestoreRequestBody): Promise<{ ok: boolean; pending: PendingRestoreRequest | null; message: string }> {
+    if (!repository) return { ok: false, pending: null, message: "本机数据尚未就绪，请稍后重试。" };
+    const pending: PendingRestoreRequest = {
+      requestId: body.requestId,
+      body,
+      requestFingerprint: await fingerprintRestoreRequest(body),
+      createdAtMs: Date.now(),
+      dispatchedAtMs: null,
+    };
+    try {
+      const stored = await repository.setPendingRestore(pending);
+      pendingRestore.value = stored;
+      if (stored.requestId !== pending.requestId) {
+        return { ok: false, pending: stored, message: "已有恢复请求结果待确认，已沿用原请求；不会用新请求覆盖。" };
+      }
+      return { ok: true, pending: stored, message: "" };
+    } catch (failure) {
+      return { ok: false, pending: null, message: describeError(failure) };
+    }
+  }
+
+
+  /**
+   * 发送（或按本人选择重试）当前待确认的恢复请求：以原 requestId 与固定正文提交。
+   * 本次操作绑定的请求身份（requestId + 固定指纹）在进入调用链时同步固定——显式
+   * 传入，或以当前可见 pending 为准——并交给仓储在同一控制锁内逐一核对：若锁内
+   * 当前待确认已被清除或替换，返回 stale_request，绝不代发另一笔恢复。
+   * 首次派发资格与请求派发在同一临界区完成——判定与派发之间不存在可被同机保存
+   * 插入的异步边界：未派发且当前代次仍有未同步保存时返回 waiting_local_sync，
+   * 不发送、不清除原请求（同步完成后本人可再次以原请求重试）；已派发过的请求
+   * 允许本人重试（可能已有服务端结果，由 requestId 幂等吸收），不因保存门禁封死
+   * 原编号。结果只有 committed / not_committed 在核对本机待确认归属后先原子落盘
+   * 才解除 pending。unknown 与 request_id_conflict 不清除、不换 ID、不自动发起新
+   * 恢复。committed 落盘成功后重新 bootstrap：本机旧工作区进入保护流程，由本人
+   * 选择「打开恢复后数据」（服务端成功与本机接收分开显示）。
+   */
+  async function submitPendingRestore(expected?: PendingRestoreIdentity): Promise<PanelSubmitOutcome> {
+    if (!repository) return { kind: "error", message: "本机数据尚未就绪，请稍后重试。" };
+    const visible = pendingRestore.value;
+    const identity: PendingRestoreIdentity | null = expected
+      ?? (visible === null ? null : { requestId: visible.requestId, requestFingerprint: visible.requestFingerprint });
+    if (identity === null) return { kind: "stale_request" };
+    const generation = workspaceGeneration.value;
+    const dispatch = await repository.dispatchPendingRestore(generation, identity, (pending) =>
+      submitRestoreRequest({ accountId: options.accountId }, pending.body));
+    if (dispatch.status === "no_pending" || dispatch.status === "replaced") {
+      // 锁内当前待确认已清除或已换成另一笔：本次点击不代发，只读刷新内存归属，
+      // 由界面按最新 pending 让本人再次选择（不自动接管、不清除新请求）。
+      const latest = await repository.readControl().catch(() => null);
+      if (!disposed && latest !== null) pendingRestore.value = latest.pendingRestore;
+      return { kind: "stale_request" };
+    }
+    if (dispatch.status === "generation_changed") {
+      // 本机工作区已不是持久活动代次：不发送，按最新控制恢复内存归属并重判工作流。
+      const latest = await repository.readControl().catch(() => null);
+      if (!disposed && latest !== null) pendingRestore.value = latest.pendingRestore;
+      void refresh();
+      return { kind: "error", message: "本机工作区已在其他窗口切换，本次恢复未发送；请按当前提示处理本机数据。" };
+    }
+    const pending = dispatch.pending;
+    pendingRestore.value = pending;
+    if (dispatch.status === "local_sync_pending") return { kind: "waiting_local_sync" };
+    const outcome = await dispatch.outcome;
+    /** 终态落盘并同步内存；失败保留原请求并报告可重试错误。 */
+    const persistOutcome = async (record: RestoreOutcomeRecord): Promise<boolean> => {
+      try {
+        const resolved = await repository!.resolveRestoreOutcome(record);
+        const latest = await repository!.readControl().catch(() => null);
+        if (latest !== null && !disposed) pendingRestore.value = latest.pendingRestore;
+        return resolved;
+      } catch {
+        return false;
+      }
+    };
+    if (outcome.status === "committed") {
+      if (await persistOutcome(outcomeFromCommittedReceipt(pending, outcome.receipt))) {
+        void reopenWithBootstrap();
+        return { kind: "committed" };
+      }
+      return { kind: "local-failed", message: "服务端已提交恢复，但本机保存结果失败；原请求已保留，请释放本机空间后重试查询。" };
+    }
+    if (outcome.status === "not_committed") {
+      if (await persistOutcome(notCommittedOutcome(pending, outcome.reason))) {
+        return { kind: "not_committed", reason: outcome.reason };
+      }
+      return { kind: "local-failed", message: "服务端已确认本次恢复未执行，但本机保存结果失败；原请求已保留，请释放本机空间后重试查询。" };
+    }
+    if (outcome.status === "request_id_conflict") {
+      return { kind: "conflict" };
+    }
+    return { kind: "unknown", errorCode: outcome.errorCode };
+  }
+
   async function mutate(operation: (repository: LocalRefuelingV2Repository, generation: string) => Promise<GenerationWriteResult>): Promise<boolean> {
     if (!repository || !ready.value || saving.value || !options.active()) return false;
     if (generationFlow.value.phase !== "active") return false;
@@ -693,12 +812,13 @@ export function useLocalRefueling(options: { accountId: string; active: () => bo
     notice, persistent: readonly(persistent), importedLegacyIds: readonly(importedLegacyIds),
     generationFlow: readonly(generationFlow), workspaceGeneration: readonly(workspaceGeneration),
     pendingRestore: readonly(pendingRestore), importConflicts: readonly(importConflicts),
-    migrationPending: readonly(migrationPending),
+    migrationPending: readonly(migrationPending), restoreWritesAvailable,
     save: (id: string, patch: Partial<RefuelingRecord>, creating: boolean) => mutate((repo, generation) => repo.save(generation, id, patch, creating)),
     importLegacy: (selected: SavedRefuelingRecord[]) => mutate((repo, generation) => repo.importLegacy(generation, selected)),
     listRetainedGenerations: (exclude: string | null): Promise<RetainedGenerationSummary[]> => repository?.listRetainedGenerations(exclude) ?? Promise.resolve([]),
     readRetainedGeneration: (generation: string): Promise<RetainedGenerationView | null> => repository?.readRetainedGeneration(generation) ?? Promise.resolve(null),
     initialize, refresh, requestPersistence, retryOpen, openCurrentGeneration, recheckRestoreReceipt, recheckMigration,
+    beginRestoreRequest, submitPendingRestore,
     retrySync: () => sync?.request(),
   };
 }

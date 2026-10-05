@@ -16,10 +16,17 @@ import type {
 import type {
   BootstrapRefuelingInput,
   BootstrapRefuelingResult,
+  CancelRestorePreviewResult,
+  CreateRestorePreviewInput,
+  CreateRestorePreviewResult,
+  ListRefuelingBackupsInput,
+  ListRefuelingBackupsResult,
   ReadBackupStatusResult,
   ReadHakoSessionInput,
   ReadRefuelingSnapshotInput,
   ReadRefuelingSnapshotResult,
+  ReadRestorePreviewInput,
+  ReadRestorePreviewSnapshotResult,
   ReadRestoreReceiptInput,
   ReadRestoreReceiptResult,
   RenewHakoSessionInput,
@@ -35,9 +42,11 @@ import { AccountDocuments, GenerationStateUnavailableError } from "./sync/accoun
 import { initializeWorkerLoro } from "./sync/loro-runtime";
 import { BackupEngine, type BackupSchedulePolicy } from "./backup/backup-engine";
 import { PRODUCTION_BACKUP_SCHEDULE } from "./backup/backup-schedule";
+import { BackupStore } from "./backup/backup-store";
 import { R2BackupObjectStore } from "./backup/backup-object-store";
 import { RestoreService } from "./restore/restore-service";
 import { RestoreStore } from "./restore/restore-store";
+import { RestorePreviewStore } from "./restore/restore-preview-store";
 
 export class HakoAccountDurableObject extends DurableObject<Env> {
   private readonly accountState: HakoAccountState;
@@ -52,6 +61,7 @@ export class HakoAccountDurableObject extends DurableObject<Env> {
     this.accountState = new HakoAccountState(ctx.storage);
     const documents = new AccountDocuments(ctx.storage);
     const restoreStore = new RestoreStore(ctx.storage);
+    const previewStore = new RestorePreviewStore(ctx.storage);
     this.backupEngine = new BackupEngine({
       storage: ctx.storage,
       objectStore: new R2BackupObjectStore(env.HAKO_BACKUPS),
@@ -62,7 +72,18 @@ export class HakoAccountDurableObject extends DurableObject<Env> {
       log: (event) => console.info(JSON.stringify(event)),
     });
     this.accountSync = new AccountSync(ctx.storage, this.accountState, documents, this.backupEngine);
-    this.restoreService = new RestoreService(this.accountState, documents, restoreStore);
+    this.restoreService = new RestoreService(
+      ctx.storage,
+      this.accountState,
+      documents,
+      restoreStore,
+      previewStore,
+      new BackupStore(ctx.storage),
+      new R2BackupObjectStore(env.HAKO_BACKUPS),
+      this.backupEngine,
+      this.resolveBackupSchedule(),
+      () => Date.now(),
+    );
   }
 
   /** 生产固定节奏；仅隔离测试子类覆盖以加速，持久语义不变。 */
@@ -139,14 +160,62 @@ export class HakoAccountDurableObject extends DurableObject<Env> {
     return result;
   }
 
-  /** A 的恢复提交：鉴权 + requestId 查重 + 回执读回；无回执返回 unknown，零写入。 */
+  /**
+   * B 的恢复提交（§7.3）：入口查重 → 事务外完整验证 → 唯一切换事务 → 失败出口
+   * 短裁决。committed 与 not_committed 均在事务结束且 await storage.sync() 成功后
+   * 返回；sync 失败进入只查回执的确认裁决，其持久确认也失败则 unknown。
+   */
   async submitRestore(input: SubmitRestoreInput): Promise<SubmitRestoreResult> {
-    return this.restoreService.submit({ ...input, nowMs: Date.now() });
+    // 提交路径要重新分析目标/当前快照（全新 Loro 导入）：冷启动进程同样必须就绪。
+    initializeWorkerLoro();
+    const result = await this.restoreService.submit(input);
+    if (!result.ok || (result.outcome !== "committed" && result.outcome !== "not_committed")) return result;
+    try {
+      await this.ctx.storage.sync();
+    } catch {
+      // 持久确认失败：短裁决只重查回执（committed 优先）；无回执一律 unknown，
+      // 不做预览删除或终态判定——原事务持久性未知，请求可能仍可执行。
+      try {
+        const adjudicated = await this.restoreService.adjudicateAfterSyncFailure(input);
+        await this.ctx.storage.sync();
+        return adjudicated;
+      } catch {
+        return { ok: true, outcome: "unknown" };
+      }
+    }
+    return result;
   }
 
   /** 回执只读查询；不存在返回 receipt=null（HTTP 404）。 */
   async readRestoreReceipt(input: ReadRestoreReceiptInput): Promise<ReadRestoreReceiptResult> {
-    return this.restoreService.read({ ...input, nowMs: Date.now() });
+    return this.restoreService.read(input);
+  }
+
+  /** 已核对的备份列表：只读；不初始化、不续期、不进行 R2 写删。 */
+  async listRefuelingBackups(input: ListRefuelingBackupsInput): Promise<ListRefuelingBackupsResult> {
+    initializeWorkerLoro();
+    return await this.restoreService.listBackups(input);
+  }
+
+  /** 创建固定预览：R2 验证在 DO 事务外；持久成功（storage.sync）后才返回 previewId。 */
+  async createRestorePreview(input: CreateRestorePreviewInput): Promise<CreateRestorePreviewResult> {
+    initializeWorkerLoro();
+    const result = await this.restoreService.createPreview(input);
+    if (result.ok) await this.ctx.storage.sync();
+    return result;
+  }
+
+  /** 只读返回固定目标 snapshot 及其摘要；不消费、不续期。 */
+  async readRestorePreviewSnapshot(input: ReadRestorePreviewInput): Promise<ReadRestorePreviewSnapshotResult> {
+    initializeWorkerLoro();
+    return this.restoreService.readPreviewSnapshot(input);
+  }
+
+  /** 取消预览：只删除仍匹配且未消费的本账号预览；持久确认后才返回。 */
+  async cancelRestorePreview(input: ReadRestorePreviewInput): Promise<CancelRestorePreviewResult> {
+    const result = await this.restoreService.cancelPreview(input);
+    if (result.ok) await this.ctx.storage.sync();
+    return result;
   }
 
   /** 只读备份状态：重验会话、只查已有映射；不续期、不写 Cookie、不初始化、不上传。 */

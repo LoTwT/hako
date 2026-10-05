@@ -123,6 +123,21 @@ export type ActivateGenerationResult =
   | { status: "activated"; state: LocalRefuelingState }
   | { status: "stale"; message: string };
 
+/** 待确认恢复请求的派发门禁结果（§7.2）：资格判定与派发在同一控制锁内完成。 */
+export type PendingRestoreDispatch<T> =
+  | { status: "dispatched"; pending: PendingRestoreRequest; outcome: Promise<T> }
+  | { status: "local_sync_pending"; pending: PendingRestoreRequest }
+  | { status: "generation_changed"; actualGeneration: string | null }
+  /** 本次操作绑定的请求已被清除或替换：不代发当前 pending，由界面只读刷新后重新选择。 */
+  | { status: "replaced"; pending: PendingRestoreRequest | null }
+  | { status: "no_pending" };
+
+/** 一次用户操作绑定的待确认请求身份（点击/确认时固定，锁内必须逐一匹配）。 */
+export interface PendingRestoreIdentity {
+  requestId: string;
+  requestFingerprint: string;
+}
+
 export interface OpenLocalRefuelingV2Options {
   accountId: string;
   /**
@@ -694,6 +709,71 @@ export async function openLocalRefuelingV2(options: OpenLocalRefuelingV2Options)
   }
 
   /**
+   * 首次派发资格门禁 + 请求归属（§7.2/§7.3）：在账号控制锁内复核**本次操作
+   * 绑定的请求身份**（requestId + 固定指纹）、持久保存事实与活动代次，资格
+   * 成立时由调用方在锁内**同步派发**请求（dispatch 返回 Promise 之前必须已
+   * 完成网络派发），派发后立即释放锁——资格判定与请求派发之间不存在可被同机
+   * 保存插入的异步边界（其他窗口/连接的在途保存在此之前按控制锁顺序完成）。
+   * - 锁内当前 pending 与绑定身份不符（已被清除或替换）：不派发、不接管，
+   *   返回 replaced（由界面只读刷新后让本人重新选择）。
+   * - 工作区代次不再是持久活动代次：不发送，返回 actualGeneration；待确认
+   *   请求原样保留。
+   * - 请求从未派发且当前代次仍有未同步版本：不发送、不清除，返回
+   *   local_sync_pending（同步完成后可再次调用）。
+   * - 已派发过的请求：本人重试允许再次发送（可能已有服务端结果，由 requestId
+   *   幂等吸收），派发前补记派发事实；不因本机保存门禁封死原编号。
+   */
+  async function dispatchPendingRestore<T>(
+    generation: string | null,
+    expected: PendingRestoreIdentity,
+    dispatch: (pending: PendingRestoreRequest) => Promise<T>,
+  ): Promise<PendingRestoreDispatch<T>> {
+    return await navigator.locks.request(names.controlLock, async (): Promise<PendingRestoreDispatch<T>> => {
+      const tx = database.transaction(["documents", "control"], "readwrite", { durability: "strict" });
+      try {
+        const control = await readControlWithin(tx);
+        const pending = control.pendingRestore;
+        if (pending === null) {
+          await tx.done;
+          return { status: "replaced", pending: null };
+        }
+        if (pending.requestId !== expected.requestId || pending.requestFingerprint !== expected.requestFingerprint) {
+          // 绑定身份与锁内当前记录不符：本次点击不得代发另一笔恢复。
+          await tx.done;
+          return { status: "replaced", pending };
+        }
+        if (generation === null || control.activeGeneration !== generation) {
+          const actualGeneration = control.activeGeneration;
+          await tx.done;
+          return { status: "generation_changed", actualGeneration };
+        }
+        const stored = await tx.objectStore("documents").get(generation);
+        const alreadyDispatched = pending.dispatchedAtMs !== undefined && pending.dispatchedAtMs !== null;
+        if (!alreadyDispatched && stored !== undefined && stored.pendingSync) {
+          await tx.done;
+          return { status: "local_sync_pending", pending };
+        }
+        const dispatched: PendingRestoreRequest = alreadyDispatched
+          ? pending
+          : { ...pending, dispatchedAtMs: Date.now() };
+        if (!alreadyDispatched) {
+          control.pendingRestore = dispatched;
+          writeControlWithin(tx, control);
+        }
+        // 先落盘派发事实（锁内同一事务），再在锁内同步派发请求；锁在本回调
+        // 返回后释放，因此任何后续保存都严格排在请求派发之后。
+        await tx.done;
+        const outcome = dispatch(dispatched);
+        return { status: "dispatched", pending: dispatched, outcome };
+      } catch (error) {
+        try { tx.abort(); } catch { /* Already finished. */ }
+        await tx.done.catch(() => undefined);
+        throw error;
+      }
+    });
+  }
+
+  /**
    * 落盘终态并解除待确认：锁内重查当前待确认记录，旧请求响应不能覆盖后来的请求；
    * requestId 与指纹必须完全匹配。返回 true 表示终态已持久（允许重新确认新请求）。
    */
@@ -780,6 +860,7 @@ export async function openLocalRefuelingV2(options: OpenLocalRefuelingV2Options)
     listRetainedGenerations,
     readRetainedGeneration,
     setPendingRestore,
+    dispatchPendingRestore,
     resolveRestoreOutcome,
     readRestoreOutcome,
     close: () => database.close(),

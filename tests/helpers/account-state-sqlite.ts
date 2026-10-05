@@ -32,8 +32,15 @@ import { BackupEngine, type BackupLogEvent } from "../../src/worker/backup/backu
 import type {
   BootstrapRefuelingInput,
   BootstrapRefuelingResult,
+  CancelRestorePreviewResult,
+  CreateRestorePreviewInput,
+  CreateRestorePreviewResult,
+  ListRefuelingBackupsInput,
+  ListRefuelingBackupsResult,
   ReadRefuelingSnapshotInput,
   ReadRefuelingSnapshotResult,
+  ReadRestorePreviewInput,
+  ReadRestorePreviewSnapshotResult,
   ReadRestoreReceiptInput,
   ReadRestoreReceiptResult,
   SubmitRestoreInput,
@@ -44,10 +51,12 @@ import type {
 } from "../../src/worker/auth/account-rpc";
 import type { RestoreReceiptInput } from "../../src/worker/restore/restore-store";
 import { R2BackupObjectStore } from "../../src/worker/backup/backup-object-store";
+import { BackupStore } from "../../src/worker/backup/backup-store";
 import { FakeBackupBucket } from "./fake-backup-bucket";
 import { PRODUCTION_BACKUP_SCHEDULE, type BackupSchedulePolicy } from "../../src/worker/backup/backup-schedule";
 import { RestoreService } from "../../src/worker/restore/restore-service";
 import { RestoreStore } from "../../src/worker/restore/restore-store";
+import { RestorePreviewStore } from "../../src/worker/restore/restore-preview-store";
 
 class NodeSqliteCursor<T extends AccountStateRow> implements AccountStateSqlCursor<T> {
   constructor(private readonly rows: T[]) {}
@@ -166,13 +175,15 @@ export interface TestAccount {
   backups: BackupEngine;
   bucket: FakeBackupBucket;
   restoreStore: RestoreStore;
+  previewStore: RestorePreviewStore;
+  restoreService: RestoreService;
 }
 
 export interface CreateTestAccountOptions {
   /** 备份引擎节奏与日志；默认使用生产节奏与静默日志。 */
   schedule?: BackupSchedulePolicy;
   log?: (event: BackupLogEvent) => void;
-  /** 受控时钟：同步与 alarm 均通过它取当前时间。 */
+  /** 受控时钟：同步、备份与恢复均通过它取当前时间。 */
   now?: () => number;
   bucket?: FakeBackupBucket;
 }
@@ -184,21 +195,27 @@ export function createTestAccount(path = ":memory:", options: CreateTestAccountO
   const state = new HakoAccountState(storage);
   const documents = new AccountDocuments(storage);
   const restoreStore = new RestoreStore(storage);
+  const previewStore = new RestorePreviewStore(storage);
   const bucket = options.bucket ?? new FakeBackupBucket();
   const now = options.now ?? Date.now;
+  const schedule = options.schedule ?? PRODUCTION_BACKUP_SCHEDULE;
+  const objectStore = new R2BackupObjectStore(bucket);
   const backups = new BackupEngine({
     storage,
-    objectStore: new R2BackupObjectStore(bucket),
+    objectStore,
     snapshotSource: documents,
-    schedule: options.schedule ?? PRODUCTION_BACKUP_SCHEDULE,
+    schedule,
     now,
     log: options.log ?? (() => undefined),
   });
   const sync = new AccountSync(storage, state, documents, backups);
-  const restore = new RestoreService(state, documents, restoreStore);
+  const restore = new RestoreService(
+    storage, state, documents, restoreStore, previewStore,
+    new BackupStore(storage), objectStore, backups, schedule, now,
+  );
   return {
-    account: new TestHakoAccount(state, sync, backups, restore, restoreStore),
-    state, database, storage, backups, bucket, restoreStore,
+    account: new TestHakoAccount(state, sync, backups, restore, restoreStore, previewStore),
+    state, database, storage, backups, bucket, restoreStore, previewStore, restoreService: restore,
   };
 }
 
@@ -210,6 +227,7 @@ export class TestHakoAccount implements HakoAccountStub {
     private readonly backups: BackupEngine,
     private readonly restore: RestoreService,
     private readonly restoreStore: RestoreStore,
+    private readonly previewStore: RestorePreviewStore,
   ) {}
 
   async readAccountId(input: ReadHakoSessionInput): Promise<string | null> {
@@ -228,6 +246,22 @@ export class TestHakoAccount implements HakoAccountStub {
     return this.sync.exchange(input);
   }
 
+  async listRefuelingBackups(input: ListRefuelingBackupsInput): Promise<ListRefuelingBackupsResult> {
+    return this.restore.listBackups(input);
+  }
+
+  async createRestorePreview(input: CreateRestorePreviewInput): Promise<CreateRestorePreviewResult> {
+    return this.restore.createPreview(input);
+  }
+
+  async readRestorePreviewSnapshot(input: ReadRestorePreviewInput): Promise<ReadRestorePreviewSnapshotResult> {
+    return this.restore.readPreviewSnapshot(input);
+  }
+
+  async cancelRestorePreview(input: ReadRestorePreviewInput): Promise<CancelRestorePreviewResult> {
+    return this.restore.cancelPreview(input);
+  }
+
   async submitRestore(input: SubmitRestoreInput): Promise<SubmitRestoreResult> {
     return this.restore.submit(input);
   }
@@ -239,6 +273,11 @@ export class TestHakoAccount implements HakoAccountStub {
   /** 测试注入合成 B 回执（生产路径只在恢复切换事务内写入）。 */
   async insertRestoreReceiptForTest(input: RestoreReceiptInput): Promise<void> {
     this.restoreStore.insertReceipt(input);
+  }
+
+  /** 测试直读当前预览（生产路径只经服务层访问）。 */
+  readPreviewForTest(accountId: string) {
+    return this.previewStore.get(accountId);
   }
 
   async readBackupStatus(input: ReadHakoSessionInput): Promise<ReadBackupStatusResult> {

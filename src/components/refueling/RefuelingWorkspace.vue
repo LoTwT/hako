@@ -21,6 +21,7 @@ import RefuelingRecords from "./RefuelingRecords.vue";
 import StorageStatus from "./StorageStatus.vue";
 import LegacyImport from "./LegacyImport.vue";
 import RetainedRefuelingCopy from "./RetainedRefuelingCopy.vue";
+import BackupRestore from "./BackupRestore.vue";
 
 const props = defineProps<{
   accountId: string;
@@ -78,6 +79,7 @@ const initialDraft = shallowRef<RefuelingDraft>();
 const dirty = shallowRef(false);
 const localNotice = shallowRef("");
 const showRetained = shallowRef(false);
+const showBackupRestore = shallowRef(false);
 const openingCurrent = shallowRef(false);
 const openCurrentNotice = shallowRef("");
 
@@ -458,8 +460,13 @@ onUnmounted(() =>
     <div v-if="generationFlow.phase === 'active'" class="workspace-links">
       <button class="text-button sync-now" :disabled="formLocked" @click="retrySync">立即同步</button>
       <button class="text-button" type="button" @click="openRetained">查看保留副本与旧草稿</button>
+      <button v-if="local.restoreWritesAvailable.value" class="text-button" type="button" @click="showBackupRestore = true">
+        备份与恢复
+      </button>
     </div>
-    <p class="local-notice">同步成功不代表独立备份已完成；本版暂不提供备份恢复。</p>
+    <BackupRestore v-if="showBackupRestore && local.restoreWritesAvailable.value"
+      :account-id="accountId" :local="local" :flush-draft="flushDraft" @close="showBackupRestore = false" />
+    <p class="local-notice">同步成功不代表独立备份已完成；可在「备份与恢复」中查看备份与恢复。</p>
     <LegacyImport v-if="serverConfirmedActive" :disabled="formLocked || !ready" :imported-ids="importedLegacyIds" :import-records="importLegacy" />
   </div>
 </template>

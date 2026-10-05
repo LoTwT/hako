@@ -161,6 +161,21 @@ export class AccountDocuments {
     return { accountId, currentGeneration: generation, legacyGeneration: existing.legacyGeneration, origin, switchedAtMs: nowMs };
   }
 
+  /**
+   * 恢复切换在同一事务内用已验证的暂存快照整体替换主分块：删除旧分块、按 512 KiB
+   * 重新分块并以新代次标签写入。恢复专用替换不调用 merge()，也不把「历史向量推进」
+   * 当作恢复成功条件；旧代次字节不再保留在主表（旧副本由 R2 备份与本机保留副本承担）。
+   */
+  replaceMainSnapshot(accountId: string, generation: string, snapshot: Uint8Array): void {
+    this.storage.sql.exec("DELETE FROM refueling_snapshots WHERE account_id = ?", accountId);
+    for (let offset = 0; offset < snapshot.byteLength; offset += CHUNK_BYTES) {
+      this.storage.sql.exec(
+        "INSERT INTO refueling_snapshots (account_id, chunk_index, snapshot, document_generation) VALUES (?, ?, ?, ?)",
+        accountId, offset / CHUNK_BYTES, snapshot.slice(offset, offset + CHUNK_BYTES).buffer, generation,
+      );
+    }
+  }
+
   hasSnapshot(accountId: string): boolean {
     return this.storage.sql.exec<AccountStateRow>(
       "SELECT account_id FROM refueling_snapshots WHERE account_id = ? LIMIT 1",

@@ -1,6 +1,6 @@
 # 加油文档恢复设计
 
-状态：**交付 A「代次兼容基础」已实施并通过本地验证（2026-10-05，隔离 worktree `feat/restore-generation-foundation`），尚未合并、未部署；交付 B「恢复操作」未实施**。六项产品取舍已由用户确认采用（2026-10-04）。本稿整理与复审基线为 `c6cf7b5f967ae36f1afb5796fe462fe4455efed2`；A 的实施基线为其后合并的 `59d7d6687664b8d0b49c4016398d90d697e0f853`（PR #17 文档补充）。
+状态：**交付 A「代次兼容基础」已实施并通过本地验证，并已由 PR #18 squash 合并至 `main`（`0dce2b42`，未部署）；交付 B「恢复操作」已完成本地实施、四轮审阅修复与最终内容复审（2026-10-05，隔离 worktree `feat/refueling-restore`，未部署）**。六项产品取舍已由用户确认采用（2026-10-04）。本稿整理与复审基线为 `c6cf7b5f967ae36f1afb5796fe462fe4455efed2`；A 的实施基线为其后合并的 `59d7d6687664b8d0b49c4016398d90d697e0f853`（PR #17 文档补充）。
 
 推荐实现本人账号内的整文档恢复：先验证所选备份并预览，确认当前服务端版本已有可读的保护备份，再以一次 SQLite 事务替换文档、切换代次、登记恢复结果与后续备份责任。设备按代次隔离副本，旧设备的记录和草稿保留供本人核对。
 
@@ -38,11 +38,13 @@
 
 ## 3. 实读实现与外部依据
 
+下表是 2026-10-04 设计前的实读基线快照（历史记录，供追溯），其中被 A/B 改名或替换的模块不再是当前入口。协议、格式与模块入口的当前状态以[账号同步合同](./account-sync.md)、[备份合同](./backup.md)与[本地验证进展](../local-validation.md)为准。
+
 | 当前入口 | 与恢复有关的实读事实 |
 | --- | --- |
 | [sync-protocol.ts](../../src/shared/sync-protocol.ts)、[同步路由](../../src/worker/sync/routes.ts) | 当前只接受协议 `1`，没有代次头；完整快照上限 4 MiB。 |
 | [AccountSync](../../src/worker/sync/account-sync.ts)、[AccountDocuments](../../src/worker/sync/account-documents.ts) | 会话复核、合并、备份责任在同一事务；主快照仅按账号分块。恢复不能复用 `merge()` 来替换文档。 |
-| [local-refueling.ts](../../src/data/local-refueling.ts) | 账号数据库的 `documents/main` 保存快照、确认向量、待传状态和导入映射；写入使用 Web Lock 和严格 IndexedDB 事务。 |
+| [local-refueling-v2.ts](../../src/data/local-refueling-v2.ts)（设计时为 `local-refueling.ts`，A 已迁移并改名） | 账号数据库的 `documents/main` 保存快照、确认向量、待传状态和导入映射；写入使用 Web Lock 和严格 IndexedDB 事务。 |
 | [refueling-sync.ts](../../src/data/refueling-sync.ts) | 迟到响应已有请求 epoch 防护，但所有 409 都触发会话重查，没有代次变化处理。请求 epoch 不是文档代次。 |
 | [草稿会话](../../src/data/refueling-draft-session.ts)、[草稿判定](../../src/domain/refueling/draft-recovery.ts) | 草稿可能在隐藏窗口中继续落盘；已保存草稿会按当前记录判断并清理。因此旧代次草稿不能交给新代次的普通初始化逻辑。 |
 | [备份引擎](../../src/worker/backup/backup-engine.ts)、[备份存储](../../src/worker/backup/backup-store.ts) | 冻结任务、保留责任和重试下限已持久化；`sourceGeneration` 目前在准备 manifest 时固定写为 legacy，捕获时尚未保存代次。 |
@@ -217,7 +219,11 @@ sequenceDiagram
 - 备份状态没有 blocked、冻结任务、待备版本、保留检查、裁剪计划或尚未到期的失败下限。
 - 最新完成版本精确覆盖当前代次和主文档；同代次/历史摘要不足以单独作执行授权，还需本次完整读回当前保护包。
 
-存在待备变化时等待原 30 秒窗口及正常 alarm；不提前失败重试、不重置 `retry_floor_at`，也不单独启动第二个 R2 发布者。R2 故障或清理失败时同步继续，恢复保持不可确认；显示原因及实际下次尝试时间。若主文档与完成备份不一致但没有已登记责任，提示先完成正常同步/受控排查，不由只读预览重建游标。
+存在待备变化时等待原 30 秒窗口及正常 alarm；不提前失败重试、不重置 `retry_floor_at`，也不单独启动第二个 R2 发布者。R2 故障或清理失败时同步继续，恢复保持不可确认；显示原因及实际下次尝试时间。实际下次尝试时间不是原始窗口时间，而是按责任优先级（冻结任务 > 未收尾清理 > 待备窗口，与唯一 alarm 同一计算）并由持久失败下限 `retry_floor_at` 兜底的有效可行动时间：预览的保护描述与只读状态元数据都直接报告该值（状态元数据字段 `nextActionAtMs`），客户端不得凭原始窗口时间自行推算；blocked 表示自动推进已停止、没有已登记责任表示没有自动计划，两者都不虚报自动恢复时间。若主文档与完成备份不一致但没有已登记责任，提示先完成正常同步/受控排查，不由只读预览重建游标。
+
+确认的发送资格不能只看一次点击前的状态：flush 草稿与持久保存请求（指纹计算 + 本机严格事务）都是异步边界，首次发送必须在能检查真实本机保存事实、持久活动代次与待确认请求归属的调用链内复核——判定与请求派发在同一账号控制锁临界区内完成，同机其他窗口/连接的在途保存按锁顺序先行，未派发且本机仍有未同步保存时不发送（提示同步完成后可继续，原请求保留）。从未派发的请求受此门禁；已派发过而结果未知的原请求，本人始终可以按原编号重试（重复发送由 requestId 幂等吸收），查询与重试入口不因本机未同步修改被封死，也不清除可能已被其他窗口发送的待确认记录。请求派发事实与待确认记录一并持久，跨窗口重开后仍可区分「从未派发」与「已派发待确认」。
+
+每次用户操作（首次确认绑定 `beginRestoreRequest` 返回的同一请求；本人重试绑定点击时可见的请求）必须固定 **requestId + 固定指纹** 传入调用链，并在同一控制锁内与当前待确认记录逐一匹配：锁内已被清除或已被另一笔替换时返回 stale，不发送、不接管、不把另一笔待确认标成已派发；界面只读刷新到最新 pending 后由本人再次选择。
 
 确认界面显示选中版本、变化数量和保护版本，文案明确“这会替换账号当前的全部加油记录。其他设备原有修改会保留，之后需核对。此设备未保存的草稿不在云端备份中”。按钮为“恢复到此版本”；无需输入难以核对的哈希或手工复制编号。
 
@@ -289,6 +295,10 @@ sequenceDiagram
 | 关闭预览、停止轮询或浏览器断网 | 不会触发后台恢复；只有明确的 POST 可切换。已发出的 POST 可能仍提交；网络取消或 DELETE 预览成功不代替原 requestId 的结果裁决。 |
 
 同一浏览器账号已有待确认请求时，所有标签页通过账号控制锁复用该 ID 和固定正文，不能用另一请求覆盖 `control`。处理响应时也须在锁内重查当前待确认记录，旧请求响应不能覆盖后来的请求。终态及原 ID/指纹先在严格 IndexedDB 事务内落盘；成功则进入新代次接收，确定未执行才允许本人重新确认新请求。`unknown` 只查询或重试原请求，关闭、重开或更新应用不自动清除它，也不自动执行一次新的恢复。
+
+待确认状态结束时（本人查询/重试得到终态、或另一窗口/重开后的只读查询清除了待确认），界面必须统一协调下一步而不能停在保护态：清掉绑定刚结束请求的预览、比较与保护状态，读回备份列表并给出可执行入口（重新预览此版本；若服务端已切换代次则提示进入既有「打开恢复后数据」接收入口）。重开时若本机持有待确认请求，先查回执且不因缺列表而不加载；查询结束后按上述协调补读列表。结果与旧失败只能归属其请求：进行中的异步操作要在发起时固定请求身份，其收尾必须按当前 pending 的最新归属落位——本轮终态使用结果自身文案；pending 已被他处处理或迟到 `unknown`/失败时不得重新宣称待确认，改用中立提示并补出可执行入口；pending 已被新请求取代时，旧结果、旧错误与旧列表刷新都不得更新新请求的提示或清理其状态（确认与原请求重试共用同一规则）。
+
+列表读取与收尾自身也必须绑定可失效的归属：开始收尾/读取时固定归属代次，待确认换人（requestId + 固定指纹变化，含非 busy 的 P1→P2）或新的面板操作推进都会使在途刷新失效；旧刷新在成功、失败与 finally 每次写共享状态前复核归属，await 列表返回后的终态文案同样复核，旧回调不得改动当前请求的提示、错误、列表或 loading。busy 期间发生的 pending 转移不得被丢弃，必须在操作收尾时统一协调；同一请求的只读刷新（requestId + 指纹相同的新控制快照）不算换人。
 
 如需撤销一次已完成恢复，选择当次保护备份，再走相同流程生成另一个新代次；不能把当前代次指针改回旧值。
 
@@ -364,7 +374,7 @@ v2 manifest 保留原业务校验和长度/摘要字段，明确变更：
 
 拟修改现有入口：`src/shared/sync-protocol.ts`、`src/worker/sync/`、`src/worker/auth/account-rpc.ts`、`src/worker/account-durable-object.ts`、`src/worker/api.ts`、`src/worker/backup/`、`src/data/account-storage.ts`、`local-refueling.ts`、`refueling-sync.ts`、草稿相关模块、`useLocalRefueling.ts`、`useRefuelingDrafts.ts`、账号/加油工作区组件与 `App.vue`。
 
-拟新增 `src/shared/restore-protocol.ts`（接口与固定错误码）、`src/worker/restore/restore-store.ts`、`restore-service.ts`、`routes.ts`、`src/data/refueling-restore.ts` 和 `BackupRestore.vue`、`RetainedRefuelingCopy.vue`。纯验证逻辑继续归 `backup/`；正常同步不依赖恢复 UI。离线 CLI 放 `scripts/`，用一个 `package.json` 脚本暴露，不增加云端绑定。
+实际实施入口（A + B，本地验证，未部署）：`src/shared/restore-protocol.ts`（接口与固定错误码）、`src/worker/restore/restore-store.ts`（A 的回执存储）、`restore-service.ts`、`restore-preview-store.ts`（B 的固定预览暂存）、`routes.ts`、`src/data/refueling-restore.ts`、`restore-comparison.ts`、`BackupRestore.vue`、`RetainedRefuelingCopy.vue`，以及离线 CLI `scripts/backup-verify.ts` 与 `scripts/run-backup-verify.mjs`（`pnpm run backup:verify`）。纯验证逻辑复用 `backup/` 的严格验证器；正常同步不依赖恢复 UI；不增加云端绑定。实现范围与验证证据统一由[本地验证进展](../local-validation.md)维护。
 
 A 实施时同步更新账号同步合同和备份格式合同；B 实施时把本稿中已批准且实测的恢复规则转为正式合同。发布记录只有实际发布后才写“已部署”。Git/PR 标题继续英文，当前设计稿不产生提交、推送或部署授权。
 
@@ -431,3 +441,7 @@ B 的生产检查先做有界只读列表与包验证；产品的 POST 预览会
 2026-10-04 用户确认采用 §2 的全部六项取舍，当前设计已无该批待确认项。此次仅更新决定及文档入口状态，恢复实施与发布尚未开始。
 
 2026-10-05 交付 A「代次兼容基础」在隔离 worktree 实施（分支 `feat/restore-generation-foundation`，基线 `59d7d668`）并完成本地验证：协议 2（bootstrap/GET/POST、426/409/503 语义）、受控 G0 升级与分块代次标签、本机 v2 副本与迁移合并/代次切换/保留副本、v1/v2 备份双格式与捕获代次、恢复回执表/请求指纹/只查重 POST/回执 GET 与本机待确认/终态结构。实现范围、验证命令与结果、未验边界统一由[本地验证进展](../local-validation.md#恢复代次兼容基础a2026-10-05隔离-worktree未部署)的新节维护；本文规则不变，协议与格式增量已按单一事实来源并入[账号同步合同](./account-sync.md)与[备份合同](./backup.md)。恢复切换（预览、保护校验、幂等切换事务与 UI）与离线验证工具仍属交付 B，未实施；A 未部署，未写真实云端业务数据。
+
+2026-10-05 交付 A 已由 PR #18 squash 合并至 `main`（`0dce2b42`，未部署；本节上方 A 记录的验证范围与证据不变）。交付 B「恢复操作」在同一隔离 worktree 实施（分支 `feat/refueling-restore`，基线 `0dce2b42`）并完成本地验证：受控备份列表、精确备份引用与固定预览（服务端 previewId、15 分钟不续期、事务外 I/O 与哈希、事务内重验与迟到请求不覆盖新预览）、保护门禁与唯一切换事务（最终 POST 重新验证精确覆盖当前主快照的最新保护包，任一写入失败整体回滚，`storage.sync()` 成功后才确认）、§7.3 结果裁决与回退 A 后按回执/持久条件区分 committed/not_committed/unknown、恢复基线冻结与消费、跨代次保留、本人可用「备份与恢复」面板与不联网 `backup:verify` CLI。B 另用 `git archive` 解出的精确 A 源码（`0dce2b42`）在项目外完成真实 B → A → B 两条丢响应路径回退门禁，并在此过程中发现与修复「冷启动进程提交恢复缺少 Loro 运行时初始化」的缺陷（已补冷启动回归）。实现范围、命令、结果与未验边界由[本地验证进展](../local-validation.md#恢复操作b2026-10-05隔离-worktree未合并未部署)的新节维护；本文 §4–§12 的规则不变，B 未合并、未部署。
+
+2026-10-05 父侧第一轮内容审阅结论为 CHANGES_REQUIRED（B-R1/B-R5 P1；B-R2/B-R3/B-R4/B-R6 P2；另有 B-V1/V2 补证与 B-D1/D2 文档/UI 完整项），已在本 worktree 完成修复与补证：固定正文的目标与预期源六字段与预览逐字段绑定，入口、最终事务与短裁决共用同一资格判断（外部故障不改变永久失格裁决）；有界序列解释与归属核对成为预览与提交的共同门禁（保留可解释裁剪后固定暂存继续可用）；面板以持久 pending 驱动查询/原请求重试入口、保护未覆盖时禁用确认并显示版本/原因/下次尝试时间、轮询改用只读备份状态元数据、flush 异步边界后重验本机同步与请求归属；`backup:verify` 明确接受 pnpm 传入的首位 `--` 分隔符并以真实 pnpm 命令覆盖成功/失败；补齐 tombstone、近 4 MiB 恢复主路径、预览时钟到期与保护门禁未就绪分支证据。修复范围与验证结果见[本地验证进展](../local-validation.md#恢复操作b2026-10-05隔离-worktree未合并未部署)。

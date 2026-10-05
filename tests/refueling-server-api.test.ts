@@ -2,7 +2,7 @@
 // bootstrap 与 GET 都必须核对账号头与代次格式；204 与网络错误按合同分类。
 
 import { describe, expect, it } from "vitest";
-import { bootstrapRefueling, fetchRefuelingSnapshot } from "../src/data/refueling-server-api";
+import { bootstrapRefueling, fetchBackupStatus, fetchRefuelingSnapshot } from "../src/data/refueling-server-api";
 import { accountA } from "./helpers/sync-fixtures";
 
 const generation = "00000000-0000-4000-8000-0000000000a1";
@@ -102,5 +102,66 @@ describe("只读快照客户端", () => {
     expect(await fetchRefuelingSnapshot(fetchOf(new Response("{}", { status: 503 })))).toEqual({ ok: false, error: "generation_state_unavailable" });
     const failing = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
     expect(await fetchRefuelingSnapshot({ accountId: accountA, fetch: failing })).toEqual({ ok: false, error: "unavailable" });
+  });
+});
+
+describe("备份状态元数据客户端（面板轮询用）", () => {
+  function statusResponse(overrides: Record<string, unknown> = {}, account = accountA) {
+    return new Response(JSON.stringify({
+      initialized: true,
+      state: "current_backed_up",
+      currentRevision: 3,
+      currentGeneration: generation,
+      frozenTaskRevision: null,
+      latestCompletedRevision: 3,
+      latestCompletedGeneration: generation,
+      pendingFromRevision: null,
+      pendingToRevision: null,
+      pendingSinceMs: null,
+      windowDueAtMs: null,
+      nextAttemptAtMs: null,
+      nextActionAtMs: null,
+      blockedError: null,
+      cleanupPendingCount: 0,
+      currentBackedUp: true,
+      ...overrides,
+    }), { status: 200, headers: { "X-Hako-Account": account } });
+  }
+
+  it("200 解析只读元数据；不下载完整快照字段", async () => {
+    const result = await fetchBackupStatus(fetchOf(statusResponse()));
+    expect(result).toEqual({
+      ok: true,
+      status: {
+        initialized: true, state: "current_backed_up", currentRevision: 3, currentGeneration: generation,
+        frozenTaskRevision: null, latestCompletedRevision: 3, latestCompletedGeneration: generation,
+        pendingFromRevision: null, pendingToRevision: null, windowDueAtMs: null, nextAttemptAtMs: null,
+        nextActionAtMs: null,
+        blockedError: null, cleanupPendingCount: 0, currentBackedUp: true,
+      },
+    });
+    // 有效可行动时间（责任优先级 + 持久失败下限）必须显式解析：客户端不得用窗口时间推算。
+    const floored = await fetchBackupStatus(fetchOf(statusResponse({ windowDueAtMs: 1_000, nextAttemptAtMs: 1_000, nextActionAtMs: 900_000 })));
+    expect(floored.ok && floored.status.nextActionAtMs).toBe(900_000);
+    expect(await fetchBackupStatus(fetchOf(statusResponse({ nextActionAtMs: "soon" }))))
+      .toEqual({ ok: false, error: "unavailable" });
+    const blocked = await fetchBackupStatus(fetchOf(statusResponse({ state: "blocked", blockedError: "backup_upload_failed", currentBackedUp: false, latestCompletedRevision: 2 })));
+    expect(blocked.ok && blocked.status.state).toBe("blocked");
+    expect(blocked.ok && blocked.status.blockedError).toBe("backup_upload_failed");
+  });
+
+  it("账号头/形状/状态码的网络与解析失败都按错误返回，不产生部分状态", async () => {
+    expect(await fetchBackupStatus(fetchOf(statusResponse({}, "00000000-0000-4000-8000-0000000000ff"))))
+      .toEqual({ ok: false, error: "account_changed" });
+    expect(await fetchBackupStatus(fetchOf(statusResponse({ cleanupPendingCount: "0" }))))
+      .toEqual({ ok: false, error: "unavailable" });
+    expect(await fetchBackupStatus(fetchOf(statusResponse({ latestCompletedRevision: "3" }))))
+      .toEqual({ ok: false, error: "unavailable" });
+    expect(await fetchBackupStatus(fetchOf(statusResponse({ initialized: "yes" }))))
+      .toEqual({ ok: false, error: "unavailable" });
+    expect(await fetchBackupStatus(fetchOf(new Response("{}", { status: 401 })))).toEqual({ ok: false, error: "unauthorized" });
+    expect(await fetchBackupStatus(fetchOf(new Response("{}", { status: 503 })))).toEqual({ ok: false, error: "unavailable" });
+    const failing = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+    expect(await fetchBackupStatus({ accountId: accountA, fetch: failing })).toEqual({ ok: false, error: "unavailable" });
   });
 });

@@ -19,6 +19,7 @@ import {
   SYNC_PATH,
   SYNC_PROTOCOL,
 } from "../src/shared/sync-protocol";
+import { computeRestoreRequestFingerprint, type RestoreRequestBody } from "../src/shared/restore-protocol";
 
 vi.mock("../src/data/loro-runtime", () => ({ initializeLoro: async () => undefined }));
 
@@ -1061,6 +1062,249 @@ describe("代次工作流编排：异步出口收尾（R10/R11 四轮）", () =>
       expect(local.generationFlow.value).not.toMatchObject({ receipt: "committed" });
       expect((await repo.readControl()).pendingRestore?.requestId).toBe(second.requestId);
     } finally {
+      repo.close();
+    }
+  });
+});
+
+describe("恢复提交编排（B）：先持久、原 ID 重试、终态落盘后解除", () => {
+  function restoreBody(requestId: string): RestoreRequestBody {
+    return {
+      requestId,
+      previewId: G2,
+      backupStreamId: G2,
+      revision: 1,
+      bundleSha256: "b".repeat(64),
+      expectedGeneration: G0,
+      expectedRevision: 2,
+      expectedSnapshotSha256: "c".repeat(64),
+    };
+  }
+
+  it("发出请求前先持久 requestId 与不可变正文；已有待确认请求不被新请求覆盖且不触发网络", async () => {
+    const repo = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    await repo.receiveGeneration(G0, snapshotWith(), null);
+    repo.close();
+    const server = createServerMock();
+    const local = mountLocal(server.fetch);
+    await local.initialize();
+    const body = restoreBody("00000000-0000-4000-8000-0000000000d1");
+    const first = await local.beginRestoreRequest(body);
+    expect(first.ok).toBe(true);
+    expect(local.pendingRestore.value?.requestId).toBe(body.requestId);
+    // 任何恢复网络请求之前：requestId 与完整正文已在控制库持久。
+    expect(server.calls.filter((call) => call.path.includes("/api/restores/"))).toHaveLength(0);
+    const probe = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    const stored = await probe.readControl();
+    expect(stored.pendingRestore?.requestId).toBe(body.requestId);
+    expect(stored.pendingRestore?.body).toEqual(body);
+    expect(stored.pendingRestore?.requestFingerprint).toBe(await computeRestoreRequestFingerprint(body));
+    probe.close();
+    // 第二笔不同正文：复用原记录、不覆盖、不自动换号；仍无恢复网络请求。
+    const second = await local.beginRestoreRequest(restoreBody("00000000-0000-4000-8000-0000000000d2"));
+    expect(second.ok).toBe(false);
+    expect(second.pending?.requestId).toBe(body.requestId);
+    expect(local.pendingRestore.value?.requestId).toBe(body.requestId);
+    expect(server.calls.filter((call) => call.path.includes("/api/restores/"))).toHaveLength(0);
+  });
+
+  it("unknown 保留待确认且不自动重发；本人以原 ID 重试成功后终态先落盘再解除", async () => {
+    const repo = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    await repo.receiveGeneration(G0, snapshotWith(), null);
+    repo.close();
+    const server = createServerMock();
+    const body = restoreBody("00000000-0000-4000-8000-0000000000d3");
+    const fingerprint = await computeRestoreRequestFingerprint(body);
+    const raws: string[] = [];
+    let reopenBootstraps = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/restores/refueling") {
+        raws.push(String(init?.body ?? ""));
+        if (raws.length === 1) {
+          return new Response(JSON.stringify({ error: "restore_unavailable", outcome: "unknown", requestId: body.requestId, requestFingerprint: fingerprint }), { status: 503, headers: { "X-Hako-Account": accountA } });
+        }
+        return new Response(JSON.stringify({
+          outcome: "committed", requestId: body.requestId, requestFingerprint: fingerprint,
+          previousGeneration: G0, newGeneration: G1, previousRevision: 2, newRevision: 3,
+          baselinePending: true, committedAt: "2026-10-05T00:00:00.000Z",
+        }), { status: 200, headers: { "X-Hako-Account": accountA } });
+      }
+      // 提交成功后的自动 reopen：模拟离线使 reopen 立即返回、不再挂起本机 I/O，
+      // 用例收尾（afterEach 关库）前等待这次 bootstrap 已处理完。
+      if (path === BOOTSTRAP_PATH && raws.length >= 2) {
+        reopenBootstraps += 1;
+        throw new TypeError("offline");
+      }
+      return server.fetch(input, init);
+    });
+    const local = mountLocal(fetchMock);
+    await local.initialize();
+    expect((await local.beginRestoreRequest(body)).ok).toBe(true);
+    // 第一次提交：unknown —— 待确认保留，无自动重发、不换 requestId。
+    const first = await local.submitPendingRestore();
+    expect(first.kind).toBe("unknown");
+    expect(raws).toHaveLength(1);
+    expect(local.pendingRestore.value?.requestId).toBe(body.requestId);
+    const probe = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    expect((await probe.readControl()).pendingRestore?.requestId).toBe(body.requestId);
+    // 本人选择以原 ID 与固定正文重试：committed，终态先落盘，随后解除待确认。
+    const second = await local.submitPendingRestore();
+    expect(second.kind).toBe("committed");
+    expect(raws).toHaveLength(2);
+    expect(raws[1]).toBe(raws[0]);
+    const control = await probe.readControl();
+    expect(control.pendingRestore).toBeNull();
+    expect(control.restoreOutcomes[body.requestId]?.outcome).toBe("committed");
+    expect(local.pendingRestore.value).toBeNull();
+    await vi.waitFor(() => expect(reopenBootstraps).toBeGreaterThan(0));
+    probe.close();
+  });
+
+  it("committed 但本机终态落盘失败：保留原请求并报告可重试，不虚报已提交", async () => {
+    const requestId = "00000000-0000-4000-8000-0000000000d4";
+    const body = restoreBody(requestId);
+    const fingerprint = await computeRestoreRequestFingerprint(body);
+    const repo = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    await repo.receiveGeneration(G0, snapshotWith(), null);
+    await repo.setPendingRestore({ requestId, requestFingerprint: fingerprint, createdAtMs: 1, body });
+    repo.close();
+    const server = createServerMock();
+    const raws: string[] = [];
+    let reopenBootstraps = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/restores/refueling") {
+        raws.push(String(init?.body ?? ""));
+        return new Response(JSON.stringify({
+          outcome: "committed", requestId, requestFingerprint: fingerprint,
+          previousGeneration: G0, newGeneration: G1, previousRevision: 2, newRevision: 3,
+          baselinePending: true, committedAt: "2026-10-05T00:00:00.000Z",
+        }), { status: 200, headers: { "X-Hako-Account": accountA } });
+      }
+      if (path === BOOTSTRAP_PATH && raws.length >= 2) {
+        reopenBootstraps += 1;
+        throw new TypeError("offline");
+      }
+      return server.fetch(input, init);
+    });
+    // 注入一次终态落盘失败（模拟本机配额/写失败）。
+    restoreOutcomeHook.failResolve = 1;
+    const local = mountLocal(fetchMock);
+    await local.initialize();
+    expect(local.pendingRestore.value?.requestId).toBe(requestId);
+    const first = await local.submitPendingRestore();
+    expect(first.kind).toBe("local-failed");
+    // 不虚报终态：待确认保留、未记录 outcome、正文未变。
+    expect(local.pendingRestore.value?.requestId).toBe(requestId);
+    const probe = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    const blockedControl = await probe.readControl();
+    expect(blockedControl.pendingRestore?.requestId).toBe(requestId);
+    expect(blockedControl.restoreOutcomes[requestId]).toBeUndefined();
+    // 释放本机空间后由本人重试（仍以原 ID 与固定正文）：成功后终态落盘并解除。
+    const second = await local.submitPendingRestore();
+    expect(second.kind).toBe("committed");
+    expect(raws).toHaveLength(2);
+    expect(raws[1]).toBe(raws[0]);
+    const resolvedControl = await probe.readControl();
+    expect(resolvedControl.pendingRestore).toBeNull();
+    expect(resolvedControl.restoreOutcomes[requestId]?.outcome).toBe("committed");
+    expect(local.pendingRestore.value).toBeNull();
+    await vi.waitFor(() => expect(reopenBootstraps).toBeGreaterThan(0));
+    probe.close();
+  });
+
+  it("首次发送前复核持久保存事实：另一连接的已保存未同步修改阻止 POST，同步后同一原请求可发送", async () => {
+    const repo = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    await repo.receiveGeneration(G0, snapshotWith(), null);
+    const server = createServerMock();
+    const body = restoreBody("00000000-0000-4000-8000-0000000000da");
+    const fingerprint = await computeRestoreRequestFingerprint(body);
+    let posts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/restores/refueling") {
+        posts += 1;
+        return new Response(JSON.stringify({ error: "restore_unavailable", outcome: "unknown", requestId: body.requestId, requestFingerprint: fingerprint }), { status: 503, headers: { "X-Hako-Account": accountA } });
+      }
+      if (String(input).includes("/requests/")) return new Response("{}", { status: 404 });
+      return server.fetch(input, init);
+    });
+    const local = mountLocal(fetchMock);
+    try {
+      await local.initialize();
+      expect((await local.beginRestoreRequest(body)).ok).toBe(true);
+      // 同机另一连接（另一窗口）保存业务编辑并持久 pendingSync：本轮实测 UI 刷新与否
+      // 都不构成发送资格——以持久事实为准。
+      await repo.save(G0, "one", { stationName: "saved by another window before POST" }, false);
+      expect((await repo.readRetainedGeneration(G0))?.pendingSync).toBe(true);
+      const blocked = await local.submitPendingRestore();
+      expect(blocked.kind, "未派发的首次发送不得越过已持久的未同步保存").toBe("waiting_local_sync");
+      expect(posts).toBe(0);
+      expect(local.pendingRestore.value?.requestId, "原请求必须保留、可查询、可本人重试").toBe(body.requestId);
+      // 该保存完成同步（与同步客户端同路径：服务端确认回传快照后落盘确认向量）后，同一原请求可发送。
+      const prepared = await repo.prepareSync(G0);
+      expect(prepared).not.toBeNull();
+      await repo.acceptSync(G0, prepared!.snapshot, prepared!.version, () => true);
+      expect((await repo.readRetainedGeneration(G0))?.pendingSync).toBe(false);
+      const sent = await local.submitPendingRestore();
+      expect(sent.kind).toBe("unknown");
+      expect(posts).toBe(1);
+      expect(local.pendingRestore.value?.requestId).toBe(body.requestId);
+    } finally {
+      repo.close();
+    }
+  });
+
+  it("重试动作绑定点击时的请求身份：锁内已被替换的 pending 不得被代发", async () => {
+    const repo = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    await repo.receiveGeneration(G0, snapshotWith(), null);
+    const first = restoreBody("00000000-0000-4000-8000-0000000000d9");
+    const second = restoreBody("00000000-0000-4000-8000-0000000000da");
+    const server = createServerMock();
+    const postedIds: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/restores/refueling") {
+        const sent = JSON.parse(String(init?.body)) as RestoreRequestBody;
+        postedIds.push(sent.requestId);
+        return new Response(JSON.stringify({ error: "restore_unavailable", outcome: "unknown", requestId: sent.requestId, requestFingerprint: await computeRestoreRequestFingerprint(sent) }), { status: 503, headers: { "X-Hako-Account": accountA } });
+      }
+      if (String(input).includes("/requests/")) return new Response("{}", { status: 404 });
+      if (String(input) === BOOTSTRAP_PATH) {
+        return new Response(JSON.stringify({ accountId: accountA, documentGeneration: G0, legacyGeneration: G0,
+          generationOrigin: { kind: "initial" }, snapshotAvailable: true, restoreWritesAvailable: true }), { status: 200, headers: { "X-Hako-Account": accountA } });
+      }
+      return server.fetch(input, init);
+    });
+    const local = mountLocal(fetchMock);
+    let release!: () => void;
+    try {
+      await local.initialize();
+      expect((await local.beginRestoreRequest(first)).ok).toBe(true);
+      expect((await local.submitPendingRestore()).kind).toBe("unknown");
+      expect(postedIds).toEqual([first.requestId]);
+      postedIds.length = 0;
+      const firstFingerprint = await computeRestoreRequestFingerprint(first);
+      const secondFingerprint = await computeRestoreRequestFingerprint(second);
+      // 控制锁被他处占用：其他连接排队结束 P1 并登记 P2；本窗口界面仍显示 P1。
+      const held = navigator.locks.request(accountStorageNamesV2(accountA).controlLock, () => new Promise<void>((resolve) => { release = resolve; }));
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const settle = repo.resolveRestoreOutcome({ requestId: first.requestId, requestFingerprint: firstFingerprint,
+        outcome: "not_committed", decidedAtMs: Date.now(), newGeneration: null, newRevision: null, notCommittedReason: "preview_expired" });
+      const replace = repo.setPendingRestore({ requestId: second.requestId, requestFingerprint: secondFingerprint, body: second, createdAtMs: Date.now(), dispatchedAtMs: null });
+      expect(local.pendingRestore.value?.requestId, "界面在锁释放前仍显示 P1").toBe(first.requestId);
+      const retried = local.submitPendingRestore();
+      release();
+      await held;
+      await settle;
+      await replace;
+      const outcome = await retried;
+      expect(outcome.kind, "锁内已替换：本次点击不得代发另一笔恢复").toBe("stale_request");
+      expect(postedIds).not.toContain(second.requestId);
+      expect(postedIds).toHaveLength(0);
+      expect(local.pendingRestore.value?.requestId, "只读刷新后由本人对新的 pending 再次选择").toBe(second.requestId);
+      expect((await repo.readControl()).pendingRestore?.requestId).toBe(second.requestId);
+    } finally {
+      release?.();
       repo.close();
     }
   });

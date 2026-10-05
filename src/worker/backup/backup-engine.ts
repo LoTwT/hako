@@ -60,6 +60,7 @@ import type { DocumentGenerationHead } from "../sync/account-documents";
 import { GenerationStateUnavailableError } from "../sync/account-documents";
 import {
   analyzeBackupSnapshot,
+  buildCompletionMarker,
   verifyBundleReadBack,
   verifyMarkerContent,
   BackupVerificationError,
@@ -110,6 +111,12 @@ export interface BackupStatusSnapshot {
   pendingSinceMs: number | null;
   windowDueAtMs: number | null;
   nextAttemptAtMs: number | null;
+  /**
+   * 按责任优先级（冻结任务 > 未收尾清理 > 待备窗口）并由持久失败下限兜底的
+   * 有效可行动时间（§7.2）：客户端展示「实际下次尝试」必须用该字段，不能用
+   * 原始窗口时间自行推算。blocked（自动推进已停止）或无已登记责任时为 null。
+   */
+  nextActionAtMs: number | null;
   blockedError: string | null;
   cleanupPendingCount: number;
   currentBackedUp: boolean;
@@ -333,10 +340,7 @@ export class BackupEngine {
       // 有界失败下限（持久 + 内存取大）：实际持久化失败产生的安全退避在到期前
       // 不得被执行——共享 alarm 为其他账号触发时也不提前本账号的任何自动推进
       // （任务重试、清理收尾、待捕获窗口 alike）。
-      const failureFloor = Math.max(
-        cursor.retryFloorAtMs ?? 0,
-        this.boundedAlarmFloors.get(accountId) ?? 0,
-      );
+      const failureFloor = this.effectiveFailureFloor(accountId, cursor);
       const blockedByFailureFloor = failureFloor > nowMs;
       const task = this.store.getTask(accountId);
       if (task !== null) {
@@ -373,13 +377,21 @@ export class BackupEngine {
   // 只读状态：不建映射、不续期、不初始化、不上传。
   // -------------------------------------------------------------------------
 
+  /**
+   * B 的恢复切换事务在提交前调用：按当前持久状态重排唯一 alarm（恢复基线任务的
+   * 首次发布时间），与其他责任按既有优先级合并。必须在调用方的事务内执行。
+   */
+  async rescheduleAlarmWithinTransaction(nowMs: number): Promise<void> {
+    await this.rescheduleAlarmFromState({ nowMs, deleteWhenIdle: false });
+  }
+
   async readStatusSnapshot(accountId: string | null): Promise<BackupStatusSnapshot> {
     const uninitialized: BackupStatusSnapshot = {
       initialized: false, state: "uninitialized", currentRevision: null, currentGeneration: null,
       frozenTaskRevision: null, frozenTaskBytes: null, latestCompletedRevision: null,
       latestCompletedGeneration: null, pendingFromRevision: null,
       pendingToRevision: null, pendingSinceMs: null, windowDueAtMs: null, nextAttemptAtMs: null,
-      blockedError: null, cleanupPendingCount: 0, currentBackedUp: false,
+      nextActionAtMs: null, blockedError: null, cleanupPendingCount: 0, currentBackedUp: false,
     };
     if (accountId === null) return uninitialized;
     const cursor = this.store.getCursor(accountId);
@@ -418,10 +430,33 @@ export class BackupEngine {
       pendingSinceMs: cursor.pendingFirstAtMs,
       windowDueAtMs: cursor.windowDueAtMs,
       nextAttemptAtMs: task?.nextAttemptAtMs ?? cursor.cleanupNextAttemptAtMs,
+      nextActionAtMs: this.nextProtectionActionAtMs(accountId, this.now()),
       blockedError,
       cleanupPendingCount,
       currentBackedUp,
     };
+  }
+
+  /**
+   * 保护等待的有效可行动时间（§7.2，只读）：与唯一 alarm 的计算共用同一优先级
+   * （冻结任务 > 未收尾清理 > 待备窗口）并合入有界失败下限（持久值取较大者）。
+   * blocked 表示自动推进已停止、无已登记责任表示没有自动计划——两者都返回
+   * null，不虚报自动恢复时间。恢复预览与只读状态元数据共用本方法，避免客户端
+   * 凭原始窗口时间猜测。
+   */
+  nextProtectionActionAtMs(accountId: string | null, nowMs: number): number | null {
+    if (accountId === null) return null;
+    const cursor = this.store.getCursor(accountId);
+    if (cursor === null || cursor.blockedError !== null) return null;
+    const floor = this.effectiveFailureFloor(accountId, cursor);
+    const actionableAt = this.accountActionableAtMs(accountId, cursor, nowMs);
+    if (actionableAt === null) return null;
+    return floor > nowMs && actionableAt < floor ? floor : actionableAt;
+  }
+
+  /** 有界失败下限：持久值与内存值取大（跨引擎重建仍生效）。 */
+  private effectiveFailureFloor(accountId: string, cursor: BackupCursorState): number {
+    return Math.max(cursor.retryFloorAtMs ?? 0, this.boundedAlarmFloors.get(accountId) ?? 0);
   }
 
   // -------------------------------------------------------------------------
@@ -1005,7 +1040,7 @@ export class BackupEngine {
     const markerBytes = await this.objectStore.getMarker(markerKey);
     if (markerBytes === null) throw new BackupVerificationError("retention_verify_failed", "retained_marker_missing");
     if (markerBytes === "too_large") throw new BackupVerificationError("retention_verify_failed", "retained_marker_too_large");
-    verifyMarkerContent({ bytes: markerBytes, expectedMarker: this.buildExpectedMarker(completion) });
+    verifyMarkerContent({ bytes: markerBytes, expectedMarker: buildCompletionMarker(completion) });
     const bundleBytes = await this.objectStore.getBundle(completion.bundleKey);
     if (bundleBytes === null) throw new BackupVerificationError("retention_verify_failed", "retained_bundle_missing");
     if (bundleBytes === "too_large") throw new BackupVerificationError("retention_verify_failed", "retained_bundle_too_large");
@@ -1015,22 +1050,6 @@ export class BackupEngine {
     if (await sha256Hex(bundleBytes) !== completion.bundleSha256) {
       throw new BackupVerificationError("retention_verify_failed", "retained_bundle_hash_mismatch");
     }
-  }
-
-  private buildExpectedMarker(completion: BackupCompletionRecord): BackupCommitMarker {
-    return {
-      format: BACKUP_FORMAT_NAME,
-      // v1/v2 混合序列按各自完成缓存记录的格式验证；旧缓存行缺失时按 v1。
-      formatVersion: completion.formatVersion === BACKUP_FORMAT_VERSION_V2 ? BACKUP_FORMAT_VERSION_V2 : BACKUP_FORMAT_VERSION_V1,
-      environment: BACKUP_ENVIRONMENT,
-      accountId: completion.accountId,
-      documentType: BACKUP_DOCUMENT_TYPE,
-      backupStreamId: completion.streamId,
-      revision: completion.revision,
-      objectKey: completion.bundleKey,
-      bundleBytes: completion.bundleBytes,
-      bundleSha256: completion.bundleSha256,
-    };
   }
 
   /** head 读取的宽容包装：不可读时返回 null，不阻塞备份生命周期与只读状态。 */
@@ -1163,10 +1182,7 @@ export class BackupEngine {
       if (cursor === null || cursor.blockedError !== null) continue;
       // 有界失败下限取持久值与内存值的较大者：持久值跨引擎重建仍然生效
       // （重启后普通同步不得把失败退避中的重试提前到立即执行）。
-      const floor = Math.max(
-        cursor.retryFloorAtMs ?? 0,
-        this.boundedAlarmFloors.get(accountId) ?? 0,
-      );
+      const floor = this.effectiveFailureFloor(accountId, cursor);
       if (floor !== 0 && floor <= options.nowMs) this.boundedAlarmFloors.delete(accountId);
       let actionableAt = this.accountActionableAtMs(accountId, cursor, options.nowMs);
       if (actionableAt !== null && floor > options.nowMs && actionableAt < floor) {

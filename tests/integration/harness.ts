@@ -105,6 +105,12 @@ export async function buildTestWorkerBundle(): Promise<string> {
 export interface TestWorkerOptions {
   bundleDir: string;
   persistDir: string;
+  /**
+   * 经绑定注入的测试节奏：随 Miniflare 配置一起生效，先于任何 DO 请求/告警
+   * （消除「重启时持久告警先于 /test/schedule 触发、DO 以生产节奏构造」的竞态）。
+   * /test/schedule 仍可在运行中覆盖。
+   */
+  schedule?: unknown;
 }
 
 /** 以隔离持久化目录启动真实 workerd：SQLite DO、本地 R2 模拟桶与 alarm。 */
@@ -124,6 +130,7 @@ export function createTestMiniflare(options: TestWorkerOptions): MiniflareInstan
           resource: "https://auth.eruoo.me/api",
         },
         HAKO_OWNER_SUBJECT: "synthetic-owner",
+        ...(options.schedule === undefined ? {} : { HAKO_TEST_SCHEDULE: JSON.stringify(options.schedule) }),
       },
       durableObjects: { HAKO_ACCOUNT: { className: "HakoAccountDurableObject", useSQLite: true } },
       r2Buckets: { HAKO_BACKUPS: "hako-backups-test" },
@@ -174,6 +181,7 @@ export interface TestWorkerHandle {
   execSql(query: string): Promise<unknown[]>;
   setSchedule(schedule: unknown | null): Promise<void>;
   setR2Fault(fault: unknown | null): Promise<void>;
+  setSyncFault(enabled: boolean): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -190,7 +198,7 @@ export async function listAllR2Keys(r2: TestR2Bucket, prefix: string): Promise<s
   return keys;
 }
 
-export async function startTestWorker(options: { bundleDir: string; persistDir: string }): Promise<TestWorkerHandle> {
+export async function startTestWorker(options: TestWorkerOptions): Promise<TestWorkerHandle> {
   const miniflare = createTestMiniflare(options);
   const r2 = await miniflare.getR2Bucket("HAKO_BACKUPS");
 
@@ -306,6 +314,9 @@ export async function startTestWorker(options: { bundleDir: string; persistDir: 
     },
     async setR2Fault(fault) {
       await postJson("/test/fault", fault);
+    },
+    async setSyncFault(enabled: boolean) {
+      await postJson("/test/sync-fault", { enabled });
     },
     async dispose() {
       await miniflare.dispose();

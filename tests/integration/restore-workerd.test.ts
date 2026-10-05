@@ -1,5 +1,5 @@
-// 恢复代次兼容基础（A 版本）的 workerd 集成验收：真实进程 + 隔离持久化 + R2 模拟桶。
-// 覆盖恢复设计 §12.1 的「回退兼容基础」与协议/格式边界：
+// 恢复交付（A 代次兼容基础 + B 恢复操作）的 workerd 集成验收：真实进程 + 隔离持久化 + R2 模拟桶。
+// 覆盖恢复设计 §12.1/§12.2 的 workerd 边界（B→A→B 回退与浏览器/CLI 边界为项目外验收）：
 // - 协议 v2 bootstrap/GET/POST、426/400/409 语义与受控 G0 绑定（真实路由）。
 // - 预升级冻结任务按 v1 原字节完成；新捕获为 v2；混合序列完整镜像核对。
 // - 合成 B 恢复切换状态：A 消费 restore 来源与冻结恢复基线，新代次后续备份不丢来源。
@@ -9,7 +9,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
-import { LoroDoc } from "loro-crdt/web";
+import { LoroDoc, LoroMap } from "loro-crdt/web";
 import {
   buildTestWorkerBundle,
   listAllR2Keys,
@@ -49,7 +49,7 @@ function doc(snapshot?: Uint8Array): LoroDoc {
 
 async function startWorker(): Promise<void> {
   persistDir = temporaryDirectory("hako-restore-persist-");
-  worker = await startTestWorker({ bundleDir, persistDir });
+  worker = await startTestWorker({ bundleDir, persistDir, schedule: fastSchedule });
   await worker.setSchedule(fastSchedule);
 }
 
@@ -60,7 +60,8 @@ async function restartWorker(): Promise<void> {
   } catch {
     // 已被强杀：忽略 dispose 错误，同一 persistDir 重启。
   }
-  worker = await startTestWorker({ bundleDir, persistDir });
+  // 节奏经绑定注入：重启后的持久告警可在 /test/schedule 之前触发，不能依赖运行时覆盖。
+  worker = await startTestWorker({ bundleDir, persistDir, schedule: fastSchedule });
   await worker.setSchedule(fastSchedule);
 }
 
@@ -303,7 +304,7 @@ describe("恢复代次兼容基础（A）workerd 集成验收", () => {
   it("协议 v2：幂等 bootstrap、GET 快照、426/400 拒绝与受控 G0；代次漂移后 409 附元数据", { timeout: 30_000 }, async () => {
     const account = await worker.createSession();
     const first = await bootstrapOf(account);
-    expect(first.restoreWritesAvailable).toBe(false);
+    expect(first.restoreWritesAvailable).toBe(true); // B 起提供恢复切换
     expect(first.documentGeneration).toBe(first.legacyGeneration);
     expect((await bootstrapOf(account)).documentGeneration).toBe(first.documentGeneration);
 
@@ -488,19 +489,19 @@ describe("恢复代次兼容基础（A）workerd 集成验收", () => {
     const account = await worker.createSession();
     const bootstrap = await bootstrapOf(account);
     const body = restoreBody("00000000-0000-4000-8000-0000000000c1", bootstrap.documentGeneration, 1);
-    // 无回执：503 restore_unavailable + unknown；零 R2 写入/列举，回执表不变。
+    // 无回执且无匹配预览：B 裁决为 not_committed preview_replaced；零 R2 写入/列举。
     const countersBefore = await worker.r2Counters();
-    const unknown = await restorePost(account, body);
-    expect(unknown.status).toBe(503);
-    expect(await unknown.json()).toMatchObject({
-      error: "restore_unavailable", outcome: "unknown",
+    const notCommitted = await restorePost(account, body);
+    expect(notCommitted.status).toBe(409);
+    expect(await notCommitted.json()).toMatchObject({
+      error: "preview_replaced", outcome: "not_committed",
       requestId: body.requestId, requestFingerprint: await computeRestoreRequestFingerprint(body),
     });
     expect((await worker.r2Counters()).put).toBe(countersBefore.put);
     expect((await worker.r2Counters()).list).toBe(countersBefore.list);
     expect(await worker.execSql(`SELECT count(*) AS count FROM refueling_restore_receipts WHERE account_id = '${account.accountId}'`)).toEqual([{ count: 0 }]);
-    // A 无预览暂存实现（B 交付）；无回执路径也不产生任何预览/切换状态。
-    expect(await worker.execSql(`SELECT count(*) AS count FROM sqlite_master WHERE name LIKE 'refueling_restore_pre%'`)).toEqual([{ count: 0 }]);
+    // 无预览暂存（未创建任何 preview）；无回执路径不产生任何预览/切换状态。
+    expect(await worker.execSql(`SELECT count(*) AS count FROM refueling_restore_previews WHERE account_id = '${account.accountId}'`)).toEqual([{ count: 0 }]);
 
     // 注入合成 B 回执后：同指纹 POST 回放 committed；同 ID 不同正文 409 冲突。
     await seedReceipt(account.accountId, body, {
@@ -570,3 +571,490 @@ describe("恢复代次兼容基础（A）workerd 集成验收", () => {
     expect(readdirSync(persistDir).length).toBeGreaterThan(0);
   });
 });
+
+
+interface VersionSummary {
+  backupStreamId: string;
+  revision: number;
+  bundleSha256: string;
+  recordCount: number;
+  selectable: boolean;
+  restoreBaseline: boolean;
+}
+
+async function backupList(account: { token: string; accountId: string }): Promise<{ initialized: boolean; currentRevision: number | null; versions: VersionSummary[] }> {
+  const response = await worker.miniflare.dispatchFetch("https://hako.test/api/backups/refueling", {
+    method: "GET",
+    headers: { Cookie: `__Host-hako_session=${account.token}`, "X-Hako-Account": account.accountId },
+  });
+  expect(response.status).toBe(200);
+  return await response.json() as { initialized: boolean; currentRevision: number | null; versions: VersionSummary[] };
+}
+
+async function previewCreate(account: { token: string; accountId: string }, version: { backupStreamId: string; revision: number; bundleSha256: string }): Promise<{ status: number; body: Record<string, unknown> }> {
+  const response = await worker.miniflare.dispatchFetch("https://hako.test/api/restores/refueling/previews", {
+    method: "POST",
+    headers: {
+      Origin: "https://hako.test",
+      Cookie: `__Host-hako_session=${account.token}`,
+      "X-Hako-Account": account.accountId,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(version),
+  });
+  return { status: response.status, body: await response.json() as Record<string, unknown> };
+}
+
+async function previewSnapshotGet(account: { token: string; accountId: string }, previewId: string): Promise<Response> {
+  return await worker.miniflare.dispatchFetch(`https://hako.test/api/restores/refueling/previews/${previewId}/snapshot`, {
+    method: "GET",
+    headers: { Cookie: `__Host-hako_session=${account.token}`, "X-Hako-Account": account.accountId },
+  });
+}
+
+/** 建立两份完成备份的账号（两代内容），返回可用信息。 */
+async function accountWithTwoBackups(): Promise<{
+  account: { token: string; accountId: string };
+  generation: string;
+  revisions: number[];
+  restoreRequestBody: (preview: { previewId: string; target: { backupStreamId: string; revision: number; bundleSha256: string }; expected: { generation: string; revision: number; snapshotSha256: string } }, requestId: string) => RestoreRequestBody;
+}> {
+  const account = await worker.createSession();
+  const bootstrap = await bootstrapOf(account);
+  const first = doc();
+  writeRecord(first, "one", syntheticRecord, true);
+  writeRecord(first, "two", { ...syntheticRecord, occurredAtLocal: "2026-10-02T13:00:00" }, true);
+  await syncOk(account, first.export({ mode: "snapshot" }), bootstrap.documentGeneration);
+  await waitForBackups(1);
+  const second = doc(first.export({ mode: "snapshot" }));
+  writeRecord(second, "one", { stationName: "第二版" }, false);
+  await syncOk(account, second.export({ mode: "snapshot" }), bootstrap.documentGeneration);
+  await waitForBackups(2);
+  const list = await backupList(account);
+  return {
+    account,
+    generation: bootstrap.documentGeneration,
+    revisions: list.versions.map((version) => version.revision),
+    restoreRequestBody: (preview, requestId) => ({
+      requestId,
+      previewId: preview.previewId,
+      backupStreamId: preview.target.backupStreamId,
+      revision: preview.target.revision,
+      bundleSha256: preview.target.bundleSha256,
+      expectedGeneration: preview.expected.generation,
+      expectedRevision: preview.expected.revision,
+      expectedSnapshotSha256: preview.expected.snapshotSha256,
+    }),
+  };
+}
+
+function previewOf(body: Record<string, unknown>): {
+  previewId: string;
+  target: { backupStreamId: string; revision: number; bundleSha256: string; snapshotSha256: string };
+  expected: { generation: string; revision: number; snapshotSha256: string };
+} {
+  const target = body.target as Record<string, unknown>;
+  const expected = body.expected as Record<string, unknown>;
+  return {
+    previewId: body.previewId as string,
+    target: {
+      backupStreamId: target.backupStreamId as string,
+      revision: target.revision as number,
+      bundleSha256: target.bundleSha256 as string,
+      snapshotSha256: target.snapshotSha256 as string,
+    },
+    expected: {
+      generation: expected.generation as string,
+      revision: expected.revision as number,
+      snapshotSha256: expected.snapshotSha256 as string,
+    },
+  };
+}
+
+describe("B 恢复操作（workerd 集成验收，§12.2）", () => {
+  it("完整恢复流程：列表→固定预览→快照读回→最终确认→代次切换→恢复基线完成→幂等回放", { timeout: 60_000 }, async () => {
+    const setup = await accountWithTwoBackups();
+    const list = await backupList(setup.account);
+    expect(list.versions.map((version) => version.revision)).toEqual(setup.revisions);
+    // 选中旧版本（rev1）创建固定预览；读取固定目标快照并核对摘要。
+    const oldest = list.versions.at(-1)!;
+    const created = await previewCreate(setup.account, { backupStreamId: oldest.backupStreamId, revision: oldest.revision, bundleSha256: oldest.bundleSha256 });
+    expect(created.status).toBe(200);
+    const preview = previewOf(created.body);
+    expect(preview.expected.generation).toBe(setup.generation);
+    const snapshot = await previewSnapshotGet(setup.account, preview.previewId);
+    expect(snapshot.status).toBe(200);
+    const snapshotBytes = new Uint8Array(await snapshot.arrayBuffer());
+    expect(await sha256Hex(snapshotBytes)).toBe(preview.target.snapshotSha256);
+    // 最终确认：200 committed，代次/revision 与回执字段完整。
+    const body = setup.restoreRequestBody(preview, crypto.randomUUID());
+    const submitted = await restorePost(setup.account, body);
+    expect(submitted.status).toBe(200);
+    const receipt = await submitted.json() as Record<string, unknown>;
+    expect(receipt).toMatchObject({
+      outcome: "committed", requestId: body.requestId,
+      requestFingerprint: await computeRestoreRequestFingerprint(body),
+      previousGeneration: setup.generation, baselinePending: true,
+    });
+    const newGeneration = receipt.newGeneration as string;
+    expect(newGeneration).not.toBe(setup.generation);
+    // GET 只读返回新代次与目标内容；revision 为切换前+1。
+    const after = await snapshotGet(setup.account);
+    expect(after.headers.get("X-Hako-Document-Generation")).toBe(newGeneration);
+    expect(after.headers.get("X-Hako-Revision")).toBe(String(preview.expected.revision + 1));
+    const afterBytes = new Uint8Array(await after.arrayBuffer());
+    const restored = doc(afterBytes);
+    expect(readRecords(restored).find((record) => record.id === "one")!.stationName).toBe("合成加油站");
+    // 恢复基线在切换后窗口完成；后续备份沿用 restore 来源。
+    await waitForBackups(3);
+    const markers = (await markerKeys(setup.account.accountId)).sort();
+    const baseline = await bundleOf(markers[2]);
+    expect(baseline.manifest.reason).toBe("restore-baseline");
+    expect(baseline.manifest.sourceGeneration).toEqual({ kind: "document-generation-v1", id: newGeneration });
+    if (baseline.manifest.formatVersion !== 2) throw new Error("baseline must be v2");
+    expect(baseline.manifest.generationOrigin).toMatchObject({ kind: "restore", requestId: body.requestId, previousGeneration: setup.generation });
+    // 幂等：同 ID 同正文重复提交回放同一回执；同 ID 不同正文 409。
+    const replayed = await restorePost(setup.account, body);
+    expect(replayed.status).toBe(200);
+    expect(await replayed.json()).toMatchObject({ outcome: "committed", committedAt: receipt.committedAt });
+    const conflict = await restorePost(setup.account, { ...body, previewId: crypto.randomUUID() });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "request_id_conflict" });
+    // 旧代次上传被拒；新代次正常同步。
+    const old = doc();
+    writeRecord(old, "one", syntheticRecord, true);
+    expect((await syncRaw(setup.account, old.export({ mode: "snapshot" }), setup.generation)).status).toBe(409);
+    const continued = doc(afterBytes);
+    writeRecord(continued, "one", { stationName: "新代次编辑" }, false);
+    await syncOk(setup.account, continued.export({ mode: "snapshot" }), newGeneration);
+    await waitForBackups(4);
+  });
+
+  it("近 4 MiB 快照的恢复主路径：预览→保护→切换→读回核对哈希与记录数", { timeout: 240_000 }, async () => {
+    const account = await worker.createSession();
+    const bootstrap = await bootstrapOf(account);
+    // 接近 4 MiB 的完整历史（字段长度遵守既有表单校验上限；与备份核心门禁同一构造方式）。
+    const big = doc();
+    let bigSnapshot = new Uint8Array(0);
+    let recordIndex = 0;
+    while (bigSnapshot.byteLength < 3_300_000 && recordIndex < 60_000) {
+      for (let batch = 0; batch < 100 && recordIndex < 60_000; batch += 1, recordIndex += 1) {
+        const record = big.getMap("records").setContainer(`big-${recordIndex}`, new LoroMap());
+        const fields = { ...syntheticRecord, stationName: "长".repeat(50), fuelGrade: "95".repeat(40), orderNumber: `order-${recordIndex}-`.padEnd(128, "x") };
+        for (const [key, value] of Object.entries(fields)) record.set(key, value);
+      }
+      big.commit();
+      bigSnapshot = new Uint8Array(big.export({ mode: "snapshot" }));
+    }
+    expect(bigSnapshot.byteLength).toBeGreaterThan(3_000_000);
+    expect(bigSnapshot.byteLength).toBeLessThan(4 * 1024 * 1024);
+    await syncOk(account, bigSnapshot, bootstrap.documentGeneration);
+    await waitForBackups(1, 60_000);
+    // 第二版：编辑一条记录，提供较旧的恢复目标。
+    const edited = doc(bigSnapshot);
+    writeRecord(edited, "big-0", { stationName: "编辑后的站点" }, false);
+    await syncOk(account, edited.export({ mode: "snapshot" }), bootstrap.documentGeneration);
+    await waitForBackups(2, 60_000);
+    const list = await backupList(account);
+    expect(list.versions).toHaveLength(2);
+    const oldest = list.versions.at(-1)!;
+    const created = await previewCreate(account, { backupStreamId: oldest.backupStreamId, revision: oldest.revision, bundleSha256: oldest.bundleSha256 });
+    expect(created.status).toBe(200);
+    const preview = previewOf(created.body);
+    // 预览响应直接携带服务端核对出的记录数（previewOf 只映射子集，这里读原始响应体）。
+    expect((created.body.target as Record<string, unknown>).recordCount).toBe(recordIndex);
+    const body = {
+      requestId: crypto.randomUUID(), previewId: preview.previewId,
+      backupStreamId: preview.target.backupStreamId, revision: preview.target.revision,
+      bundleSha256: preview.target.bundleSha256, expectedGeneration: preview.expected.generation,
+      expectedRevision: preview.expected.revision, expectedSnapshotSha256: preview.expected.snapshotSha256,
+    };
+    const submitted = await restorePost(account, body);
+    expect(submitted.status).toBe(200);
+    const receipt = await submitted.json() as { outcome: string; newGeneration: string };
+    expect(receipt.outcome).toBe("committed");
+    const after = await snapshotGet(account);
+    expect(after.headers.get("X-Hako-Document-Generation")).toBe(receipt.newGeneration);
+    const afterBytes = new Uint8Array(await after.arrayBuffer());
+    expect(afterBytes.byteLength).toBeGreaterThan(3_000_000);
+    expect(await sha256Hex(afterBytes)).toBe(preview.target.snapshotSha256);
+    const restored = doc(afterBytes);
+    expect(readRecords(restored)).toHaveLength(recordIndex);
+    await waitForBackups(3, 60_000);
+  });
+
+  it("提交后丢响应：客户端丢弃响应后查询回执为 committed；未接收前本机代次未变", { timeout: 60_000 }, async () => {
+    const setup = await accountWithTwoBackups();
+    const list = await backupList(setup.account);
+    const oldest = list.versions.at(-1)!;
+    const created = await previewCreate(setup.account, { backupStreamId: oldest.backupStreamId, revision: oldest.revision, bundleSha256: oldest.bundleSha256 });
+    expect(created.status).toBe(200);
+    const preview = previewOf(created.body);
+    const body = setup.restoreRequestBody(preview, crypto.randomUUID());
+    // 客户端丢弃响应（模拟网络中断）：服务端已提交。
+    const discarded = await restorePost(setup.account, body);
+    expect(discarded.status).toBe(200);
+    void await discarded.arrayBuffer();
+    // 查询回执：committed；再提交同 ID：回放固定结果。
+    const queried = await restoreGet(setup.account, body.requestId);
+    expect(queried.status).toBe(200);
+    expect(await queried.json()).toMatchObject({ outcome: "committed", requestId: body.requestId });
+    const resubmitted = await restorePost(setup.account, body);
+    expect(await resubmitted.json()).toMatchObject({ outcome: "committed", newRevision: preview.expected.revision + 1 });
+    // 服务端已切换；未执行本机接收前，本机视角（GET）已能看到新代次——接收由客户端控制。
+    const current = await snapshotGet(setup.account);
+    expect(current.headers.get("X-Hako-Document-Generation")).not.toBe(setup.generation);
+  });
+
+  it("提交前丢响应（保护读取挂起）：结果 unknown→按本人选择以原 ID 重试成功", { timeout: 60_000 }, async () => {
+    const setup = await accountWithTwoBackups();
+    const list = await backupList(setup.account);
+    const oldest = list.versions.at(-1)!;
+    const created = await previewCreate(setup.account, { backupStreamId: oldest.backupStreamId, revision: oldest.revision, bundleSha256: oldest.bundleSha256 });
+    expect(created.status).toBe(200);
+    const preview = previewOf(created.body);
+    const body = setup.restoreRequestBody(preview, crypto.randomUUID());
+    // 保护包读取挂起：请求在途、响应永不到达（客户端按超时丢弃）。
+    await worker.setR2Fault({ op: "get", mode: "hang", once: true, skip: 0 });
+    const lost = Promise.race([
+      restorePost(setup.account, body),
+      new Promise<Response>((resolve) => setTimeout(() => resolve(new Response(null, { status: 599 })), 800)),
+    ]);
+    const timeout = await lost;
+    expect(timeout.status).toBe(599);
+    // 同 ID 查询：无回执 → 404（unknown）；不自动换 ID。
+    expect((await restoreGet(setup.account, body.requestId)).status).toBe(404);
+    // 本人选择以原 ID 与固定正文重试：成功（预览仍有效）。
+    const retried = await restorePost(setup.account, body);
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ outcome: "committed", requestId: body.requestId });
+    // 只发生一次代次切换。
+    const current = await snapshotGet(setup.account);
+    expect(current.headers.get("X-Hako-Revision")).toBe(String(preview.expected.revision + 1));
+  });
+
+  it("冷启动提交：预览创建后重启进程，恢复提交仍完成切换（Loro 运行时在提交入口就绪）", { timeout: 60_000 }, async () => {
+    const setup = await accountWithTwoBackups();
+    const list = await backupList(setup.account);
+    const oldest = list.versions.at(-1)!;
+    const created = await previewCreate(setup.account, { backupStreamId: oldest.backupStreamId, revision: oldest.revision, bundleSha256: oldest.bundleSha256 });
+    expect(created.status).toBe(200);
+    const preview = previewOf(created.body);
+    const body = setup.restoreRequestBody(preview, crypto.randomUUID());
+    // 预览在旧进程创建；重启后提交是本进程首次恢复操作（冷启动路径）。
+    await restartWorker();
+    const submitted = await restorePost(setup.account, body);
+    expect(submitted.status).toBe(200);
+    const receipt = await submitted.json() as { outcome: string; newGeneration: string };
+    expect(receipt).toMatchObject({ outcome: "committed", requestId: body.requestId, previousGeneration: setup.generation });
+    const current = await snapshotGet(setup.account);
+    expect(current.headers.get("X-Hako-Document-Generation")).toBe(receipt.newGeneration);
+    expect(current.headers.get("X-Hako-Revision")).toBe(String(preview.expected.revision + 1));
+  });
+
+  it("storage.sync 失败：响应不得宣称 committed/not_committed；后续查询确认 committed 且仅一次切换", { timeout: 60_000 }, async () => {
+    const setup = await accountWithTwoBackups();
+    const list = await backupList(setup.account);
+    const oldest = list.versions.at(-1)!;
+    const created = await previewCreate(setup.account, { backupStreamId: oldest.backupStreamId, revision: oldest.revision, bundleSha256: oldest.bundleSha256 });
+    expect(created.status).toBe(200);
+    const preview = previewOf(created.body);
+    const body = setup.restoreRequestBody(preview, crypto.randomUUID());
+    await worker.setSyncFault(true);
+    const failed = await restorePost(setup.account, body);
+    // 持久确认失败：响应为 unknown（不得宣称 committed）。
+    expect([503, 409, 422].includes(failed.status)).toBe(true);
+    const failedBody = await failed.json() as { outcome?: string; error?: string };
+    if (failedBody.outcome !== undefined) expect(failedBody.outcome).toBe("unknown");
+    await worker.setSyncFault(false);
+    // SQLite 中的事务已提交：查询回执确认 committed；只发生一次切换。
+    const queried = await restoreGet(setup.account, body.requestId);
+    expect(queried.status).toBe(200);
+    expect(await queried.json()).toMatchObject({ outcome: "committed", requestId: body.requestId });
+    const current = await snapshotGet(setup.account);
+    expect(current.headers.get("X-Hako-Revision")).toBe(String(preview.expected.revision + 1));
+    // 幂等：同 ID 再次提交回放 committed。
+    const replay = await restorePost(setup.account, body);
+    expect(await replay.json()).toMatchObject({ outcome: "committed" });
+  });
+
+  it("切换后 SIGKILL 同 persistDir 重启：回执/新代次/预览消费持久，恢复基线照常完成", { timeout: 90_000 }, async () => {
+    const setup = await accountWithTwoBackups();
+    const list = await backupList(setup.account);
+    const oldest = list.versions.at(-1)!;
+    const created = await previewCreate(setup.account, { backupStreamId: oldest.backupStreamId, revision: oldest.revision, bundleSha256: oldest.bundleSha256 });
+    expect(created.status).toBe(200);
+    const preview = previewOf(created.body);
+    const body = setup.restoreRequestBody(preview, crypto.randomUUID());
+    const submitted = await restorePost(setup.account, body);
+    expect(submitted.status).toBe(200);
+    const receipt = await submitted.json() as { newGeneration: string };
+    // 提交后立刻强杀：同一持久目录重启。
+    await restartWorker();
+    // 调试探针（临时）：重启后立刻读取 alarm 与任务状态。
+    const dbg = await worker.debugState();
+    console.log("SIGKILL_DEBUG after restart:", JSON.stringify({
+      alarm: dbg.alarm,
+      now: Date.now(),
+      task: (dbg.rows.task ?? []).map((row) => ({ revision: (row as { revision: number }).revision, attempt: (row as { attempt_count: number }).attempt_count, next: (row as { next_attempt_at: number | null }).next_attempt_at })),
+      cursor: (dbg.rows.cursor ?? []).map((row) => ({ current: (row as { current_revision: number }).current_revision, floor: (row as { retry_floor_at: number | null }).retry_floor_at, blocked: (row as { blocked_error: string | null }).blocked_error })),
+    }));
+    setTimeout(() => undefined, 0);
+    const queried = await restoreGet(setup.account, body.requestId);
+    expect(queried.status).toBe(200);
+    expect(await queried.json()).toMatchObject({ outcome: "committed", requestId: body.requestId, newGeneration: receipt.newGeneration });
+    // 重启后：预览已消费（不存在）、代次保持新值、恢复基线任务照常完成。
+    expect((await previewSnapshotGet(setup.account, preview.previewId)).status).toBe(404);
+    const current = await snapshotGet(setup.account);
+    expect(current.headers.get("X-Hako-Document-Generation")).toBe(receipt.newGeneration);
+    await waitForBackups(3);
+    const markers = (await markerKeys(setup.account.accountId)).sort();
+    const baseline = await bundleOf(markers[2]);
+    expect(baseline.manifest.reason).toBe("restore-baseline");
+    expect(baseline.manifest.sourceGeneration).toEqual({ kind: "document-generation-v1", id: receipt.newGeneration });
+    // 同 ID 重复提交（客户端重开重发）：回放同一回执，不产生第二次切换。
+    const replay = await restorePost(setup.account, body);
+    expect(await replay.json()).toMatchObject({ outcome: "committed", newGeneration: receipt.newGeneration });
+  });
+
+  it("真正累计 31 份跨代次混合序列：裁剪至 30、无第 32 份、中断后继续收尾", { timeout: 300_000 }, async () => {
+    const account = await worker.createSession();
+    const bootstrap = await bootstrapOf(account);
+    let generation = bootstrap.documentGeneration;
+    // 累计 31 份完成：每份一次编辑→同步→等待窗口；在第 11 与 21 份之间各做一次真实恢复。
+    let completed = 0;
+    const targetCount = 31;
+    let restoreCount = 0;
+    let lastSnapshot: Uint8Array | null = null;
+    while (completed < targetCount) {
+      const working = doc(lastSnapshot ?? undefined);
+      if (readRecords(working).length === 0) {
+        writeRecord(working, `record-${completed}`, syntheticRecord, true);
+      } else {
+        writeRecord(working, "record-0", { stationName: `版本-${completed}` }, false);
+      }
+      const merged = await syncOk(account, working.export({ mode: "snapshot" }), generation);
+      lastSnapshot = merged;
+      completed += 1;
+      // 第 31 份完成会立即触发裁剪（计数回到 30）：轮询不能要求瞬时峰值 31。
+      await waitForBackups(Math.min(completed, 30), 30_000);
+      if ((completed === 11 || completed === 21) && restoreCount < 2) {
+        // 真实恢复到上一份完成版本：产生新代次与恢复基线。
+        const list = await backupList(account);
+        const previous = list.versions.find((version) => version.revision === completed - 1)!;
+        const created = await previewCreate(account, { backupStreamId: previous.backupStreamId, revision: previous.revision, bundleSha256: previous.bundleSha256 });
+        expect(created.status).toBe(200);
+        const preview = previewOf(created.body);
+        const submitted = await restorePost(account, setupRestoreBody(preview, crypto.randomUUID()));
+        expect(submitted.status).toBe(200);
+        const receipt = await submitted.json() as { newGeneration: string; newRevision: number };
+        generation = receipt.newGeneration;
+        lastSnapshot = new Uint8Array(await (await snapshotGet(account)).arrayBuffer());
+        completed += 1;
+        restoreCount += 1;
+        await waitForBackups(completed, 30_000);
+        continue;
+      }
+    }
+    expect(completed).toBe(targetCount); // 29 次编辑 + 2 次恢复基线 = 31 份完成
+    // 31 份完成触发裁剪：最终保留集合恰为最近 30 份（跨代次合计，不按代次另留）。
+    await waitFor(async () => (await markerKeys(account.accountId)).length === 30, 60_000);
+    const retained = (await markerKeys(account.accountId)).sort();
+    expect(retained).toHaveLength(30);
+    // 混合代次：保留集合同时包含 G0 与两个恢复代次的版本。
+    const completions = await worker.execSql(`SELECT DISTINCT source_generation FROM backup_completions WHERE account_id = '${account.accountId}'`);
+    expect(completions.length).toBeGreaterThanOrEqual(3);
+    // 无第 32 份：等待一段无编辑时间后完成数仍为 30。
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect((await markerKeys(account.accountId)).length).toBe(30);
+  });
+
+  it("恢复操作的实际 SQL 计量（列表/预览/保护门禁失败出口/确认切换/切换后基线分别采样，未混入并发同步）", { timeout: 60_000 }, async () => {
+    const setup = await accountWithTwoBackups();
+    // 列表请求的 SQL 差值。
+    const beforeList = (await worker.sqlMeter()).totals;
+    await backupList(setup.account);
+    await settleMeter();
+    const listMeter = (await worker.sqlMeter()).totals;
+    const listDelta = delta(beforeList, listMeter);
+    // 预览创建（含 R2 验证，事务外无 SQL）。
+    const list = await backupList(setup.account);
+    const oldest = list.versions.at(-1)!;
+    const beforePreview = (await worker.sqlMeter()).totals;
+    const created = await previewCreate(setup.account, { backupStreamId: oldest.backupStreamId, revision: oldest.revision, bundleSha256: oldest.bundleSha256 });
+    await settleMeter();
+    const previewMeter = (await worker.sqlMeter()).totals;
+    expect(created.status).toBe(200);
+    const previewDelta = delta(beforePreview, previewMeter);
+    const preview = previewOf(created.body);
+    const body = setup.restoreRequestBody(preview, crypto.randomUUID());
+    // 保护门禁失败出口：保护包读取故障（R2 GET 抛错）短裁决为 unknown，零切换写入。
+    await worker.setR2Fault({ op: "get", mode: "throw", once: true, skip: 0 });
+    const beforeProtection = (await worker.sqlMeter()).totals;
+    const blocked = await restorePost(setup.account, body);
+    await settleMeter();
+    const protectionMeter = (await worker.sqlMeter()).totals;
+    const protectionDelta = delta(beforeProtection, protectionMeter);
+    await worker.setR2Fault(null);
+    expect(blocked.status).toBe(503);
+    expect(await blocked.json()).toMatchObject({ outcome: "unknown" });
+    expect((await restoreGet(setup.account, body.requestId)).status).toBe(404);
+    // 确认切换（含入口验证、保护读回与唯一切换事务）。
+    const beforeSubmit = (await worker.sqlMeter()).totals;
+    const submitted = await restorePost(setup.account, body);
+    await settleMeter();
+    const submitMeter = (await worker.sqlMeter()).totals;
+    expect(submitted.status).toBe(200);
+    const submitDelta = delta(beforeSubmit, submitMeter);
+    // 切换后基线：切换冻结的 restore-baseline 由 alarm 生命周期完成（单列样本）。
+    const beforeBaseline = (await worker.sqlMeter()).totals;
+    await waitForBackups(3);
+    await settleMeter();
+    const baselineMeter = (await worker.sqlMeter()).totals;
+    const baselineDelta = delta(beforeBaseline, baselineMeter);
+    const meter = (await worker.sqlMeter());
+    expect(meter.incomplete).toBe(false);
+    // 记录实测值（供本地验证进展引用）：每一项都必须为正且有界。
+    console.log(`RESTORE_METERING list=${JSON.stringify(listDelta)} preview=${JSON.stringify(previewDelta)} protection=${JSON.stringify(protectionDelta)} submit=${JSON.stringify(submitDelta)} baseline=${JSON.stringify(baselineDelta)}`);
+    for (const [name, value] of [["list", listDelta], ["preview", previewDelta], ["protection", protectionDelta], ["submit", submitDelta], ["baseline", baselineDelta]] as const) {
+      expect(value.rowsRead, name).toBeGreaterThan(0);
+      expect(value.statements, name).toBeGreaterThan(0);
+    }
+    // 列表与保护失败出口都是零写入（保护故障只走只读裁决）；预览/切换/基线分别有写入。
+    expect(listDelta.rowsWritten).toBe(0);
+    expect(protectionDelta.rowsWritten).toBe(0);
+    expect(previewDelta.rowsWritten).toBeGreaterThan(0);
+    expect(submitDelta.rowsWritten).toBeGreaterThan(0);
+    expect(baselineDelta.rowsWritten).toBeGreaterThan(0);
+  });
+});
+
+function setupRestoreBody(preview: {
+  previewId: string;
+  target: { backupStreamId: string; revision: number; bundleSha256: string };
+  expected: { generation: string; revision: number; snapshotSha256: string };
+}, requestId: string): RestoreRequestBody {
+  return {
+    requestId,
+    previewId: preview.previewId,
+    backupStreamId: preview.target.backupStreamId,
+    revision: preview.target.revision,
+    bundleSha256: preview.target.bundleSha256,
+    expectedGeneration: preview.expected.generation,
+    expectedRevision: preview.expected.revision,
+    expectedSnapshotSha256: preview.expected.snapshotSha256,
+  };
+}
+
+async function settleMeter(): Promise<void> {
+  // 冲刷计量微任务后再取数（与测试入口的 alarm 包装同一口径）。
+  await new Promise<void>((resolve) => setTimeout(resolve, 25));
+}
+
+function delta(before: { rowsRead: number; rowsWritten: number; statements: number }, after: { rowsRead: number; rowsWritten: number; statements: number }): { rowsRead: number; rowsWritten: number; statements: number } {
+  return {
+    rowsRead: after.rowsRead - before.rowsRead,
+    rowsWritten: after.rowsWritten - before.rowsWritten,
+    statements: after.statements - before.statements,
+  };
+}

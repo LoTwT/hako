@@ -52,6 +52,11 @@ export class FakeBackupBucket implements BackupObjectBucket {
     return this.objects.get(key)?.bytes;
   }
 
+  /** 直接注入一个在库对象（测试构造未解释键/恢复被删对象时使用）。 */
+  seedObject(key: string, bytes: Uint8Array): void {
+    this.objects.set(key, { bytes: new Uint8Array(bytes) });
+  }
+
   /** 直接篡改在库对象内容，模拟外部损坏。 */
   corruptObject(key: string, mutate: (bytes: Uint8Array) => Uint8Array): void {
     const stored = this.objects.get(key);
@@ -85,7 +90,7 @@ export class FakeBackupBucket implements BackupObjectBucket {
     return { size: bytes.byteLength, bytes: async () => bytes };
   }
 
-  async list(options: { prefix: string; cursor?: string }): Promise<{
+  async list(options: { prefix: string; cursor?: string; limit?: number }): Promise<{
     objects: readonly { key: string }[];
     truncated: boolean;
     cursor?: string;
@@ -94,7 +99,8 @@ export class FakeBackupBucket implements BackupObjectBucket {
     this.consumeFault(options.prefix, "list");
     const keys = [...this.objects.keys()].filter((key) => key.startsWith(options.prefix)).sort();
     const startIndex = options.cursor === undefined ? 0 : Number.parseInt(options.cursor, 10);
-    const endIndex = Math.min(startIndex + this.listPageSize, keys.length);
+    const pageSize = Math.min(options.limit ?? this.listPageSize, this.listPageSize);
+    const endIndex = Math.min(startIndex + pageSize, keys.length);
     const page = keys.slice(startIndex, endIndex).map((key) => ({ key }));
     if (endIndex >= keys.length) return { objects: page, truncated: false };
     this.counters.listPages += 1;
