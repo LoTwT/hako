@@ -515,6 +515,21 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界：未合并、未部署（production 仍为已部署的 v1 协议/格式且不含 A/B）；真实浏览器/真机两个独立上下文的恢复交互（多窗口 pending/终态竞争、配额失败、旧表单保护、真实 IndexedDB/多标签页行为）未执行——本机无项目浏览器自动化工具（依赖与 PATH 均无 Playwright/Puppeteer），组件测试为真实编译 SFC + 忠实最小宿主 + 受控 mock 的接线验证，不能替代真实浏览器；真实远端 R2/生产备份对象与真实管理员 marker/bundle 未用于 `backup:verify`（仅合成 v1/v2 材料）；恢复面板未在真实浏览器中人工点击验收，设备接收（打开恢复后数据）只在单元/组件层验证。
 
+<a id="恢复预览浏览器缺陷修复2026-10-05无绕过复验"></a>
+
+## 恢复预览浏览器缺陷修复（2026-10-05，内容审阅通过；未部署）
+
+此前的真实浏览器补验收（该轮 49 项检查、其中 4 次预览请求体三字段投影为已知缺陷绕过，范围保持原记录、不因本节改写）在已合并 A/B 的 `34c5fa8b` 上发现两个产品缺陷；本轮在同一隔离 worktree 完成最小修复、永久回归与**无绕过**浏览器复验，内容审阅已通过。本节记录修复及验证范围，代码与记录一同交付；生产尚未部署 A/B 与本次修复。
+
+- **B-DEF-1（P1，恢复入口不可用）**：`BackupRestore.vue` 把列表的完整版本行（10 字段）直接交给 `createRestorePreview`，而 `refueling-restore.ts` 原样 `JSON.stringify` 入参，窄参数类型不删除运行时额外字段，真实 UI 的 `POST /api/restores/refueling/previews` 因此必然被服务端严格合同（恰好 `backupStreamId`/`revision`/`bundleSha256` 三字段）以 400 拒绝。修复：在客户端发送边界显式构造三字段正文；服务端严格拒绝未知字段的合同不变。
+- **B-DEF-2（P2，失败原因不可见）**：预览失败的 `failure` 文案被紧随其后的 `refreshList()` 清空（该函数开头 `failure.value = ""`），本人点击后看不到原因；「当前版本不再匹配」分支与保护轮询的同名分支是同一模式，一并修复。修复：`refreshList` 支持在同一操作归属内保留失败原因（`retainFailure`），`selectVersion` 取得归属并在每个异步边界后复核；归属被新操作或待确认换人推进时，迟到的成功、失败与后置提示都不再写入新界面。
+- 永久回归（客户端发送边界与路由接受两项不依赖 mock 客户端；组件回归为真实编译 SFC + 受控 mock 网络层）：`tests/refueling-restore.test.ts` 用真实列表客户端输出的完整版本行驱动真实 `createRestorePreview`，捕获实际 fetch 请求体并断言精确三字段；`tests/worker-restore.test.ts` 把该捕获正文送进真实路由 + `TestAccount`/Node SQLite + `FakeBucket` 的 Node 层读回链路，断言被服务端接受（200）——真实 workerd 与本地模拟 R2 属于另一个浏览器夹具层，不是本项；`tests/components/backup-restore.test.ts` 新增三项——预览失败后列表刷新仍保留可读原因（预览 1 次、列表 2 次）、预览失效分支同样保留、归属被新 pending 推进后迟到的失败原因不写回。修复前反例实际失败（客户端 1、路由 1、组件 2），修复后全部转绿。
+- 无绕过浏览器复验（项目外重建夹具；修复候选生产构建 + 真实 workerd/SQLite 与本地模拟 R2 + 真实 Chrome `154.0.8037.95`、Playwright `1.62.1`；夹具实际只使用一个持久 profile：真实浏览器进程重建（profile a 关闭后以同一 userDataDir 重开）与同 profile 双标签共享 IndexedDB/control/Web Locks；**预览请求体投影/绕过 0 次**）：主流程 8 项（浏览器实际 POST 恰好三字段、服务端 200、差异比较、确认、恰一次切换与同 requestId 回执、接收后记录为所选版本）；未决请求跨浏览器进程 4 项（中止发送使请求未到达服务端→关闭前显式确认 pending 持久、本机无该 ID 终态、无新增恢复 POST 且服务端无回执→关闭整个浏览器进程→同 profile 重开，实际观测到本 requestId 的只读 GET/404 且从关闭前到重开后恢复 POST 增量为 0→本人以原 requestId 重试恰一次切换）；迟到归属 6 项（转发前延迟 8 秒的预览请求与同机第二标签登记 pending 交错，前台事件后旧预览结果不写入新 pending 界面、窗口内无新增恢复 POST，收尾重试得 `preview_replaced` 终态、零切换、不换号）。固定注入仅三项并逐项标注：请求中止、转发前延迟、合成前台 `focus` 事件；认证使用测试入口的合成会话，不接触真实 OIDC。旧双设备（两个独立 profile）验收只按历史归因引用，本轮未重做。
+- **第二轮父审补修（B-DEF-2-remaining，P2）**：`selectVersion` 的 `finally` 仍无条件写 `loading=false`；当旧预览在途、另一窗口的 pending 已被解除且当前面板的新列表刷新仍在途时，旧预览的迟到收尾会结束新归属的加载状态，露出旧缓存版本按钮。修复：`finally` 与其他异步出口一致复核 `refreshEpoch`（成功、失败、早退与异常路径都经同一收尾）；同函数各出口逐一核对，不做无关重构。永久回归：`tests/components/backup-restore.test.ts` 新增「旧预览迟到收尾不得结束当前仍在途的列表刷新」，断言加载提示保持、旧缓存版本按钮不重新出现；修复前红、修复后绿。父侧隔离探针（只读临时副本，验证后移除、不纳入提交）在修复候选上复跑：`currentListInFlight=true, loadingVisible=true, staleButtonsEnabled=0`（父原观测为 `loadingVisible=false, staleButtonsEnabled=1`）。更正本节上一条的 S2 口径为上述基线/差值断言（不再使用累计 POST 数）。
+- 实施方相关检查（第二轮）：`tests/components/backup-restore.test.ts` 25 项、组件配置全量 36 项、客户端+路由 67 项、`pnpm run typecheck`、`pnpm run build` 全部通过；无绕过浏览器夹具按更正的 S2 断言重跑 18/18。第一轮的相邻 44 项，以及未变化路径（大文档、workerd 事务、B→精确 A→B、SIGKILL 重启等）继续按归因复用，未重跑整套 494 或已闭项故障集。
+- 父侧独立复核：第二轮候选 6/6 文件与 27/27 证据清单哈希一致，组件配置及父探针共 37 项通过；上一轮父侧实际运行的客户端/路由 67 项按未变文件复用。浏览器 18 项与类型检查、构建归因实施方；父侧核对脚本、结果及网络记录，未冒称重新执行。最终文档仅去重、更新交付状态并补齐验证归因，产品及测试与第二轮冻结候选一致。
+- 未验边界：真机/PWA 安装、真实配额与 bfcache、生产 30 秒窗口、真实 OIDC/R2 均未验；“P1 终态后迟到列表响应”及“非 busy P1→P2 替换”的浏览器级稳定时序仍未验，既有组件证据不能算作本轮 S3。旧证据目录已不存在，本节为重建夹具的新结果（项目外第二轮回执 `implementation-round2/FIX_RECEIPT.md`），不宣称恢复旧文件哈希。
+
 ## 代码入口
 
 | 位置 | 职责 |

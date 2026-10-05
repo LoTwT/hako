@@ -116,7 +116,7 @@ function pendingIdentityOf(pending: { requestId: string; requestFingerprint?: st
   return pending === null ? null : `${pending.requestId}:${pending.requestFingerprint ?? ""}`;
 }
 
-async function refreshList(epoch: number = refreshEpoch) {
+async function refreshList(epoch: number = refreshEpoch, options: { retainFailure?: string } = {}) {
   if (epoch !== refreshEpoch) return;
   loading.value = true;
   failure.value = "";
@@ -133,6 +133,9 @@ async function refreshList(epoch: number = refreshEpoch) {
     list.value = result.list;
     if (!result.list.initialized) notice.value = "此账号还没有独立备份；正常使用并联网后会自动生成。";
     else notice.value = "";
+    // 列表刷新属于发起它的那次操作：成功刷新后仍保留该操作的可读失败原因
+    // （如预览失败）；归属已推进时上面的复核已返回，旧错误不会写回新操作。
+    if (options.retainFailure !== undefined) failure.value = options.retainFailure;
   } finally {
     if (epoch === refreshEpoch) loading.value = false;
   }
@@ -140,6 +143,9 @@ async function refreshList(epoch: number = refreshEpoch) {
 
 /** 选择版本创建固定预览，并加载目标与当前快照做比较。 */
 async function selectVersion(version: { backupStreamId: string; revision: number; bundleSha256: string }) {
+  // 本操作取得界面归属：其后的每个异步边界后复核，旧操作/旧列表的迟到结果
+  // 不得写入更新的操作或新的待确认流程。
+  const epoch = invalidateRefreshOwnership();
   loading.value = true;
   failure.value = "";
   notice.value = "";
@@ -149,16 +155,19 @@ async function selectVersion(version: { backupStreamId: string; revision: number
   expanded.value = new Set();
   try {
     await initializeLoro();
+    if (epoch !== refreshEpoch) return;
     const created = await createRestorePreview({ accountId: props.accountId }, version);
+    if (epoch !== refreshEpoch) return;
     if (!created.ok) {
-      failure.value = describePreviewError(created.error);
-      await refreshList();
+      // 列表刷新成功后仍保留本次预览的可读失败原因（归属未变时；新操作推进即作废）。
+      await refreshList(epoch, { retainFailure: describePreviewError(created.error) });
       return;
     }
     preview.value = created.preview;
     protection.value = created.preview.protection;
     // 浏览器分别读取固定目标与当前服务端快照（独立只读实例比较）。
     const target = await fetchRestorePreviewSnapshot({ accountId: props.accountId }, created.preview.previewId);
+    if (epoch !== refreshEpoch) return;
     if (!target.ok) {
       failure.value = "暂时无法读取所选版本内容，请稍后重试或重新选择。";
       return;
@@ -168,15 +177,18 @@ async function selectVersion(version: { backupStreamId: string; revision: number
       return;
     }
     const current = await fetchRefuelingSnapshot({ accountId: props.accountId });
+    if (epoch !== refreshEpoch) return;
     if (!current.ok) {
       failure.value = "暂时无法读取当前数据，请稍后重试。";
       return;
     }
     if (current.snapshot.documentGeneration !== created.preview.expected.generation
       || current.snapshot.revision !== created.preview.expected.revision) {
-      // 当前版本不再匹配：预览失效，重新列表。
-      failure.value = "账号数据已变化，本次预览已失效；请重新选择。";
-      await refreshList();
+      // 当前版本不再匹配：预览失效，重新列表；失败原因同样保留到列表刷新之后。
+      preview.value = null;
+      comparison.value = null;
+      protection.value = null;
+      await refreshList(epoch, { retainFailure: "账号数据已变化，本次预览已失效；请重新选择。" });
       return;
     }
     if (current.snapshot.snapshot === null) {
@@ -184,6 +196,7 @@ async function selectVersion(version: { backupStreamId: string; revision: number
       return;
     }
     const compared = compareRestoreSnapshots(target.snapshot, current.snapshot.snapshot);
+    if (epoch !== refreshEpoch) return;
     if (compared === null) {
       failure.value = "所选版本或当前数据无法解析，未进入比较。";
       return;
@@ -196,7 +209,9 @@ async function selectVersion(version: { backupStreamId: string; revision: number
       notice.value = "所有记录字段一致，但修改历史不同；恢复会替换完整历史。";
     }
   } finally {
-    loading.value = false;
+    // 收尾同样复核归属：本操作已被推进（新 pending 或新的列表刷新在途）时，
+    // 迟到的 finally 不得结束当前归属的加载状态。
+    if (epoch === refreshEpoch) loading.value = false;
   }
 }
 
@@ -577,12 +592,12 @@ async function refreshProtection() {
   if (status.currentGeneration !== null
     && (status.currentGeneration !== previewValue.expected.generation
       || (status.currentRevision !== null && status.currentRevision !== previewValue.expected.revision))) {
-    failure.value = "账号数据已变化，本次预览已失效；请重新选择。";
     preview.value = null;
     comparison.value = null;
     protection.value = null;
     view.value = "listing";
-    await refreshList();
+    // 同一模式的连通修复：列表刷新成功后失败原因仍对本人可读。
+    await refreshList(refreshEpoch, { retainFailure: "账号数据已变化，本次预览已失效；请重新选择。" });
     return;
   }
   if (previewValue.expiresAtMs <= Date.now()) {

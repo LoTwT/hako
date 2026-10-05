@@ -268,6 +268,52 @@ describe("B 预览客户端", () => {
     )).toMatchObject({ ok: false, error: "no_restore_change" });
   });
 
+  it("发送边界只发精确三字段：完整版本行输入不会带出展示字段", async () => {
+    // 浏览器验收缺陷 B-DEF-1 回归：列表客户端的完整版本行（10 字段）直接传入
+    // 真实 createRestorePreview 时，实际发送的正文必须恰好是服务端合同要求的三字段。
+    const listPayload = {
+      initialized: true,
+      currentGeneration: generation,
+      currentRevision: 7,
+      versions: [{
+        backupStreamId: "00000000-0000-4000-8000-0000000000b3",
+        revision: 6,
+        bundleSha256: "a".repeat(64),
+        completedAt: "2026-10-05T12:00:00.000Z",
+        capturedAt: "2026-10-05T11:59:30.000Z",
+        recordCount: 12,
+        formatVersion: 2,
+        effectiveSourceGeneration: generation,
+        generationOrigin: { kind: "initial" },
+        reason: "baseline",
+        restoreBaseline: false,
+        snapshotSha256: "c".repeat(64),
+        selectable: true,
+      }],
+    };
+    const listed = await listRefuelingBackups({
+      accountId: accountA,
+      fetch: (async () => new Response(JSON.stringify(listPayload), { status: 200, headers: { "X-Hako-Account": accountA } })) as unknown as typeof fetch,
+    });
+    if (!listed.ok) throw new Error("list fixture must parse");
+    const versionRow = listed.list.versions[0]!;
+    expect(Object.keys(versionRow).length).toBeGreaterThan(3);
+
+    const fetch = vi.fn(async () => new Response(JSON.stringify(previewPayload), { status: 200, headers: { "X-Hako-Account": accountA } }));
+    const created = await createRestorePreview({ accountId: accountA, fetch: fetch as unknown as typeof fetch }, versionRow);
+    expect(created.ok).toBe(true);
+    const [input, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(input).toBe("/api/restores/refueling/previews");
+    expect(init.method).toBe("POST");
+    const wire = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(Object.keys(wire).sort()).toEqual(["backupStreamId", "bundleSha256", "revision"]);
+    expect(wire).toEqual({
+      backupStreamId: versionRow.backupStreamId,
+      revision: versionRow.revision,
+      bundleSha256: versionRow.bundleSha256,
+    });
+  });
+
   it("快照读取：摘要头部核对与二进制正文；错误按错误码返回", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const digest = await crypto.subtle.digest("SHA-256", bytes).then((value) => Array.from(new Uint8Array(value), (b) => b.toString(16).padStart(2, "0")).join(""));

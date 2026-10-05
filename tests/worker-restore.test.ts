@@ -9,6 +9,7 @@ import { LoroDoc } from "loro-crdt/web";
 import { writeRecord } from "../src/data/refueling-document";
 import { handleApiRequest } from "../src/worker/api";
 import { hashSecret } from "../src/worker/auth/secrets";
+import { createRestorePreview } from "../src/data/refueling-restore";
 import { commitMarkerKey, sha256Hex } from "../src/worker/backup/backup-format";
 import { analyzeBackupSnapshot } from "../src/worker/backup/backup-verify";
 import {
@@ -433,6 +434,44 @@ describe("B 预览：精确引用、完整读回验证与固定暂存", () => {
     const response = await handleApiRequest(previewRequest({ revision: 1, extra: true }), environment(), { now: () => now });
     expect(response.status).toBe(400);
     expect(previewRowCount()).toBe(0);
+  });
+
+  it("浏览器验收缺陷回归：真实预览客户端的三字段正文经路由被接受", async () => {
+    await bootstrapAccountWithBaseline();
+    // 预览要求目标与当前版本不同（相同返回 no_restore_change）：先追加一次编辑。
+    const second = await addVersion({ stationName: "第二站" });
+    const completion = completionRow(1)!;
+    const head = headRow()!;
+    // 完整版本行（列表客户端真实输出形状，10 字段）直接交给真实预览客户端；
+    // 捕获实际发送正文，并把它送进真实路由/DO/R2 读回链路。
+    const versionRow = {
+      backupStreamId: completion.stream_id,
+      revision: 1,
+      bundleSha256: completion.bundle_sha256,
+      completedAtMs: now,
+      capturedAtMs: null,
+      recordCount: 2,
+      formatVersion: 2,
+      effectiveSourceGeneration: head.current_generation,
+      restoreBaseline: false,
+      selectable: true,
+    };
+    let wireBody = "";
+    const created = await createRestorePreview({
+      accountId,
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        wireBody = String(init?.body ?? "");
+        return await handleApiRequest(previewRequest(JSON.parse(wireBody)), environment(), { now: () => now });
+      }) as unknown as typeof fetch,
+    }, versionRow);
+    expect(Object.keys(JSON.parse(wireBody)).sort()).toEqual(["backupStreamId", "bundleSha256", "revision"]);
+    expect(created.ok).toBe(true);
+    if (created.ok) {
+      expect(created.preview.target.revision).toBe(1);
+      expect(created.preview.expected.revision).toBe(second.revision);
+      expect(created.preview.target.bundleSha256).toBe(completion.bundle_sha256);
+    }
+    expect(previewRowCount()).toBe(1);
   });
 
   it("标记损坏与缺包：backup_invalid，不创建预览", async () => {

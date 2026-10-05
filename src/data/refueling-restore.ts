@@ -328,7 +328,15 @@ export async function createRestorePreview(
   options: RestoreClientOptions,
   reference: { backupStreamId: string; revision: number; bundleSha256: string },
 ): Promise<CreatePreviewResult> {
-  const response = await sendRestoreRequest(options, "/api/restores/refueling/previews", "POST", JSON.stringify(reference));
+  // 发送边界显式构造三字段正文（恢复设计 §7.4：服务端严格拒绝未知字段）。
+  // 调用方可能把列表展示用的完整版本行直接传进来，窄参数类型不会删除运行时
+  // 额外字段，因此这里按精确引用重新组装，而不是原样序列化入参。
+  const requestBody = {
+    backupStreamId: reference.backupStreamId,
+    revision: reference.revision,
+    bundleSha256: reference.bundleSha256,
+  };
+  const response = await sendRestoreRequest(options, "/api/restores/refueling/previews", "POST", JSON.stringify(requestBody));
   if (response === null) return { ok: false, error: "unavailable" };
   try {
     if (response.headers.get("X-Hako-Account") !== options.accountId) return { ok: false, error: "account_changed" };
