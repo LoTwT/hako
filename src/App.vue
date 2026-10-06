@@ -3,10 +3,17 @@ import { computed, nextTick, onMounted, onUnmounted, shallowRef, watch } from "v
 import { useRegisterSW } from "virtual:pwa-register/vue";
 import AuthStatus from "./components/auth/AuthStatus.vue";
 import LoginPage from "./components/auth/LoginPage.vue";
+import SessionUnavailablePage from "./components/auth/SessionUnavailablePage.vue";
+import StartupPage from "./components/auth/StartupPage.vue";
 import AccountWorkspace from "./components/refueling/AccountWorkspace.vue";
 import { useAuthSession } from "./composables/useAuthSession";
 
 type AppPage = "home" | "refueling";
+/**
+ * 会话呈现：enter 可进入目标页，startup 等待确认，login 明确未登录，
+ * unavailable 无法确认。未知状态不再复用登录呈现，也不把地址与标题改成登录页。
+ */
+type SessionPresentation = "enter" | "startup" | "login" | "unavailable";
 const loginReturnPageKey = "hako:login-return-page";
 
 function pageFromLocation(): AppPage {
@@ -35,14 +42,22 @@ const page = shallowRef<AppPage>(initialPage());
 const accounts = shallowRef<{ id: string; opened: boolean }[]>([]);
 const workspaces = shallowRef<InstanceType<typeof AccountWorkspace>[]>([]);
 const loginPage = shallowRef<InstanceType<typeof LoginPage> | null>(null);
+const startupPage = shallowRef<InstanceType<typeof StartupPage> | null>(null);
+const unavailablePage = shallowRef<InstanceType<typeof SessionUnavailablePage> | null>(null);
 const pageHeading = shallowRef<HTMLHeadingElement | null>(null);
 const { auth, refresh: refreshAuth, login: startLogin, logout: endLogin, recheckRejectedSession } = useAuthSession();
 const refreshingRestoredPage = shallowRef(false);
 const canEnter = computed(() => auth.value.status === "authenticated" && auth.value.accountId !== null && !refreshingRestoredPage.value);
-const loginPageAuth = computed(() => refreshingRestoredPage.value
-  ? { ...auth.value, status: "checking" as const }
-  : auth.value);
+const sessionPresentation = computed<SessionPresentation>(() => {
+  if (canEnter.value) return "enter";
+  // 缓存文档恢复与同步拒绝后的重新确认都保持门禁关闭，并复用启动等待呈现。
+  if (refreshingRestoredPage.value) return "startup";
+  if (auth.value.status === "anonymous") return "login";
+  if (auth.value.status === "unavailable") return "unavailable";
+  return "startup";
+});
 const loginNotice = shallowRef("");
+const sessionFeedback = computed(() => loginNotice.value || auth.value.message);
 const loginPhase = shallowRef<"idle" | "preparing" | "navigating">("idle");
 const loginInProgress = computed(() => loginPhase.value !== "idle");
 const navigationBusy = computed(() => loginInProgress.value || workspaces.value.some((workspace) => workspace.saving));
@@ -55,7 +70,8 @@ const { offlineReady, needRefresh } = useRegisterSW({
 });
 
 function visiblePageHref(): string {
-  return canEnter.value ? pageHref(page.value) : "/#login";
+  // 只有明确未登录才进入固定登录地址；启动等待与暂不可确认保持原本目标。
+  return sessionPresentation.value === "login" ? "/#login" : pageHref(page.value);
 }
 
 function syncVisiblePage() {
@@ -75,16 +91,23 @@ function syncVisiblePage() {
   } catch {
     // 页面线索不可用时仍保持门禁，草稿由独立 IndexedDB 保留。
   }
-  document.title = !canEnter.value ? "登录 · Hako" : page.value === "home" ? "Hako" : "加油记录 · Hako";
+  // 检查中与暂不可确认保留目标页标题；只有明确未登录才是登录页标题。
+  document.title = sessionPresentation.value === "login"
+    ? "登录 · Hako"
+    : page.value === "home" ? "Hako" : "加油记录 · Hako";
 }
 syncVisiblePage();
-watch([canEnter, () => auth.value.accountId, page], async () => {
+watch([canEnter, sessionPresentation, () => auth.value.accountId, page], () => {
   syncVisiblePage();
-  await nextTick();
-  if (canEnter.value) pageHeading.value?.focus({ preventScroll: true });
-  else loginPage.value?.focusHeading();
-  window.scrollTo(0, 0);
 }, { flush: "sync" });
+// 焦点与滚动在本次渲染完成后执行：模板引用此时才可用，避免与渲染队列竞争。
+watch([canEnter, sessionPresentation, page], () => {
+  if (sessionPresentation.value === "enter") pageHeading.value?.focus({ preventScroll: true });
+  else if (sessionPresentation.value === "login") loginPage.value?.focusHeading();
+  else if (sessionPresentation.value === "unavailable") unavailablePage.value?.focusHeading();
+  else startupPage.value?.focusHeading();
+  window.scrollTo(0, 0);
+}, { flush: "post" });
 
 function navigate(event: MouseEvent, next: AppPage) {
   if (!canEnter.value || navigationBusy.value) {
@@ -173,7 +196,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="app-shell" :class="{ 'home-page': page === 'home' || !canEnter }">
+  <main class="app-shell" :class="{ 'home-page': page === 'home' }">
     <header class="page-header">
       <div class="brand-navigation">
         <a v-if="canEnter" class="brand" href="/" aria-label="Hako 首页" :aria-disabled="navigationBusy" @click="navigate($event, 'home')"
@@ -188,7 +211,10 @@ onUnmounted(() => {
       <AuthStatus v-if="canEnter" :auth="auth" :notice="loginNotice" :busy="navigationBusy" @login="login" @logout="logout" @retry="refreshAuth" />
     </header>
 
-    <LoginPage v-if="!canEnter" ref="loginPage" :auth="loginPageAuth" :notice="loginNotice" :busy="navigationBusy" @login="login" @retry="refreshAuth" />
+    <!-- 会话呈现分离：未知状态显示启动等待，无法确认显示独立重试状态；都不呈现登录入口。 -->
+    <StartupPage v-if="sessionPresentation === 'startup'" ref="startupPage" />
+    <SessionUnavailablePage v-else-if="sessionPresentation === 'unavailable'" ref="unavailablePage" :message="sessionFeedback" :busy="navigationBusy" @retry="refreshAuth" />
+    <LoginPage v-else-if="sessionPresentation === 'login'" ref="loginPage" :notice="loginNotice" :busy="navigationBusy" @login="login" @retry="refreshAuth" />
 
     <div v-if="canEnter" class="page-heading">
       <p class="eyebrow">{{ page === "home" ? "A LITTLE SPACE FOR EVERYDAY" : "ONE CAR, EVERY JOURNEY" }}</p>

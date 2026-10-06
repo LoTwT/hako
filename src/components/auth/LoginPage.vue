@@ -1,47 +1,39 @@
 <script setup lang="ts">
-import { computed, shallowRef } from "vue";
-import type { AuthSnapshot } from "../../domain/auth/session-client";
+import { shallowRef } from "vue";
 
-const props = defineProps<{
-  auth: AuthSnapshot;
+/**
+ * 登录入口扩展：只在会话明确为未登录（anonymous）时呈现。会话尚未确认时的
+ * 启动等待与网络/服务异常的暂不可确认，由各自独立的呈现承担；本组件不展示
+ * 与登录无关的状态，也不负责解释无法确认的原因。
+ */
+defineProps<{
+  /** 登录被本机草稿保存阻止等本地提示。 */
   notice: string;
+  /** 页面正在准备登录跳转（草稿落盘确认中）：按钮保持禁用。 */
   busy: boolean;
 }>();
 const emit = defineEmits<{ login: []; retry: [] }>();
 const heading = shallowRef<HTMLHeadingElement | null>(null);
-const checking = computed(() => props.auth.status === "checking");
-const unavailable = computed(() => props.auth.status === "unavailable");
-const title = computed(() => checking.value
-  ? "正在确认登录状态"
-  : unavailable.value ? "暂时无法确认登录状态" : "登录后继续");
-const description = computed(() => checking.value
-  ? "稍等片刻，正在确认你的 Hako 会话。"
-  : unavailable.value
-    ? "请检查网络后重试，确认登录状态后即可进入 Hako。"
-    : "使用你的 eruoo 账号登录，即可进入 Hako。");
-const disabled = computed(() => props.busy || checking.value || props.auth.loggingIn || props.auth.loggingOut);
 
 defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true }) });
 </script>
 
 <template>
-  <section class="login-card" aria-labelledby="login-title" :aria-busy="checking || busy">
+  <section class="login-card" aria-labelledby="login-title" :aria-busy="busy">
     <span class="login-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <rect x="5" y="10" width="14" height="11" rx="3" />
         <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" />
       </svg>
     </span>
-    <h1 id="login-title" ref="heading" tabindex="-1">{{ title }}</h1>
-    <p class="login-description" role="status">{{ description }}</p>
+    <h1 id="login-title" ref="heading" tabindex="-1">登录后继续</h1>
+    <p class="login-description">使用你的 eruoo 账号登录，即可进入 Hako。</p>
     <p v-if="notice" class="login-feedback" role="status">{{ notice }}</p>
     <div class="login-actions">
-      <button :class="{ primary: !unavailable }" :disabled="disabled" @click="emit('login')">
-        {{ checking ? "正在确认…" : busy || auth.loggingIn ? "正在准备登录…" : "登录 eruoo" }}
+      <button class="primary" :disabled="busy" @click="emit('login')">
+        {{ busy ? "正在准备登录…" : "登录 eruoo" }}
       </button>
-      <button :class="{ primary: unavailable }" :disabled="disabled" @click="emit('retry')">
-        重新检查登录状态
-      </button>
+      <button :disabled="busy" @click="emit('retry')">重新检查登录状态</button>
     </div>
     <p class="login-note">本机记录与草稿会保留，登录后继续使用。</p>
   </section>
