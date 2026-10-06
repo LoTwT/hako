@@ -534,6 +534,31 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 - 父侧独立复核：第二轮候选 6/6 文件与 27/27 证据清单哈希一致，组件配置及父探针共 37 项通过；上一轮父侧实际运行的客户端/路由 67 项按未变文件复用。浏览器 18 项与类型检查、构建归因实施方；父侧核对脚本、结果及网络记录，未冒称重新执行。最终文档仅去重、更新交付状态并补齐验证归因，产品及测试与第二轮冻结候选一致。
 - 未验边界：真机/PWA 安装、真实配额与 bfcache、生产 30 秒窗口、真实 OIDC/R2 均未验；“P1 终态后迟到列表响应”及“非 busy P1→P2 替换”的浏览器级稳定时序仍未验，既有组件证据不能算作本轮 S3。旧证据目录已不存在，本节为重建夹具的新结果（项目外第二轮回执 `implementation-round2/FIX_RECEIPT.md`），不宣称恢复旧文件哈希。
 
+<a id="应用外框与独立启动状态2026-10-06隔离-worktree未合并未部署"></a>
+
+## 应用外框与独立启动状态（2026-10-06，隔离 worktree；未合并、未部署）
+
+用户确认“应用外框 + 独立启动状态”并由 Evelyn Role 在隔离 worktree 实施；产品规则（各呈现的状态与地址/标题语义）由[重新设计记录](./specs/redesign.md#功能首页与页面切换)统一维护，本节只记录实现范围、证据与未验边界。代码与文档保持未提交、未推送、未部署；主检出与旧分支未改动。基线为 `ced68cf8`（tree `1418f46c`，PR #21 文档合并后的 main），任务分支 `feat/startup-session-state`。
+
+实现摘要：
+
+- [App.vue](../src/App.vue)：会话呈现建模为 enter/startup/login/unavailable（`sessionPresentation`）；未知状态（首次打开、刷新、同步拒绝后的重新确认、缓存文档恢复）显示启动等待，网络或服务异常显示独立重试状态，只有明确 anonymous 显示登录入口。地址与标题只在明确未登录时改写为 `/#login` 与“登录 · Hako”；检查中与暂不可确认保持目标地址（`/`、`/#refueling`）与对应标题。外壳宽度按目标页固定（不再按会话状态收窄）。工作区仍按账号复用、非活动时隐藏（`v-show`），不卸载、不释放草稿占用；登录双次 flush、返回线索、回调固定返回 `/` 未改。焦点与滚动改在渲染完成后（post 队列）执行——此前的 sync watcher 配合 `await nextTick()` 与渲染队列竞争，本轮组件回归中进入目标时丢失过一次标题焦点。
+- 新增 [StartupPage.vue](../src/components/auth/StartupPage.vue)（启动等待：`aria-busy`、`role="status"`、无登录按钮与导航入口）与 [SessionUnavailablePage.vue](../src/components/auth/SessionUnavailablePage.vue)（暂不可确认 + 重试按钮）；[LoginPage.vue](../src/components/auth/LoginPage.vue) 只保留登录入口语义，不再承载 checking/unavailable 文案与按钮状态。
+- [session-client.ts](../src/domain/auth/session-client.ts)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、Worker、协议与数据访问均未改动；无新增轮询、保活或本机登录缓存，Cookie/会话期限/续期规则不变。
+
+验证环境与结果（Node v24.18.0、pnpm 11.25.0、Chrome 154.0.8037.98、Playwright 1.62.1；锁文件与依赖不变）：
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 新增组件回归 | [app-session-startup.test.ts](../tests/components/app-session-startup.test.ts) 11 项：真实编译 App.vue + 真实 useAuthSession/AuthSessionClient + 受控 fetch，工作区为最小桩（挂载/卸载与 visible 可观察）。覆盖首页与 `/#refueling` 的启动等待（地址/标题保持、无登录卡片与业务内容、无锚点与按钮）、有效响应进入目标、匿名登录入口与返回线索、500 与离线的暂不可确认及重试成功回到原目标、暖页面可见性检查在途不闪等待且失效后关闭门禁并保留同一工作区实例、合成 `pageshow(persisted)` 分支使用同一启动呈现且不改地址、同步端点拒绝后的重新确认、草稿落盘失败阻止登录跳转、退出后进入登录入口、焦点落在当前标题与 `role=status`。宿主为与其他组件测试同构的忠实最小宿主（另记录属性、文本与焦点），不冒充真实浏览器 |
+| 全量测试 | `pnpm run test` 通过：主配置 26 文件 **464 项**、组件配置 5 文件 **47 项**（本任务新增 11 项，既有 36 项）。客户端源码未改动；`auth-session-client` **21 项**（登录/退出与迟到响应资格复核）已包含在本轮全量运行中实际执行并通过（该轮完整日志实测 21 项，不是仅复用更早执行结果；父侧另独立定向复跑同为 21 项）；这组用例只验证客户端顺序语义，不覆盖本轮页面编排 |
+| 类型与构建 | `pnpm run typecheck`（`cf workers types` + 三段 tsc/vue-tsc）与 `pnpm run build`（生产构建，含 PWA 预缓存 8 项）通过 |
+| 真实浏览器烟测 | 项目外临时夹具（生产前端构建产物 + loopback 静态服务 + 合成的 `/api/auth/session`（可延迟/匿名/500/已登录）+ 真实 Chrome 持久 profile，22 项检查全部通过）：S1 首页启动等待期间无登录入口与业务内容、地址 `/` 与标题 `Hako` 保持，有效响应进入首页；S2 `/#refueling` 等待期间地址与标题保持、匿名后进入 `/#login` 并保留 `hako:login-return-page=refueling`，刷新后按线索回到 `/#refueling` 并进入工作区；S3 500 显示独立暂不可确认与重试、无登录入口、地址/标题保持 `/`，点“重试”后进入首页；S4 暖页面（合成 `online` 事件触发的真实监听路径）读取在途保持工作区内容、不出现启动等待，完成后仍在原页；S5 合成 `pageshow(persisted)`（仅事件分支）门禁关闭、显示启动等待、隐藏旧内容且地址保持，确认后恢复；S6 390×844 启动等待与暂不可确认无横向溢出、重试按钮高 48px。无未捕获页面错误；控制台仅有预期中的合成 404/500 请求错误 |
+
+证据入口：项目外证据目录 `/Users/caoyujie/.agents/task-artifacts/hako/startup-session-state-20261006-q3v7m2kd/`（`REVIEW_RECEIPT.md`、`candidate.patch`、`candidate/` 逐文件副本与 SHA-256、`logs/`、`evidence/browser-smoke.json`、`screenshots/s1..s6`、`scripts/smoke.mjs`）。
+
+未验边界与合成边界：烟测的会话响应、`online`/`pageshow` 事件与静态服务均为本地合成，未点击登录按钮、未访问 eruoo 或生产、未使用真实账号，`/api/auth/login` 未被调用；真实 bfcache 跨进程恢复、真实 OIDC 登录/退出与真机 PWA、生产部署与真实 Worker/DO/R2、Service Worker 更新与离线重开交互、其他浏览器与视口、屏幕阅读器实际播报均未验证。组件测试不替代真实浏览器，浏览器烟测也不替代真机与生产验收；应用发布与真机结果仍由各发布记录维护。
+
 ## 代码入口
 
 | 位置 | 职责 |
@@ -546,7 +571,7 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 | [src/worker/auth/account-state.ts](../src/worker/auth/account-state.ts)、[account-durable-object.ts](../src/worker/account-durable-object.ts) | 登录事务与会话的 SQLite 原子语义（消费、完成、过期、身份校验、续期、撤销）及 Durable Object 运行时包装。 |
 | [src/worker/auth/account-rpc.ts](../src/worker/auth/account-rpc.ts)、[cookies.ts](../src/worker/auth/cookies.ts)、[secrets.ts](../src/worker/auth/secrets.ts)、[session-policy.ts](../src/worker/auth/session-policy.ts) | DO RPC 合同、Cookie 读写与属性、随机凭据与哈希、会话与事务时间参数（集中定义）。 |
 | [App.vue](../src/App.vue)、[RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue) | 会话门禁、功能首页与固定页面切换、单一账号/PWA 接线与登录双次落盘编排；工作区保留新增/编辑、保存、草稿恢复及占用生命周期。 |
-| [LoginPage.vue](../src/components/auth/LoginPage.vue)、[AuthStatus.vue](../src/components/auth/AuthStatus.vue)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、[session-client.ts](../src/domain/auth/session-client.ts) | 登录页与 header 账号状态/操作、状态读取和可读错误；发起地址只接受 https（本机 http 例外），网络失败不谎报成功。 |
+| [LoginPage.vue](../src/components/auth/LoginPage.vue)、[StartupPage.vue](../src/components/auth/StartupPage.vue)、[SessionUnavailablePage.vue](../src/components/auth/SessionUnavailablePage.vue)、[AuthStatus.vue](../src/components/auth/AuthStatus.vue)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、[session-client.ts](../src/domain/auth/session-client.ts) | 登录入口、启动等待与暂不可确认（含重试）、header 账号状态/操作、状态读取和可读错误；发起地址只接受 https（本机 http 例外），网络失败不谎报成功。 |
 | [useRefuelingDrafts.ts](../src/composables/useRefuelingDrafts.ts)、[refueling-draft-session.ts](../src/data/refueling-draft-session.ts)、[refueling-draft-store.ts](../src/data/refueling-draft-store.ts)、[draft-environment.ts](../src/data/draft-environment.ts)、[draft-recovery.ts](../src/domain/refueling/draft-recovery.ts) | 草稿会话（绑定表单、flush、采用/放弃、保存后清理）、独立草稿库（严格持久性）、sessionStorage 线索与 Web Locks 页面占用、恢复决策（线索恢复/选择/幽灵清理/孤儿保留）。 |
 | [RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[form.ts](../src/domain/refueling/form.ts) | 录入、校验与核对确认；确定性表单规则、十进制计算和定点金额。 |
 | [refueling-document.ts](../src/data/refueling-document.ts) | Loro 文档读写、字段级变更与完整历史快照。 |
