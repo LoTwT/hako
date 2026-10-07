@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { shallowRef } from "vue";
+import { LockKeyhole, LogIn, RotateCw } from "@lucide/vue";
 
 /**
  * 登录入口扩展：只在会话明确为未登录（anonymous）时呈现。会话尚未确认时的
@@ -21,19 +22,19 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 <template>
   <section class="login-card" aria-labelledby="login-title" :aria-busy="busy">
     <span class="login-icon" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="5" y="10" width="14" height="11" rx="3" />
-        <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" />
-      </svg>
+      <LockKeyhole :size="22" :stroke-width="2" />
     </span>
     <h1 id="login-title" ref="heading" tabindex="-1">登录后继续</h1>
     <p class="login-description">使用你的 eruoo 账号登录，即可进入 Hako。</p>
     <p v-if="notice" class="login-feedback" role="status">{{ notice }}</p>
     <div class="login-actions">
       <button class="primary" :disabled="busy" @click="emit('login')">
+        <LogIn aria-hidden="true" :size="16" :stroke-width="2" />
         {{ busy ? "正在准备登录…" : "登录 eruoo" }}
       </button>
-      <button :disabled="busy" @click="emit('retry')">重新检查登录状态</button>
+      <button :disabled="busy" @click="emit('retry')">
+        <RotateCw aria-hidden="true" :size="15" :stroke-width="2" /> 重新检查登录状态
+      </button>
     </div>
     <p class="login-note">本机记录与草稿会保留，登录后继续使用。</p>
   </section>
@@ -42,11 +43,11 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 <style scoped>
 .login-card {
   max-width: 440px;
-  margin: 64px auto 24px;
-  padding: 32px;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: #fff;
+  margin: 72px auto 24px;
+  padding: 34px;
+  border: 1px solid var(--border-default);
+  border-radius: 18px;
+  background: var(--surface-panel);
 }
 .login-icon {
   display: grid;
@@ -54,34 +55,31 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: #eef3ec;
-  color: var(--accent);
-}
-.login-icon svg {
-  width: 24px;
-  height: 24px;
+  background: var(--accent-soft);
+  color: var(--text-accent);
 }
 h1 {
   margin: 24px 0 12px;
-  font-size: 26px;
-  font-weight: 550;
+  font-size: 1.625rem;
+  font-weight: 600;
   letter-spacing: -0.5px;
   line-height: 1.4;
 }
 h1:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring-color);
   outline-offset: 5px;
+  box-shadow: var(--focus-ring-shadow);
 }
 .login-description,
 .login-feedback {
   margin: 0;
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.8;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .login-feedback {
   margin-top: 16px;
-  color: #9b3829;
+  color: var(--status-danger-fg);
   overflow-wrap: anywhere;
 }
 .login-actions {
@@ -93,21 +91,25 @@ h1:focus-visible {
 .login-actions button {
   min-height: 48px;
   width: 100%;
-  font-size: 14px;
+  font-size: 0.875rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 .login-note {
   margin: 20px 0 0;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
   line-height: 1.8;
 }
 @media (max-width: 450px) {
   .login-card {
-    margin-top: 40px;
+    margin-top: 44px;
     padding: 28px 24px;
   }
   h1 {
-    font-size: 24px;
+    font-size: 1.5rem;
   }
 }
 </style>

@@ -2,9 +2,32 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="data:," />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/favicon-16.png" type="image/png" sizes="16x16" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#faf8f4" data-hako-paper="#faf8f4" data-hako-ink="#121019" />
+    <meta name="description" content="Hako——把日常的小事收好，先从记录每一次加油开始。" />
     <title>Hako</title>
+    <script>
+      // 首帧主题引导：在应用挂载前按本机偏好设置 .dark，避免 Paper/Ink 闪烁。
+      // 与 src/ui/appearance.ts 使用同一存储键；读取失败时保持跟随系统。
+      (function () {
+        try {
+          var stored = localStorage.getItem("hako:appearance");
+          var dark = stored === "dark"
+            || ((stored === null || stored === "system")
+              && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("dark");
+        } catch (error) {
+          if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            document.documentElement.classList.add("dark");
+          }
+        }
+      })();
+    </script>
   </head>
 
   <body>

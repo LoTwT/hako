@@ -4,7 +4,7 @@
 // 等实现术语；比较使用独立只读 Loro 文档与稳定记录 ID，默认显示有变化记录，
 // 其余按需展开。确认前先 flush 当前表单草稿（说明不在云端备份）；有待上传修改
 // 时禁用最终确认。等待备份时按 30 秒轮询只读状态（仅面板可见且联网）。
-import { computed, onMounted, onUnmounted, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, onUnmounted, shallowRef, watch } from "vue";
 import type { PanelSubmitOutcome, useLocalRefueling } from "../../composables/useLocalRefueling";
 import { initializeLoro } from "../../data/loro-runtime";
 import { fetchBackupStatus, fetchRefuelingSnapshot, type RefuelingBackupStatus } from "../../data/refueling-server-api";
@@ -28,15 +28,124 @@ const props = defineProps<{
   local: ReturnType<typeof useLocalRefueling>;
   /** 工作区提供的草稿 flush：确认前先保存当前表单输入为本代次草稿。 */
   flushDraft: () => Promise<{ ok: boolean; message: string }>;
+  /**
+   * 地址分区（D1 列表 / D2 预览 / D3 原请求结果）：未提供时渲染完整面板
+   * （组件测试口径）；提供时同一面板状态机按地址只呈现对应分区，分区切换
+   * 通过 requestSection 事件交由工作区推进路由。
+   */
+  visibleSection?: "list" | "preview" | "result";
+  /** 保护流程下的 D3（UI-R07）：只呈现本机原请求的查询/本人重试，不提供新预览入口。 */
+  protectionMode?: boolean;
+  /**
+   * 离开取消未确认的承接投递（UI-R06.2）：面板卸载后 emit 会被 Vue 丢弃，
+   * 声明为显式 prop 使上层传入的回调进入 instance.props——卸载前的同步阶段
+   * 提取闭包引用（回调闭包属于仍存活的父级工作区），结果晚于卸载到达时仍可
+   * 调用。与 cancelUnconfirmedChange 事件等价（模板 @ 监听两者同名注入）。
+   */
+  onCancelUnconfirmedChange?: (message: string, deliveryEpoch?: number) => void;
+  /**
+   * 取消投递代次（UI-R06.2 剩余）：由父级工作区维护并在新预览/新确认开始时
+   * 递增；离开取消发起时捕获当前值并随结果投递——旧面板实例的 refreshEpoch
+   * 无法被新面板实例推进，跨实例归属由该代次在承接层核对（新流程使旧取消
+   * 失去投递资格；没有新流程时结果照常可读）。
+   */
+  cancelDeliveryEpoch?: number;
 }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{
+  close: [];
+  requestSection: [section: "list" | "preview" | "result" | "data"];
+  /**
+   * 离开取消的未确认陈述（UI-R06.2）：面板可能已随导航卸载（D2→D0），本地
+   * 状态不可达；空消息表示清除。由仍存活的同账号工作区承接呈现。
+   */
+  cancelUnconfirmedChange: [message: string, deliveryEpoch?: number];
+}>();
 
 type PanelView = "listing" | "previewing" | "protecting" | "submitting";
 
 const view = shallowRef<PanelView>("listing");
+const sectionList = computed(() => props.visibleSection === undefined || props.visibleSection === "list");
+const sectionPreview = computed(() => props.visibleSection === undefined || props.visibleSection === "preview");
+const sectionResult = computed(() => props.visibleSection === "result");
+
+/**
+ * 地址分区与内部状态协调（UI-R06）：从 D2 回到 D1 时精确取消尚未提交的那份
+ * 预览（设计 §6.2：仅当前 previewId；有待确认请求时不取消任何请求），本地
+ * 预览状态复位；取消结果按归属复核后单独陈述，不因列表读取失败被吞掉。
+ */
+watch(() => props.visibleSection, (section, previous) => {
+  if (previous === "preview" && section === "list" && pendingRestore.value === null && !confirmBusy.value) {
+    const leaving = preview.value;
+    if (leaving !== null) void cancelPreviewOnLeave(leaving.previewId);
+  }
+  if (section !== "list") return;
+  if (pendingRestore.value !== null) return;
+  if (view.value === "previewing" || view.value === "protecting") {
+    preview.value = null;
+    comparison.value = null;
+    protection.value = null;
+    expanded.value = new Set();
+    view.value = "listing";
+  }
+});
+
+onBeforeUnmount(() => {
+  // 工作区「返回」从 D2 直接离开整个备份区（route 不再是 backups 族）时，
+  // 本面板经 v-if 卸载而非 visibleSection 分区切换：卸载前同样对未提交预览
+  // 发送精确取消。与确认操作互斥（UI-R06.1）：begin 登记/提交在途
+  // （confirmBusy，pending 内存值可能尚为 null）时不取消本人已确认的预览，
+  // 沿用「可离开而不取消」；有待确认请求时同样不取消任何内容。取消结果可能
+  // 晚于卸载到达：在此同步阶段提取上层承接监听（闭包引用不随卸载失效）。
+  const leaving = preview.value;
+  if (leaving !== null && pendingRestore.value === null && !confirmBusy.value) {
+    // 声明 prop 的承接回调：在组件标记卸载前的同步阶段提取闭包引用（回调
+    // 闭包属于仍存活的父级工作区），结果晚于卸载到达时仍可调用（UI-R06.2）。
+    const deliver = props.onCancelUnconfirmedChange;
+    void cancelPreviewOnLeave(leaving.previewId, deliver);
+  }
+});
+
+/**
+ * 返回时的精确预览取消：捕获发起归属（epoch + previewId），await 后仅在归属
+ * 仍成立时陈述取消未确认；保护态/新待确认请求/新操作推进 epoch 后，旧取消
+ * 的任何结果都不再写入当前状态（UI-R07 同一归属原则）。
+ */
+/**
+ * 承接投递（UI-R06.2）：离开取消可能在面板卸载后（D2→D0）才拿到结果——Vue
+ * 的 emit 在组件卸载后会被丢弃，卸载路径由调用方在 onBeforeUnmount 同步阶段
+ * （组件标记卸载前 props 仍有效）提取上层监听闭包传入；组件存活的分区返回
+ * 路径不传该参数，走本地状态 + emit。
+ */
+async function cancelPreviewOnLeave(previewId: string, deliverAfterUnmount?: (message: string, deliveryEpoch?: number) => void): Promise<void> {
+  const epoch = invalidateRefreshOwnership();
+  // 跨实例投递代次（UI-R06.2 剩余）：发起时捕获父级工作区的当前代次——旧组件
+  // 自身的 refreshEpoch 无法被新面板实例推进，跨面板归属由该代次在承接层核对。
+  const deliveryEpoch = props.cancelDeliveryEpoch ?? 0;
+  const message = "未能确认预览已关闭；返回后请重新预览。";
+  const deliver = (text: string): void => {
+    cancelUnconfirmed.value = text;
+    emit("cancelUnconfirmedChange", text, deliveryEpoch);
+    deliverAfterUnmount?.(text, deliveryEpoch);
+  };
+  try {
+    const result = await cancelRestorePreview({ accountId: props.accountId }, previewId);
+    if (epoch !== refreshEpoch) return;
+    if (!result.cancelled) deliver(message);
+  } catch {
+    if (epoch === refreshEpoch) deliver(message);
+  }
+}
 const loading = shallowRef(false);
 const notice = shallowRef("");
 const failure = shallowRef("");
+/**
+ * 取消未确认提示（UI-R06）：显式取消/返回取消得到 cancelled=false 时的独立
+ * 事实陈述，不并入 failure——后续列表读取失败时两项事实同时可见，取消状态
+ * 不依赖列表成功才显示。
+ */
+const cancelUnconfirmed = shallowRef("");
+/** 本次会话内绑定原请求的可显示终态（UI-R06）：not_committed 等终态清 pending 后 D3 仍可显示。 */
+const terminalOutcome = shallowRef<string | null>(null);
 const list = shallowRef<RefuelingBackupList | null>(null);
 const preview = shallowRef<RestorePreview | null>(null);
 const comparison = shallowRef<RestoreComparison | null>(null);
@@ -51,6 +160,26 @@ let statusTimer: ReturnType<typeof setInterval> | undefined;
 
 const pendingRestore = computed(() => props.local.pendingRestore.value);
 const pendingSync = computed(() => props.local.pendingSync.value);
+
+/**
+ * D3 结果分区协调（UI-R06）：外层工作区不再凭 pending=null 一律赶回 D0——
+ * 「确无结果」（无待确认请求、无可显示终态、无在途操作）才回到数据页；
+ * not_committed 等确定终态清 pending 后仍在 D3 显示说明与重新预览入口。
+ * 仅业务可见的面板有权发出该路由意图（隐藏的普通面板无路由权，UI-R07）。
+ */
+watch(
+  [() => props.visibleSection, pendingRestore, terminalOutcome, confirmBusy, view],
+  () => {
+    if (props.visibleSection !== "result") return;
+    if (pendingRestore.value !== null) return;
+    if (terminalOutcome.value !== null) return;
+    if (confirmBusy.value || view.value === "submitting") return;
+    if (!panelIsVisible()) return;
+    emit("requestSection", "data");
+  },
+  { immediate: true },
+);
+
 const protectionCovered = computed(() => protection.value?.covered === true);
 const canConfirm = computed(() =>
   preview.value !== null
@@ -203,6 +332,11 @@ async function selectVersion(version: { backupStreamId: string; revision: number
     }
     comparison.value = compared;
     view.value = "previewing";
+    // 新预览开启：上一份预览的取消未确认事实不再跨流程残留（本地与承接层）。
+    cancelUnconfirmed.value = "";
+    emit("cancelUnconfirmedChange", "");
+    // 地址推进到 D2（恢复预览）；预览状态本身不写地址。
+    if (props.visibleSection !== undefined) emit("requestSection", "preview");
     if (compared.stateIdentical && compared.historyIdentical) {
       notice.value = "所选版本与当前数据完全一致，无需恢复。";
     } else if (compared.stateIdentical) {
@@ -236,16 +370,25 @@ function recordStatusText(record: RestoreComparisonRecord): string {
 
 async function cancelPreview() {
   if (preview.value === null) return;
+  // 发起时固定归属（epoch + previewId）：await 后保护态/新待确认请求/新操作
+  // 推进归属时，旧回调不得改写共享状态、发路由意图或刷新列表（UI-R07）。
+  const epoch = invalidateRefreshOwnership();
+  const previewId = preview.value.previewId;
   loading.value = true;
   try {
-    await cancelRestorePreview({ accountId: props.accountId }, preview.value.previewId);
+    const result = await cancelRestorePreview({ accountId: props.accountId }, previewId);
+    if (epoch !== refreshEpoch || preview.value?.previewId !== previewId) return;
+    // 取消失败：不宣称服务端预览已删除；独立陈述（不依赖后续列表读取成功）。
+    if (!result.cancelled) cancelUnconfirmed.value = "未能确认预览已关闭；返回后请重新预览。";
+    else cancelUnconfirmed.value = "";
     preview.value = null;
     comparison.value = null;
     protection.value = null;
     view.value = "listing";
-    await refreshList();
+    if (props.visibleSection !== undefined) emit("requestSection", "list");
+    await refreshList(epoch);
   } finally {
-    loading.value = false;
+    if (epoch === refreshEpoch) loading.value = false;
   }
 }
 
@@ -303,6 +446,7 @@ function pendingTransitionKey(
 watch(() => props.local.pendingRestore.value, (pending, previous) => {
   if (pendingIdentityOf(pending) === pendingIdentityOf(previous)) return;
   invalidateRefreshOwnership();
+  terminalOutcome.value = null;
   if (confirmBusy.value) return;
   const key = pendingTransitionKey(previous, pending);
   if (key === consumedTransition) {
@@ -364,6 +508,7 @@ function settleOperation(): void {
   }
   // pending 已结束：本轮终态用结果自身文案；他处已处理或迟到 unknown 用中立提示。
   const ownedTerminal = kind === "committed" || kind === "not_committed";
+  if (ownedTerminal && noticeText !== "") terminalOutcome.value = noticeText;
   void finishPendingFlow(ownedTerminal && noticeText !== "" ? noticeText : pendingCompletionNotice());
 }
 
@@ -425,6 +570,9 @@ async function confirmRestore() {
   operationNotice = "";
   operationFailure = "";
   operationKind = null;
+  // 本人开始新的确认操作：上一份预览的「取消未确认」陈述不再跨流程残留。
+  cancelUnconfirmed.value = "";
+  emit("cancelUnconfirmedChange", "");
   try {
     const flushed = await props.flushDraft();
     if (!flushed.ok) {
@@ -439,14 +587,17 @@ async function confirmRestore() {
       view.value = preview.value === null ? "listing" : "previewing";
       return;
     }
-    if (pendingSync.value) {
-      operationNotice = "本设备出现了尚未同步的修改，已暂停本次恢复；同步完成后可再次确认。";
-      view.value = "previewing";
-      return;
-    }
+    // 当前存在持久待确认请求的早退优先进入 D3 原请求流程（UI-R06）：即使同时
+    // 出现未同步修改，原请求的查询/重试入口也必须在结果分区呈现。
     if (pendingRestore.value !== null) {
       operationNotice = "已有待确认的恢复请求，不会用新请求覆盖；请先查询结果或按原请求重试。";
       view.value = "protecting";
+      if (props.visibleSection !== undefined) emit("requestSection", "result");
+      return;
+    }
+    if (pendingSync.value) {
+      operationNotice = "本设备出现了尚未同步的修改，已暂停本次恢复；同步完成后可再次确认。";
+      view.value = "previewing";
       return;
     }
     if (!protectionCovered.value) {
@@ -465,8 +616,16 @@ async function confirmRestore() {
       expectedSnapshotSha256: previewValue.expected.snapshotSha256,
     };
     const begun = await props.local.beginRestoreRequest(body);
+    if (!begun.ok && begun.pending !== null) {
+      // 控制锁发现他窗口已登记原请求（复用既有 pending，不新建）：当前本机就
+      // 存在持久原请求，同样进入 D3 的原请求流程（UI-R06），不能留在 D2。
+      operationNotice = begun.message || "已有待确认的恢复请求，不会用新请求覆盖；请先查询结果或按原请求重试。";
+      view.value = "protecting";
+      if (props.visibleSection !== undefined) emit("requestSection", "result");
+      return;
+    }
     if (!begun.ok || begun.pending === null) {
-      // 已有待确认请求：复用原请求，不能用新请求覆盖。
+      // 真正的保存失败（无既有请求可复用）：保持原提示，不进入结果分区。
       operationNotice = begun.message || "恢复请求未能保存到本机，已取消本次恢复。";
       view.value = "protecting";
       return;
@@ -474,6 +633,9 @@ async function confirmRestore() {
     // 本次操作绑定 begin 返回的同一请求身份（requestId + 固定指纹）：仓储在控制锁内核对；
     // 后续任一异步边界发现该请求被替换时，收尾都按最新归属做中立协调。
     operationIdentity = { requestId: begun.pending.requestId, requestFingerprint: begun.pending.requestFingerprint };
+    // 请求已持久登记：后续所有分支（首次派发被门禁拦下、unknown、终态）都进入
+    // D3 的原请求流程（UI-R06），不能停留在 D2 的预览分区。
+    if (props.visibleSection !== undefined) emit("requestSection", "result");
     // begin 的异步边界（指纹计算 + 本机严格事务）之后再次复核本机保存资格：
     // 期间出现的保存或同步状态变化不能被跳过（自己窗口或其他窗口都可能写入）。
     if (pendingSync.value) {
@@ -488,6 +650,8 @@ async function confirmRestore() {
       requestFingerprint: begun.pending.requestFingerprint,
     });
     applyOperationOutcome(outcome);
+    // 确认后的结果归属 D3（原请求结果）：地址切换由工作区完成。
+    if (props.visibleSection !== undefined) emit("requestSection", "result");
   } finally {
     settleOperation();
   }
@@ -511,6 +675,7 @@ async function retryPendingRestore() {
       requestFingerprint: clicked.requestFingerprint,
     });
     applyOperationOutcome(outcome);
+    if (props.visibleSection !== undefined) emit("requestSection", "result");
   } finally {
     settleOperation();
   }
@@ -523,7 +688,9 @@ function timeText(ms: number | null): string {
 
 /** 面板业务可见性：文档可见之外再用根元素校验（上层工作区可能以 v-show 保留在 DOM 中）。 */
 function panelIsVisible(): boolean {
-  if (typeof document === "undefined" || document.visibilityState !== "visible") return false;
+  // 无 DOM 环境（SSR/组件测试宿主）无法判定，默认可见：D3 协调不被环境阻断。
+  if (typeof document === "undefined") return true;
+  if (document.visibilityState !== "visible") return false;
   const element = panelRoot.value as { checkVisibility?: (options?: { checkVisibilityCSS?: boolean }) => boolean } | null;
   if (element !== null && element !== undefined && typeof element.checkVisibility === "function") {
     return element.checkVisibility({ checkVisibilityCSS: true });
@@ -622,9 +789,18 @@ async function refreshProtection() {
     <div class="panel-body">
       <p v-if="failure" class="error">{{ failure }}</p>
       <p v-else-if="notice" class="local-notice">{{ notice }}</p>
+      <!-- 取消未确认是独立事实（UI-R06）：列表读取失败时两项同时可见。 -->
+      <p v-if="cancelUnconfirmed" class="warning" role="status">{{ cancelUnconfirmed }}</p>
 
-      <!-- 待确认恢复请求（持久保存）：重开面板即显示，先查结果；404/unknown 保留原 ID。 -->
-      <div v-if="pendingRestore !== null" class="pending-restore">
+      <!-- D2 直达/刷新：预览不写地址，重新选择版本；不声称服务端暂存已删除。 -->
+      <div v-if="visibleSection === 'preview' && view === 'listing' && preview === null" class="preview-missing">
+        <p>本次没有可显示的预览；请重新选择版本。服务端的暂存预览不代表已删除。</p>
+        <button type="button" @click="emit('requestSection', 'list')">返回版本列表</button>
+      </div>
+
+      <!-- 待确认恢复请求（持久保存）：重开面板即显示，先查结果；404/unknown 保留原 ID。
+           分区模式下在 D1/D3 呈现；D1 额外提供进入 D3 的入口。 -->
+      <div v-if="pendingRestore !== null && (visibleSection === undefined || visibleSection === 'list' || visibleSection === 'result')" class="pending-restore">
         <p class="pending-hint">
           有一笔恢复请求结果待确认（编号 {{ pendingRestore.requestId.slice(0, 8) }}…），原编号与内容已保留。
           查询只读结果；确认未执行前不会自动换编号重发，也不会用新请求覆盖。
@@ -632,11 +808,12 @@ async function refreshProtection() {
         <div class="pending-actions">
           <button type="button" class="text-button" @click="props.local.recheckRestoreReceipt()">查询恢复结果</button>
           <button type="button" :disabled="confirmBusy" @click="retryPendingRestore()">以原请求重试</button>
+          <button v-if="visibleSection === 'list'" type="button" class="text-button" @click="emit('requestSection', 'result')">查看恢复结果</button>
         </div>
       </div>
 
-      <!-- 列表视图 -->
-      <div v-if="view === 'listing'" class="version-list">
+      <!-- 列表视图（D1） -->
+      <div v-if="sectionList && view === 'listing'" class="version-list">
         <p v-if="pendingRestore !== null" class="muted">请先处理上方待确认的恢复请求；处理完成前不能选择新版本。</p>
         <p v-if="loading">正在读取备份列表…</p>
         <div v-else-if="list && !list.initialized" class="muted">
@@ -660,8 +837,8 @@ async function refreshProtection() {
         </ul>
       </div>
 
-      <!-- 预览比较：默认显示有变化记录，其余按需展开。 -->
-      <div v-else-if="view === 'previewing' || view === 'protecting'" class="preview">
+      <!-- 预览比较（D2）：默认显示有变化记录，其余按需展开。 -->
+      <div v-else-if="sectionPreview && (view === 'previewing' || view === 'protecting')" class="preview">
         <p v-if="loading">正在校验所选版本并比较差异…</p>
         <div v-else-if="comparison && preview" class="compare-body">
           <p class="list-hint">
@@ -744,25 +921,53 @@ async function refreshProtection() {
         </div>
       </div>
       <p v-else-if="view === 'submitting'" class="muted">正在提交恢复请求…</p>
+
+      <!-- D3 原请求结果：终态文案 + 下一步入口（待确认区块在上方）。 -->
+      <div v-if="sectionResult && !protectionMode && pendingRestore === null && view !== 'submitting'" class="result-next">
+        <p class="muted">这笔恢复请求已处理完毕；如需恢复请重新预览当前数据后再确认。</p>
+        <div class="generation-actions">
+          <button type="button" @click="emit('requestSection', 'list')">重新预览当前数据</button>
+          <button type="button" @click="emit('close')">返回数据页</button>
+        </div>
+      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.backup-restore {
+.backup-restore-panel {
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  padding: 20px 22px;
+  background: var(--surface-panel);
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
-  border: 1px solid var(--accent, #356b51);
-  border-radius: 8px;
 }
 .panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-.panel-header h3 { margin: 0; }
+.panel-header h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+.preview-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--status-info-border);
+  border-radius: 10px;
+  background: var(--status-info-bg);
+  color: var(--status-info-fg);
+  font-size: 0.8125rem;
+  line-height: 1.8;
+}
+.result-next {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.result-next .generation-actions button { min-height: 44px; }
 .version-list ul, .compare-list, .field-list {
   list-style: none;
   margin: 0;
@@ -777,33 +982,33 @@ async function refreshProtection() {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--muted, #ccc);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-default);
 }
 .version-list ul > li.unselectable { opacity: 0.6; }
-.version-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
+.version-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.8125rem; }
 .version-time { font-weight: 600; }
-.muted { color: var(--muted, #888); font-size: 13px; }
-.list-hint { font-size: 13px; }
-.compare-summary { font-weight: 600; }
+.muted { color: var(--text-secondary); font-size: 0.8125rem; }
+.error { color: var(--status-danger-fg); font-size: 0.8125rem; line-height: 1.8; }
+.list-hint { font-size: 0.8125rem; }
+.compare-summary { font-weight: 600; font-size: 0.8125rem; }
 .compare-record-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
-.record-id { font-weight: 600; font-size: 13px; }
-.status-added { color: var(--accent, #356b51); }
-.status-removed { color: #b3261e; }
-.status-changed { color: #8a6d00; }
-.field-list li { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; padding-left: 8px; }
-.field-label { min-width: 72px; color: var(--muted, #888); }
+.record-id { font-weight: 600; font-size: 0.8125rem; }
+.status-added { color: var(--status-success-fg); }
+.status-removed { color: var(--status-danger-fg); }
+.status-changed { color: var(--status-warning-fg); }
+.field-list li { display: flex; flex-wrap: wrap; gap: 8px; font-size: 0.8125rem; padding-left: 8px; }
+.field-label { min-width: 72px; color: var(--text-secondary); }
 .field-before { text-decoration: line-through; opacity: 0.8; }
-.field-arrow { color: var(--muted, #888); }
+.field-arrow { color: var(--text-muted); }
 .field-after { font-weight: 600; }
-.same-records summary { cursor: pointer; font-size: 13px; }
-.confirm-block { display: flex; flex-direction: column; gap: 10px; }
-.confirm-warning { margin: 0; font-size: 13px; line-height: 1.8; }
+.confirm-block { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.confirm-warning { margin: 0; padding: 12px 14px; font-size: 0.8125rem; line-height: 1.8; border: 1px solid var(--status-warning-border); border-radius: 10px; background: var(--status-warning-bg); color: var(--status-warning-fg); }
 .generation-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .generation-actions button { min-height: 44px; }
 .pending-restore { display: flex; flex-direction: column; gap: 8px; }
-.pending-hint { margin: 0; font-size: 13px; line-height: 1.8; }
+.pending-hint { margin: 0; font-size: 0.8125rem; line-height: 1.8; }
 .pending-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-.protection-state { margin: 0; font-size: 13px; line-height: 1.8; color: var(--muted, #666); }
-.local-notice { color: var(--accent, #356b51); font-size: 13px; line-height: 1.8; }
+.protection-state { margin: 0; font-size: 0.8125rem; line-height: 1.8; color: var(--text-secondary); }
+.local-notice { color: var(--text-accent); font-size: 0.8125rem; line-height: 1.8; }
 </style>

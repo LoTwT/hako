@@ -32,6 +32,12 @@ vi.mock("../../src/components/refueling/AccountWorkspace.vue", async () => {
         opened: Boolean,
         visible: Boolean,
         navigatingForLogin: Boolean,
+        route: { type: Object, default: null },
+        appRoute: { type: Object, default: null },
+        navigate: { type: Function, default: null },
+        replaceRoute: { type: Function, default: null },
+        backTo: { type: Function, default: null },
+        openSettings: { type: Function, default: null },
       },
       emits: ["sessionRejected"],
       setup(props, { expose, emit }) {
@@ -49,7 +55,8 @@ vi.mock("../../src/components/refueling/AccountWorkspace.vue", async () => {
           // 合成工作区的同步端点拒绝，用于验证 App 的重新确认接线。
           rejectSession: () => emit("sessionRejected"),
         });
-        return () => h("div");
+        // 模拟真实工作区的私密内容：仅可见时渲染文本（隐藏实例保留但不露出）。
+        return () => h("div", props.visible ? "加油记录" : "");
       },
     }),
   };
@@ -171,7 +178,7 @@ const windowListeners = new Map<string, Array<(event: unknown) => void>>();
 const documentListeners = new Map<string, Array<(event: unknown) => void>>();
 const storage = new Map<string, string>();
 const location = { hash: "", assign: vi.fn() };
-const history = { replaceState: vi.fn(), pushState: vi.fn() };
+const history = { replaceState: vi.fn(), pushState: vi.fn(), back: vi.fn() };
 const documentStub = { title: "", visibilityState: "visible", addEventListener: vi.fn(), removeEventListener: vi.fn() };
 
 function installBrowserStubs(): void {
@@ -183,6 +190,7 @@ function installBrowserStubs(): void {
   location.assign.mockClear();
   history.replaceState.mockClear();
   history.pushState.mockClear();
+  history.back.mockClear();
   documentStub.title = "";
   documentStub.visibilityState = "visible";
   documentStub.addEventListener.mockImplementation((type: string, listener: (event: unknown) => void) => {
@@ -261,9 +269,16 @@ function visibleText(root: HostNode): string {
 }
 
 function findButton(root: HostNode, label: string): HostNode {
-  const found = allNodes(root).find((node) => node.kind === "element" && node.tag === "button" && (node.text ?? "").trim() === label);
+  const found = allNodes(root).find((node) => node.kind === "element" && node.tag === "button" && buttonText(node).trim() === label);
   if (!found) throw new Error(`未找到按钮：${label}\n实际文本：${visibleText(root)}`);
   return found;
+}
+
+/** 按钮文本含图标等子节点：收集全部后代文字再比较（纯文本元素由宿主存于 text）。 */
+function buttonText(node: HostNode): string {
+  if (node.tag === "#static") return (node.text ?? "").replace(/<[^>]*>/g, " ");
+  if (node.children.length === 0) return node.text ?? "";
+  return node.children.map(buttonText).join("");
 }
 
 function countElements(root: HostNode, tag: string): number {
@@ -313,13 +328,13 @@ describe("应用外框与独立启动状态", () => {
     await settle();
 
     const text = visibleText(root);
-    expect(text).toContain("hako");
+    expect(text).toContain("Hako");
     expect(text).toContain("正在打开…");
     expect(text).toContain("正在确认你的 Hako 会话，请稍候。");
     expect(text).not.toContain("登录后继续");
     expect(text).not.toContain("登录 eruoo");
-    expect(text).not.toContain("收好日常的小事。");
-    expect(text).not.toContain("你的功能");
+    expect(text).not.toContain("我的工具");
+    expect(text).not.toContain("加油记录");
     // 加载期间没有多余导航入口与可点操作。
     expect(countElements(root, "a")).toBe(0);
     expect(countElements(root, "button")).toBe(0);
@@ -424,7 +439,7 @@ describe("应用外框与独立启动状态", () => {
     expect(requests.map((request) => request.url)).toEqual(["/api/auth/session"]);
     respond(sessionBody(true, ACCOUNT));
     await settle();
-    expect(visibleText(root)).toContain("收好日常的小事。");
+    expect(visibleText(root)).toContain("我的工具");
     expect(documentStub.title).toBe("Hako");
   });
 
@@ -551,13 +566,16 @@ describe("应用外框与独立启动状态", () => {
     expect(visibleText(root)).toContain("登录后继续");
   });
 
-  it("退出登录：返回登录入口并保留返回线索，工作区保留实例", async () => {
-    location.hash = "#refueling";
+  it("退出登录：经设置层退出后返回登录入口并保留返回线索，工作区保留实例", async () => {
     mountApp();
     await settle();
     respond(sessionBody(true, ACCOUNT));
     await settle();
 
+    // 首页顶栏账号入口打开设置层（G4），退出登录位于设置层。
+    click(findButton(root, "已登录 · eruoo"));
+    await settle();
+    expect(visibleText(root)).toContain("账号与外观");
     click(findButton(root, "退出登录"));
     await settle();
     expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["POST /api/auth/logout"]);
@@ -567,8 +585,9 @@ describe("应用外框与独立启动状态", () => {
     expect(visibleText(root)).toContain("登录后继续");
     expect(history.replaceState.mock.calls.at(-1)?.[2]).toBe("/#login");
     expect(documentStub.title).toBe("登录 · Hako");
-    expect(storage.get("hako:login-return-page")).toBe("refueling");
-    expect(workspaceMock.mounts).toEqual([ACCOUNT]);
+    expect(storage.get("hako:login-return-page")).toBe("home");
+    // 本流程始终停留在首页：工作区从未挂载（其余用例覆盖实例保留）。
+    expect(workspaceMock.mounts).toEqual([]);
     expect(workspaceMock.unmounts).toEqual([]);
   });
 
@@ -592,7 +611,7 @@ describe("应用外框与独立启动状态", () => {
     await settle();
     respond(sessionBody(true, ACCOUNT));
     await settle();
-    const pageHeading = allNodes(root).find((node) => node.kind === "element" && node.tag === "h1" && (node.text ?? "").includes("收好日常的小事。"));
+    const pageHeading = allNodes(root).find((node) => node.kind === "element" && node.tag === "h1" && (node.text ?? "").includes("我的工具"));
     expect(pageHeading).toBeDefined();
     expect(pageHeading!.focusCount).toBeGreaterThan(0);
   });

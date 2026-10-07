@@ -1,6 +1,8 @@
-// 保留副本视图组件测试（R5 二轮）：真实编译 RetainedRefuelingCopy SFC，验证
-// 草稿原始输入核对包含完整布尔字段（是否加满/油灯），且保护流程（allowBringBack
-// =false）仍可展开记录的只读字段详情、无勾选与带回入口。自定义 renderer +
+// 保留副本视图组件测试（R5 二轮 + UI-C01）：真实编译 RetainedRefuelingCopy
+// SFC，验证草稿原始输入核对包含完整布尔字段（是否加满/油灯），保护流程
+// （allowBringBack=false）仍可展开记录的只读字段详情、无勾选与带回入口；
+// 已激活代次展开记录显示「保留值/当前值」对照，业务值相同的字段禁选（相同
+// 标记），不同字段提供勾选与按当前记录编辑的带入入口。自定义 renderer +
 // vnode 树断言；不冒充真实浏览器。
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -107,17 +109,26 @@ it("保护流程（allowBringBack=false）：可展开记录的完整只读字�
   expect(text).not.toContain("作为新记录填写");
 });
 
-it("已激活代次（allowBringBack=true）：展开详情提供勾选与带回入口", async () => {
-  // 当前代次仍有同 ID 记录 → 带回按钮按当前记录表单文案显示。
-  const state = mountRetained(true, new Map([["one", record]]));
+it("已激活代次（allowBringBack=true）：保留值/当前值对照，相同禁选、不同可勾选带回", async () => {
+  // 当前代次同 ID 记录的站名不同、其余字段相同 → 只有站名可选，其余显示「相同」。
+  const current = { ...record, stationName: "当前站名" };
+  const state = mountRetained(true, new Map([["one", current]]));
   await nextTick(); await nextTick(); await nextTick();
   await (state.open as (generation: string) => Promise<void>)(G1);
   await nextTick();
   state.openRecordId = "one";
   await nextTick(); await nextTick();
   const text = collectText(lastRoot?.subTree);
+  expect(text).toContain("保留值");
+  expect(text).toContain("当前值");
+  expect(text).toContain("相同");
+  expect(text).toContain("旧记录");
+  expect(text).toContain("当前站名");
   expect(text).toContain("填入当前记录的表单");
+  expect(text).toContain("已选 0 项");
+  // 站名不同可勾选；相同字段禁选（显示「相同」标记而非勾选框）。
   expect(countInputs(lastRoot?.subTree)).toBeGreaterThan(0);
+  expect(text.match(/相同/g)?.length ?? 0).toBeGreaterThan(0);
 });
 
 it("草稿原始输入核对包含是否加满与油灯（yes/no/空的原始值）", async () => {
@@ -138,4 +149,79 @@ it("草稿原始输入核对包含是否加满与油灯（yes/no/空的原始值
   await nextTick(); await nextTick();
   expect(collectText(lastRoot?.subTree)).toContain("（空）");
   (draft.values as Record<string, string>).fullTank = "yes";
+});
+
+// ---------------------------------------------------------------------------
+// 父审第二轮修复（UI-C01：草稿对照与相等判定）
+// ---------------------------------------------------------------------------
+
+it("UI-C01 二轮：草稿对照含当前值列；空油灯对当前未填写判同、无效数值不与空判同", async () => {
+  // 当前记录：可开票金额未填写（null）、油灯未填写（null）、站名不同。
+  const current = { ...record, invoiceableAmountCents: null, lowFuelLight: null, stationName: "当前站名" };
+  const state = mountRetained(true, new Map([["one", current]]));
+  await nextTick(); await nextTick(); await nextTick();
+  await (state.open as (generation: string) => Promise<void>)(G1);
+  await nextTick();
+  // 草稿原始输入：油灯留空（与当前 null 相同）、可开票金额 1.234（解析失败，
+  // 不得与当前未填写判同，须保留可勾选带回交表单校验纠正）。
+  (draft.values as Record<string, string>).lowFuelLight = "";
+  (draft.values as Record<string, string>).invoiceableAmountCents = "1.234";
+  state.openDraftKey = "draft-one";
+  await nextTick(); await nextTick();
+  // 直接断言对照条目结构（渲染顺序不参与判定）。
+  const entries = (state as unknown as { draftFieldEntries: (draft: unknown) => Array<{ field: string; label: string; valueText: string; currentText: string; same: boolean }> }).draftFieldEntries(draft);
+  const byField = new Map(entries.map((entry) => [entry.field, entry]));
+  // 当前值列存在且内容正确（含未填写显示「（空）」）。
+  expect(byField.get("stationName")).toMatchObject({ valueText: "旧记录", currentText: "当前站名", same: false });
+  expect(byField.get("invoiceableAmountCents")).toMatchObject({ valueText: "1.234", currentText: "（空）", same: false });
+  expect(byField.get("lowFuelLight")).toMatchObject({ valueText: "（空）", currentText: "（空）", same: true });
+  expect(byField.get("fullTank")).toMatchObject({ valueText: "是", currentText: "是", same: true });
+  expect(byField.get("odometerTenths")).toMatchObject({ same: true });
+  // 表头包含当前值列。
+  expect(collectText(lastRoot?.subTree)).toContain("当前值");
+});
+
+it("UI-C01 二轮：明确「否」与当前 false 判同、与当前未填写不判同", async () => {
+  const currentNoLight = { ...record, lowFuelLight: false, invoiceableAmountCents: null };
+  const state = mountRetained(true, new Map([["one", currentNoLight]]));
+  await nextTick(); await nextTick(); await nextTick();
+  await (state.open as (generation: string) => Promise<void>)(G1);
+  await nextTick();
+  (draft.values as Record<string, string>).lowFuelLight = "no";
+  state.openDraftKey = "draft-one";
+  await nextTick(); await nextTick();
+  const entries = (state as unknown as { draftFieldEntries: (draft: unknown) => Array<{ field: string; valueText: string; currentText: string; same: boolean }> }).draftFieldEntries(draft);
+  const oil = entries.find((entry) => entry.field === "lowFuelLight");
+  expect(oil).toMatchObject({ valueText: "否", currentText: "否", same: true });
+
+  // 当前未填写（null）时明确的「否」是差异，可勾选带回。
+  const currentNullLight = { ...record, lowFuelLight: null, invoiceableAmountCents: null };
+  const state2 = mountRetained(true, new Map([["one", currentNullLight]]));
+  await nextTick(); await nextTick(); await nextTick();
+  await (state2.open as (generation: string) => Promise<void>)(G1);
+  await nextTick();
+  state2.openDraftKey = "draft-one";
+  await nextTick(); await nextTick();
+  const entries2 = (state2 as unknown as { draftFieldEntries: (draft: unknown) => Array<{ field: string; valueText: string; currentText: string; same: boolean }> }).draftFieldEntries(draft);
+  const oil2 = entries2.find((entry) => entry.field === "lowFuelLight");
+  expect(oil2).toMatchObject({ valueText: "否", currentText: "（空）", same: false });
+});
+
+// ---------------------------------------------------------------------------
+// 父审第三轮修复（UI-C01.1：草稿时间按领域语义判同）
+// ---------------------------------------------------------------------------
+
+it("UI-C01.1：草稿分钟时间与当前零秒时间是同一业务时间——判同禁选，原文展示保留", async () => {
+  const current = { ...record, occurredAtLocal: "2026-10-02T12:00:00" };
+  const state = mountRetained(true, new Map([["one", current]]));
+  await nextTick(); await nextTick(); await nextTick();
+  await (state.open as (generation: string) => Promise<void>)(G1);
+  await nextTick();
+  (draft.values as Record<string, string>).occurredAtLocal = "2026-10-02T12:00";
+  state.openDraftKey = "draft-one";
+  await nextTick(); await nextTick();
+  const entries = (state as unknown as { draftFieldEntries: (draft: unknown) => Array<{ field: string; valueText: string; currentText: string; same: boolean }> }).draftFieldEntries(draft);
+  const time = entries.find((entry) => entry.field === "occurredAtLocal");
+  // 业务相等（分钟补零秒）：禁选；两侧原文照常展示（带回保留原文）。
+  expect(time).toMatchObject({ valueText: "2026-10-02T12:00", currentText: "2026-10-02T12:00:00", same: true });
 });

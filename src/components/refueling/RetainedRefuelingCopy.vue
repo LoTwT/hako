@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { shallowRef } from "vue";
 import type { SavedRefuelingRecord } from "../../domain/refueling/form";
-import { numberFields, unscale } from "../../domain/refueling/form";
+import { formatQuantity, normalizeOccurredAtLocal, numberFields, parseQuantity } from "../../domain/refueling/form";
 import type { StoredRefuelingDraft } from "../../domain/refueling/draft-recovery";
 import type { RetainedGenerationSummary, RetainedGenerationView } from "../../data/local-refueling-v2";
 import type { RetainedDraftSource } from "../../data/retained-content";
 
 /**
- * 保留副本与旧草稿只读查看（恢复设计 §6.1/§6.3）：显示各代次记录、来源、待传
- * 状态与草稿（含旧 v1 草稿库与只有草稿的代次）；默认不勾选任何内容，不自动与
- * 新文档做 Loro 合并，不占用旧页面草稿锁、不清理原库。仅在已激活且已核对的
- * 当前代次（allowBringBack）支持逐项选取字段/草稿带回：以当前记录为普通编辑
- * 基线填入表单（同 ID 记录）或作为新记录填写（已不存在）；点击普通保存后才
- * 进入当前代次。保护流程中只读，无带回入口。
+ * 保留副本与旧草稿只读查看（恢复设计 §6.1/§6.3 + UI-C01）：显示各代次记录、
+ * 来源、待传状态与草稿（含旧 v1 草稿库与只有草稿的代次）；默认不勾选任何
+ * 内容，不自动与新文档做 Loro 合并，不占用旧页面草稿锁、不清理原库。
+ * 记录副本按「保留值 / 当前值」对照展示；按业务值比较后相同的字段禁选
+ * （空值与明确的“否”区分，不当成相同）。仅在已激活且已核对的当前代次
+ * （allowBringBack）支持逐项选取字段带回：保留记录与旧草稿都只填入本人选中
+ * 的不同字段，以当前记录为普通编辑基线（同 ID 记录）或作为新记录填写
+ * （已不存在）；点击普通保存后才进入当前代次。保护流程中只读，无带回入口。
  */
 const props = defineProps<{
   accountId: string;
@@ -29,7 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   bringBackRecord: [payload: { recordId: string; exists: boolean; patch: Partial<SavedRefuelingRecord> }];
-  bringBackDraft: [draft: StoredRefuelingDraft];
+  bringBackDraft: [payload: { draft: StoredRefuelingDraft; fields: string[] }];
 }>();
 
 const generationSummaries = shallowRef<RetainedGenerationSummary[]>([]);
@@ -41,8 +43,10 @@ const openError = shallowRef("");
 const selectedFields = shallowRef<Record<string, Set<string>>>({});
 /** 展开的记录条目（字段勾选面板）。 */
 const openRecordId = shallowRef<string | null>(null);
-/** 展开的草稿条目（原始输入核对）。 */
+/** 展开的草稿条目（原始输入核对 + 字段勾选）。 */
 const openDraftKey = shallowRef<string | null>(null);
+/** 选中的草稿带回字段：draftId → 字段名集合（默认不勾选）。 */
+const selectedDraftFields = shallowRef<Record<string, Set<string>>>({});
 
 async function refresh() {
   openError.value = "";
@@ -95,7 +99,74 @@ function toggleField(recordId: string, field: string): void {
   selectedFields.value = next;
 }
 
-/** 从保留记录构造带回表单的部分字段值（仅勾选字段）。 */
+function draftFieldSelection(draftId: string): Set<string> {
+  return selectedDraftFields.value[draftId] ?? new Set<string>();
+}
+
+function toggleDraftField(draftId: string, field: string): void {
+  const next = { ...selectedDraftFields.value };
+  const selection = new Set(next[draftId] ?? []);
+  if (selection.has(field)) selection.delete(field);
+  else selection.add(field);
+  next[draftId] = selection;
+  selectedDraftFields.value = next;
+}
+
+/**
+ * 按业务值比较保留值与当前值：数值（含 null 的可开票金额）、布尔（null ≠
+ * false）、字符串逐项严格比较；当前记录不存在时一律视为不同（全部可选）。
+ */
+interface RetainedFieldEntry {
+  field: string;
+  label: string;
+  retainedText: string;
+  currentText: string;
+  same: boolean;
+}
+
+/** 记录副本字段对照（保留值 / 当前值；相同禁选）。 */
+function recordFieldEntries(record: SavedRefuelingRecord): RetainedFieldEntry[] {
+  const current = currentRecord(record.id);
+  const entries: RetainedFieldEntry[] = [];
+  const raw = record as unknown as Record<string, unknown>;
+  const currentRaw = (current ?? {}) as unknown as Record<string, unknown>;
+  const formatValue = (field: string, value: unknown): string => {
+    if (field in numberFields) {
+      if (value === null) return "（空）";
+      return `${formatQuantity(value as number, numberFields[field as keyof typeof numberFields].decimals)}${unitSuffix(numberFields[field as keyof typeof numberFields].unit)}`;
+    }
+    if (field === "fullTank" || field === "lowFuelLight") {
+      if (value === null) return "（空）";
+      return value ? "是" : "否";
+    }
+    if (value === null || value === undefined || value === "") return "（空）";
+    return String(value);
+  };
+  for (const key of Object.keys(numberFields) as (keyof typeof numberFields)[]) {
+    const same = current !== null && raw[key] === currentRaw[key];
+    entries.push({ field: key, label: numberFields[key].label, retainedText: formatValue(key, raw[key]), currentText: current === null ? "（无当前记录）" : formatValue(key, currentRaw[key]), same });
+  }
+  for (const key of ["occurredAtLocal", "fullTank", "lowFuelLight", "stationName", "fuelGrade", "orderNumber"] as const) {
+    const same = current !== null && raw[key] === currentRaw[key];
+    entries.push({
+      field: key,
+      label: { occurredAtLocal: "时间", fullTank: "是否加满", lowFuelLight: "油灯", stationName: "加油站", fuelGrade: "油品", orderNumber: "订单号" }[key],
+      retainedText: formatValue(key, raw[key]),
+      currentText: current === null ? "（无当前记录）" : formatValue(key, currentRaw[key]),
+      same,
+    });
+  }
+  return entries;
+}
+
+function unitSuffix(unit: string): string {
+  if (unit === "公里") return " km";
+  if (unit === "升") return " L";
+  if (unit === "元/升") return " 元/L";
+  return " 元";
+}
+
+/** 从保留记录构造带回表单的部分字段值（仅勾选字段；相同字段不可选）。 */
 function submitBringBack(record: SavedRefuelingRecord): void {
   if (!props.allowBringBack) return;
   const selection = fieldSelection(record.id);
@@ -114,43 +185,89 @@ function submitBringBack(record: SavedRefuelingRecord): void {
   });
 }
 
-/** 带回保留草稿：先核对原始输入，再由工作区以当前代次基线填入表单。 */
+/** 带回保留草稿：勾选字段后交由工作区以当前代次基线填入表单。 */
 function submitBringBackDraft(draft: StoredRefuelingDraft): void {
   if (!props.allowBringBack) return;
-  emit("bringBackDraft", draft);
+  const selection = draftFieldSelection(draft.id);
+  if (selection.size === 0) {
+    openError.value = "请先勾选要带回的草稿字段。";
+    return;
+  }
+  openError.value = "";
+  emit("bringBackDraft", { draft, fields: [...selection] });
 }
 
-function recordFields(record: SavedRefuelingRecord): { field: string; label: string; value: string }[] {
-  const entries: { field: string; label: string; value: string }[] = [];
+/**
+ * 草稿字段核对 + 勾选：原始输入完整展示，附当前记录值对照；与当前记录业务值
+ * 相同的字段禁选。相等按业务值判定，区分四类事实（UI-C01）：
+ * - 业务相等（可解析且值相同、明确是/否一致、空对未填写）→ 禁选「相同」；
+ * - 解析失败（如超精度输入）→ 与任何当前值都不相同，保留原始输入供勾选；
+ * - 空字符串 → 仅与当前 null（未填写）相同；
+ * - 明确否 → 与 false 相同、与 null 不同。
+ */
+interface DraftFieldEntry {
+  field: string;
+  label: string;
+  /** 草稿原始输入的显示文本（无效数值按原文显示，交由表单校验纠正）。 */
+  valueText: string;
+  /** 当前记录值的显示文本。 */
+  currentText: string;
+  same: boolean;
+}
+
+function draftFieldEntries(draft: StoredRefuelingDraft): DraftFieldEntry[] {
+  const values = draft.values as unknown as Record<string, string>;
+  const current = currentRecord(draft.recordId);
+  const currentRaw = (current ?? {}) as unknown as Record<string, unknown>;
+  const entries: DraftFieldEntry[] = [
+    {
+      field: "occurredAtLocal", label: "时间",
+      valueText: values.occurredAtLocal,
+      currentText: current === null ? "（无当前记录）" : String(currentRaw.occurredAtLocal ?? "（空）"),
+      // 时间按领域语义判同（分钟与零秒是同一业务时间；UI-C01.1），原文展示/带回保留。
+      same: current !== null && normalizeOccurredAtLocal(values.occurredAtLocal) === normalizeOccurredAtLocal(String(currentRaw.occurredAtLocal ?? "")),
+    },
+  ];
   for (const key of Object.keys(numberFields) as (keyof typeof numberFields)[]) {
-    const raw = record[key];
-    entries.push({ field: key, label: numberFields[key].label, value: raw === null ? "（空）" : unscale(raw, numberFields[key].decimals) + numberFields[key].unit });
-  }
-  for (const key of ["occurredAtLocal", "fullTank", "lowFuelLight", "stationName", "fuelGrade", "orderNumber"] as const) {
-    const raw = (record as unknown as Record<string, unknown>)[key];
+    const raw = values[key];
+    const currentIsNull = currentRaw[key] === null || currentRaw[key] === undefined;
+    // 数值按记录域比较：空字符串仅可开票金额等同 null（未填写）；解析失败
+    // （parseQuantity 为 null 的超精度等输入）不与任何当前值判同。
+    const parsed = raw === "" ? null : parseQuantity(key, raw);
+    const same = current !== null
+      && raw !== ""
+      && parsed !== null
+      && parsed === currentRaw[key];
+    const emptySame = current !== null && raw === "" && key === "invoiceableAmountCents" && currentIsNull;
     entries.push({
       field: key,
-      label: { occurredAtLocal: "时间", fullTank: "是否加满", lowFuelLight: "油灯", stationName: "加油站", fuelGrade: "油品", orderNumber: "订单号" }[key],
-      value: raw === null ? "（空）" : typeof raw === "boolean" ? (raw ? "是" : "否") : String(raw),
+      label: numberFields[key].label,
+      valueText: raw === "" ? "（空）" : raw,
+      currentText: current === null ? "（无当前记录）" : currentIsNull ? "（空）" : formatQuantity(currentRaw[key] as number, numberFields[key].decimals),
+      same: same || emptySame,
     });
   }
-  return entries;
-}
-
-function draftFields(draft: StoredRefuelingDraft): { label: string; value: string }[] {
-  const values = draft.values as unknown as Record<string, string>;
-  const entries: { label: string; value: string }[] = [{ label: "时间", value: values.occurredAtLocal }];
-  for (const key of Object.keys(numberFields) as (keyof typeof numberFields)[]) {
-    entries.push({ label: numberFields[key].label, value: values[key] === "" ? "（空）" : values[key] });
-  }
-  // 布尔字段的原始输入（yes/no/空）与带回时复制的内容一致，核对面板完整展示。
+  // 布尔字段的原始输入（yes/no/空）与当前记录值对照：空对未填写（null）相同。
   for (const key of ["fullTank", "lowFuelLight", "stationName", "fuelGrade", "orderNumber"] as const) {
     const label = { fullTank: "是否加满", lowFuelLight: "油灯", stationName: "加油站", fuelGrade: "油品", orderNumber: "订单号" }[key];
     const raw = values[key];
-    const value = key === "fullTank" || key === "lowFuelLight"
+    let same = false;
+    let currentText = "（无当前记录）";
+    if (current !== null) {
+      if (key === "fullTank" || key === "lowFuelLight") {
+        const currentBool = currentRaw[key] as boolean | null;
+        currentText = currentBool === null || currentBool === undefined ? "（空）" : currentBool ? "是" : "否";
+        same = raw === "" ? currentBool === null || currentBool === undefined : (raw === "yes") === currentBool;
+      } else {
+        const currentText2 = String(currentRaw[key] ?? "");
+        currentText = currentText2 === "" ? "（空）" : currentText2;
+        same = raw === currentText2;
+      }
+    }
+    const valueText = key === "fullTank" || key === "lowFuelLight"
       ? (raw === "yes" ? "是" : raw === "no" ? "否" : "（空）")
       : raw === "" ? "（空）" : raw;
-    entries.push({ label, value });
+    entries.push({ field: key, label, valueText, currentText, same });
   }
   return entries;
 }
@@ -168,16 +285,23 @@ function draftSummaryLine(draft: StoredRefuelingDraft): string {
 function sourceLabel(source: RetainedDraftSource): string {
   return source.kind === "v1" ? "升级前草稿（旧窗口）" : `代次草稿 ${source.generation!.slice(0, 8)}…`;
 }
+
+function retainedAmount(record: SavedRefuelingRecord): string {
+  return `¥${formatQuantity(record.amountPaidCents, 2)}`;
+}
 </script>
 
 <template>
   <section class="retained-copy" aria-label="保留副本与旧草稿">
     <div class="retained-header">
-      <h3>保留副本与旧草稿</h3>
+      <div>
+        <h3>保留内容</h3>
+        <p class="retained-caption">恢复前副本与旧草稿（只读保留）</p>
+      </div>
       <button class="text-button" type="button" @click="emit('close')">关闭</button>
     </div>
     <p class="retained-note">
-      只读查看，不自动与当前记录合并{{ allowBringBack ? "。勾选字段或核对草稿后填入普通表单，普通保存后才进入当前代次。" : "；确认打开恢复后的数据后才能逐项带回。" }}
+      只读查看，不自动与当前记录合并{{ allowBringBack ? "。勾选字段（保留值与当前值相同的不可选）后填入普通表单，普通保存后才进入当前代次。" : "；确认打开恢复后的数据后才能逐项带回。" }}
     </p>
     <p v-if="openError" class="field-error" role="alert">{{ openError }}</p>
     <p v-else-if="generationSummaries.length === 0 && draftSourceList.length === 0" class="retained-note">当前没有保留副本。</p>
@@ -202,7 +326,7 @@ function sourceLabel(source: RetainedDraftSource): string {
             <tr>
               <td>{{ record.occurredAtLocal.replace("T", " ") }}</td>
               <td>{{ record.stationName }}</td>
-              <td>¥{{ (record.amountPaidCents / 100).toFixed(2) }}</td>
+              <td>{{ retainedAmount(record) }}</td>
               <td>
                 <button class="text-button" type="button" @click="openRecordId = openRecordId === record.id ? null : record.id">
                   {{ openRecordId === record.id ? "收起字段" : allowBringBack ? "选取字段" : "查看字段" }}
@@ -212,26 +336,31 @@ function sourceLabel(source: RetainedDraftSource): string {
             <tr v-if="openRecordId === record.id" class="field-row">
               <td colspan="4">
                 <p v-if="allowBringBack" class="retained-note">
-                  {{ recordExists(record.id) ? "当前代次仍有同 ID 记录：勾选字段将填入该记录的编辑表单。" : "该记录已不存在于当前代次：将作为新记录填写（分配新记录 ID）。" }}
+                  {{ recordExists(record.id) ? "当前代次仍有同 ID 记录：勾选字段将填入该记录的编辑表单；与当前值相同的字段不可选。" : "该记录已不存在于当前代次：勾选字段将作为新记录填写（分配新记录 ID）。" }}
                 </p>
                 <p v-else class="retained-note">当前处于保护流程，仅可查看字段；确认打开恢复后的数据后才可逐项带回。</p>
-                <ul class="field-list">
-                  <li v-for="entry of recordFields(record)" :key="entry.field">
-                    <label v-if="allowBringBack">
-                      <input type="checkbox"
-                        :checked="fieldSelection(record.id).has(entry.field)"
-                        @change="toggleField(record.id, entry.field)" />
-                      <span class="field-label">{{ entry.label }}</span>
-                      <span class="field-value">{{ entry.value }}</span>
-                    </label>
-                    <template v-else>
-                      <span class="field-label">{{ entry.label }}</span>
-                      <span class="field-value">{{ entry.value }}</span>
-                    </template>
-                  </li>
-                </ul>
+                <table class="field-compare-table" aria-label="保留值与当前值对照">
+                  <thead>
+                    <tr><th v-if="allowBringBack" class="compare-select"></th><th>字段</th><th>保留值</th><th>当前值</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="entry of recordFieldEntries(record)" :key="entry.field">
+                      <td v-if="allowBringBack" class="compare-select">
+                        <input v-if="!entry.same" type="checkbox"
+                          :checked="fieldSelection(record.id).has(entry.field)"
+                          :aria-label="`带回字段 ${entry.label}`"
+                          @change="toggleField(record.id, entry.field)" />
+                        <span v-else class="same-mark" title="与当前值相同">相同</span>
+                      </td>
+                      <td v-else class="compare-select"></td>
+                      <td>{{ entry.label }}</td>
+                      <td>{{ entry.retainedText }}</td>
+                      <td>{{ entry.currentText }}</td>
+                    </tr>
+                  </tbody>
+                </table>
                 <button v-if="allowBringBack" class="text-button" type="button" @click="submitBringBack(record)">
-                  {{ recordExists(record.id) ? "填入当前记录的表单" : "作为新记录填写" }}
+                  {{ recordExists(record.id) ? "填入当前记录的表单" : "作为新记录填写" }}（已选 {{ fieldSelection(record.id).size }} 项）
                 </button>
               </td>
             </tr>
@@ -248,15 +377,36 @@ function sourceLabel(source: RetainedDraftSource): string {
           <li v-for="draft of source.drafts" :key="draft.id">
             <span class="draft-meta">{{ draft.mode === "edit" ? "编辑记录" : "新建记录" }} · {{ draftTime(draft.updatedAt) }}</span>
             <span class="draft-summary">{{ draftSummaryLine(draft) }}</span>
-            <button class="text-button" type="button" @click="openDraftKey = openDraftKey === draft.id ? null : draft.id">核对输入</button>
-            <button v-if="allowBringBack" class="text-button" type="button" @click="submitBringBackDraft(draft)">填入表单</button>
+            <button class="text-button" type="button" @click="openDraftKey = openDraftKey === draft.id ? null : draft.id">
+              {{ openDraftKey === draft.id ? "收起字段" : "核对并选取字段" }}
+            </button>
             <div v-if="openDraftKey === draft.id" class="draft-values">
-              <ul class="field-list">
-                <li v-for="entry of draftFields(draft)" :key="entry.label">
-                  <span class="field-label">{{ entry.label }}</span>
-                  <span class="field-value">{{ entry.value }}</span>
-                </li>
-              </ul>
+              <p v-if="allowBringBack" class="retained-note">
+                勾选要带回的草稿字段（与当前记录值相同的不可选）；填入表单后普通保存才生效。
+              </p>
+              <table class="field-compare-table" aria-label="草稿原始输入">
+                <thead>
+                  <tr><th v-if="allowBringBack" class="compare-select"></th><th>字段</th><th>草稿原始输入</th><th>当前值</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="entry of draftFieldEntries(draft)" :key="entry.field">
+                    <td v-if="allowBringBack" class="compare-select">
+                      <input v-if="!entry.same" type="checkbox"
+                        :checked="draftFieldSelection(draft.id).has(entry.field)"
+                        :aria-label="`带回草稿字段 ${entry.label}`"
+                        @change="toggleDraftField(draft.id, entry.field)" />
+                      <span v-else class="same-mark" title="与当前值相同">相同</span>
+                    </td>
+                    <td v-else class="compare-select"></td>
+                    <td>{{ entry.label }}</td>
+                    <td>{{ entry.valueText }}</td>
+                    <td>{{ entry.currentText }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <button v-if="allowBringBack" class="text-button" type="button" @click="submitBringBackDraft(draft)">
+                填入选中的 {{ draftFieldSelection(draft.id).size }} 项字段
+              </button>
             </div>
           </li>
         </ul>
@@ -270,27 +420,34 @@ function sourceLabel(source: RetainedDraftSource): string {
 
 <style scoped>
 .retained-copy {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 18px 20px;
-  margin: 18px 0;
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  padding: 20px 22px;
+  background: var(--surface-panel);
 }
 .retained-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 12px;
 }
 .retained-header h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.retained-caption {
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 .retained-drafts h4 {
   margin: 16px 0 6px;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .retained-note {
-  color: var(--muted);
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
   line-height: 1.8;
 }
 .retained-list {
@@ -308,46 +465,58 @@ function sourceLabel(source: RetainedDraftSource): string {
   gap: 8px 12px;
 }
 .retained-meta {
-  color: var(--muted);
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
   flex: 1 1 200px;
 }
 .retained-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .retained-table th,
 .retained-table td {
   text-align: left;
   padding: 8px 6px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--border-default);
   vertical-align: top;
 }
 .field-row td {
-  border-bottom: 1px solid var(--line);
-  background: #fafbfa;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-subtle);
 }
-.field-list {
-  list-style: none;
+.field-compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
   margin: 8px 0;
+}
+.field-compare-table th,
+.field-compare-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-default);
+  vertical-align: middle;
+}
+.compare-select {
+  width: 4.5rem;
+  text-align: center;
+}
+.compare-select input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
   padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 6px 14px;
 }
-.field-list li label,
-.field-list li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-}
-.field-label {
-  font-weight: 600;
-}
-.field-value {
-  color: var(--muted);
+.same-mark {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  white-space: nowrap;
 }
 .draft-items {
   list-style: none;
@@ -365,11 +534,11 @@ function sourceLabel(source: RetainedDraftSource): string {
 }
 .draft-meta {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .draft-summary {
-  color: var(--muted);
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
   flex: 1 1 140px;
 }
 .draft-values {

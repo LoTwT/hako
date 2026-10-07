@@ -1,133 +1,320 @@
+/*
+ * Hako 全局样式：按 @ayingott/theme 官方接入路径引入 Tailwind v4 与主题
+ * （Paper / Ink，语义运行时变量），并选择主题字体（fonts.css，霞鹜文楷等）。
+ * 组件样式使用主题语义角色（--surface-*、--text-*、--accent-*、--status-*、
+ * --border-*、--focus-*），不复制 token 数值；下方共享原语保持非分层样式，
+ * 覆盖 Tailwind preflight / 主题 base 层的默认。
+ */
+@import "tailwindcss";
+@import "@ayingott/theme/fonts.css";
+@import "@ayingott/theme";
+
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #253b34;
-  background: #f6f7f3;
   font-synthesis: none;
-  --ink: #253b34;
-  --accent: #356b51;
-  --muted: #69756e;
-  --line: #dde3da;
 }
-* {
-  box-sizing: border-box;
+
+html {
+  background: var(--surface-canvas);
 }
+
 body {
   margin: 0;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  -webkit-tap-highlight-color: transparent;
 }
+
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
+  color: inherit;
 }
+
+/* 数字对齐：金额、里程、统计值统一表格数字。 */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- 按钮 */
 button {
-  min-height: 42px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
+  min-height: 44px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control, 10px);
   padding: 9px 16px;
-  background: #fff;
-  color: var(--ink);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
   cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
+
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.5;
+  opacity: 0.55;
 }
+
 button:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
+
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
-select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring-shadow);
 }
+
+.primary {
+  background: var(--accent-primary);
+  border-color: transparent;
+  color: var(--accent-contrast);
+  font-weight: 500;
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--accent-primary-hover);
+  border-color: transparent;
+}
+
+.primary:active:not(:disabled) {
+  background: var(--accent-primary-active);
+}
+
+.primary:focus-visible {
+  outline-color: var(--focus-ring-on-accent-color);
+  box-shadow: var(--focus-ring-on-accent-shadow);
+}
+
+.danger-outline {
+  background: transparent;
+  border-color: var(--status-danger-border);
+  color: var(--status-danger-fg);
+}
+
+.text-button {
+  min-height: 30px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-accent);
+  font-size: 0.8125rem;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+a[aria-disabled="true"],
+button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------- 输入 */
 input,
 select {
   width: 100%;
   min-height: 44px;
   padding: 10px 12px;
-  background: #fff;
-  color: var(--ink);
-  border: 1px solid #cbd4c8;
-  border-radius: 5px;
-  font-size: 16px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control, 10px);
+  font-size: 1rem;
 }
+
+input:hover:not(:disabled),
+select:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
 input[aria-invalid="true"],
 select[aria-invalid="true"] {
-  border-color: #b7563a;
+  border-color: var(--status-danger-border);
 }
-small,
-.muted {
-  color: var(--muted);
-  font-weight: 400;
+
+input::placeholder {
+  color: var(--text-muted);
 }
-small {
-  font-size: 12px;
-}
+
+/* ---------------------------------------------------------------- 面板与文字 */
 .panel {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 26px;
-  background: #fff;
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  padding: 24px;
+  background: var(--surface-panel);
 }
+
 .section-heading {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
 }
+
 .section-heading h2 {
-  font-size: 21px;
-  font-weight: 550;
-  margin: 7px 0 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 6px 0 0;
 }
-.section-heading .muted {
-  font-size: 12px;
+
+small,
+.muted {
+  color: var(--text-secondary);
+  font-weight: 400;
 }
+
+small {
+  font-size: 0.75rem;
+}
+
 .eyebrow {
   margin: 0;
-  font-size: 10px;
-  letter-spacing: 1.6px;
-  color: var(--muted);
+  font-size: 0.6875rem;
+  letter-spacing: 1.4px;
+  color: var(--text-muted);
   font-weight: 600;
 }
-.primary {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-  min-height: 46px;
-}
-.text-button {
-  padding: 2px 0;
-  min-height: 30px;
-  border: 0;
-  color: var(--accent);
-  background: transparent;
-  font-size: 12px;
-  text-decoration: underline;
-  text-underline-offset: 4px;
-}
+
+/* ---------------------------------------------------------------- 状态语义 */
 .warning {
-  background: #fff5e2;
-  color: #815318;
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+  border: 1px solid var(--status-warning-border);
   padding: 14px 16px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.8;
-  border-radius: 6px;
+  border-radius: 10px;
   margin-bottom: 16px;
 }
+
 .warning p {
   margin: 0 0 8px;
 }
+
+.info-block {
+  background: var(--status-info-bg);
+  color: var(--status-info-fg);
+  border: 1px solid var(--status-info-border);
+  padding: 14px 16px;
+  font-size: 0.8125rem;
+  line-height: 1.8;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
 .field-error {
-  color: #9b3829;
-  font-size: 12px;
+  color: var(--status-danger-fg);
+  font-size: 0.75rem;
   line-height: 1.65;
   font-weight: 400;
 }
+
+.success-block {
+  background: var(--status-success-bg);
+  color: var(--status-success-fg);
+  border: 1px solid var(--status-success-border);
+  padding: 14px 16px;
+  font-size: 0.8125rem;
+  line-height: 1.8;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
+/* 状态徽标：图形 + 文字一起承担含义，颜色不单独表达状态。 */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.status-chip svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.status-chip.is-success {
+  color: var(--status-success-fg);
+  border-color: var(--status-success-border);
+  background: var(--status-success-bg);
+}
+
+.status-chip.is-warning {
+  color: var(--status-warning-fg);
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+}
+
+.status-chip.is-danger {
+  color: var(--status-danger-fg);
+  border-color: var(--status-danger-border);
+  background: var(--status-danger-bg);
+}
+
+/* 可移除筛选标签（来自统计的期间/待核对筛选）。 */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 2px 6px 2px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.filter-chip button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  min-height: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.filter-chip button svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ---------------------------------------------------------------- 布局原语 */
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 @media (max-width: 450px) {
   .panel {
-    padding: 20px 16px;
+    padding: 18px 16px;
+  }
+}
+
+/* 减少动态效果：唯一可动的加载图标也停止旋转，状态改由文字表达。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

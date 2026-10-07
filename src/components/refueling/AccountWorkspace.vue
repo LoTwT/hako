@@ -2,11 +2,45 @@
 import { computed, shallowRef } from "vue";
 import { useLocalRefueling } from "../../composables/useLocalRefueling";
 import RefuelingWorkspace from "./RefuelingWorkspace.vue";
+import type { AppRoute, RefuelingRoute } from "../../ui/app-route";
 
-const props = defineProps<{ accountId: string; active: boolean; opened: boolean; visible: boolean; navigatingForLogin: boolean }>();
+const props = defineProps<{
+  accountId: string;
+  active: boolean;
+  opened: boolean;
+  visible: boolean;
+  navigatingForLogin: boolean;
+  /** 加油区当前路由；门禁期间保留原值，重新确认后恢复。 */
+  route: RefuelingRoute;
+  /** 应用级当前路由（含 home/settings 等）：工作区据此决定自身可见性之外的导航。 */
+  appRoute: AppRoute;
+  navigate: (next: AppRoute) => void;
+  replaceRoute: (next: AppRoute) => void;
+  backTo: (target: AppRoute) => void;
+  openSettings: (event?: Event) => void;
+}>();
 const emit = defineEmits<{ sessionRejected: [] }>();
 const local = useLocalRefueling({ accountId: props.accountId, active: () => props.active,
   onSessionRejected: () => emit("sessionRejected") });
+
+/**
+ * 导航/设置转发门禁（UI-R03）：工作区以 v-show 保活，隐藏的旧账号实例的
+ * 异步出口（保存清理、放弃完成等迟到回调）不得改变当前账号页面。调用时
+ * 复核自身仍是活动账号；本机清理照常完成，只有全局路由/设置动作被拦。
+ */
+function guardRouteAction(action: (arg: AppRoute) => void): (arg: AppRoute) => void {
+  return (arg: AppRoute) => {
+    if (!props.active) return;
+    action(arg);
+  };
+}
+const guardedNavigate = guardRouteAction((next: AppRoute) => { void props.navigate(next); });
+const guardedReplaceRoute = guardRouteAction((next: AppRoute) => { props.replaceRoute(next); });
+const guardedBackTo = guardRouteAction((target: AppRoute) => { props.backTo(target); });
+const guardedOpenSettings = (event?: Event) => {
+  if (!props.active) return;
+  props.openSettings(event);
+};
 const workspace = shallowRef<InstanceType<typeof RefuelingWorkspace> | null>(null);
 const saving = computed(() => local.saving.value);
 /**
@@ -24,5 +58,6 @@ defineExpose({ saving, flushDraft });
 
 <template>
   <RefuelingWorkspace v-if="opened" v-show="visible" :key="workspaceKey" ref="workspace" :account-id="accountId" :local="local"
-    :locked="!active" :navigating-for-login="navigatingForLogin" />
+    :locked="!active" :navigating-for-login="navigatingForLogin" :route="route" :app-route="appRoute"
+    :navigate="guardedNavigate" :replace-route="guardedReplaceRoute" :back-to="guardedBackTo" :open-settings="guardedOpenSettings" />
 </template>
