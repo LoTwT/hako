@@ -808,7 +808,7 @@ export function useLocalRefueling(options: { accountId: string; active: () => bo
   });
   return {
     records: readonly(records), ready: readonly(ready), saving: readonly(saving), error: readonly(error),
-    pendingSync: readonly(pendingSync), confirmed: readonly(confirmed),
+    pendingSync: readonly(pendingSync), confirmed: readonly(confirmed), syncStatus: readonly(syncStatus),
     notice, persistent: readonly(persistent), importedLegacyIds: readonly(importedLegacyIds),
     generationFlow: readonly(generationFlow), workspaceGeneration: readonly(workspaceGeneration),
     pendingRestore: readonly(pendingRestore), importConflicts: readonly(importConflicts),

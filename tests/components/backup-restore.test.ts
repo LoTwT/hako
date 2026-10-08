@@ -5,7 +5,7 @@
 // mock 注入；不冒充真实浏览器。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRenderer, nextTick, shallowRef, type VNode } from "vue";
+import { createRenderer, defineComponent, h, nextTick, shallowRef, type VNode } from "vue";
 import BackupRestore from "../../src/components/refueling/BackupRestore.vue";
 import { accountA, initializeTestLoro, syntheticRecord } from "../helpers/sync-fixtures";
 import type { RefuelingBackupList, RestorePreview } from "../../src/data/refueling-restore";
@@ -122,7 +122,7 @@ async function flushPanel(): Promise<void> {
 const unmounts: Array<() => void> = [];
 
 interface LocalProp {
-  pendingRestore: { value: { requestId: string } | null };
+  pendingRestore: { value: { requestId: string; requestFingerprint?: string } | null };
   pendingSync: { value: boolean };
   recheckRestoreReceipt: () => void;
   beginRestoreRequest: (body: unknown) => Promise<{ ok: boolean; pending: unknown; message: string }>;
@@ -130,14 +130,47 @@ interface LocalProp {
 }
 
 function mountPanel(local: LocalProp, flushDraft: () => Promise<{ ok: boolean; message: string }>) {
-  const app = renderer.createApp(BackupRestore, {
-    accountId: accountA,
-    local,
-    flushDraft,
-  });
+  return mountPanelControlled(local, flushDraft).instance;
+}
+
+interface PanelControl {
+  instance: { subTree: VNode };
+  updateProps: (props: { visibleSection?: "list" | "preview" | "result"; protectionMode?: boolean; cancelDeliveryEpoch?: number }) => void;
+  requestSections: string[];
+  /** 模拟工作区离开备份区（route 不再是 backups 族 → 面板 v-if 卸载）。 */
+  unmountPanel: () => void;
+  /** 承接投递捕获：(message, deliveryEpoch) 元组。 */
+  cancelUnconfirmedMessages: Array<[string, number | undefined]>;
+}
+
+/** 分区（地址驱动）与保护态可控挂载：模拟工作区随地址更新 props 并捕获 requestSection。 */
+function mountPanelControlled(local: LocalProp, flushDraft: () => Promise<{ ok: boolean; message: string }>, initialProps: { visibleSection?: "list" | "preview" | "result"; protectionMode?: boolean; cancelDeliveryEpoch?: number } = {}): PanelControl {
+  const propsRef = shallowRef({ ...initialProps });
+  const requestSections: string[] = [];
+  const cancelUnconfirmedMessages: Array<[string, number | undefined]> = [];
+  const app = renderer.createApp(defineComponent({
+    // 以宽化类型挂载：分区/保护态与事件监听按运行时合同传入。
+    setup: () => () => h(BackupRestore, {
+      accountId: accountA,
+      local: local as unknown as InstanceType<typeof BackupRestore>["$props"]["local"],
+      flushDraft,
+      visibleSection: propsRef.value.visibleSection,
+      protectionMode: propsRef.value.protectionMode,
+      cancelDeliveryEpoch: propsRef.value.cancelDeliveryEpoch,
+      onRequestSection: (section: string) => { requestSections.push(section); },
+      onCancelUnconfirmedChange: (message: string, deliveryEpoch?: number) => { cancelUnconfirmedMessages.push([message, deliveryEpoch]); },
+    } as InstanceType<typeof BackupRestore>["$props"]),
+  }));
   const instance = app.mount(createHostContainer()) as unknown as { $: { subTree: VNode } };
-  unmounts.push(() => app.unmount());
-  return instance.$;
+  let panelUnmounted = false;
+  unmounts.push(() => { if (!panelUnmounted) { panelUnmounted = true; app.unmount(); } });
+  return {
+    instance: instance.$,
+    updateProps: (props) => { propsRef.value = { ...propsRef.value, ...props }; },
+    requestSections,
+    cancelUnconfirmedMessages,
+    unmountPanel: () => { if (!panelUnmounted) { panelUnmounted = true; app.unmount(); } },
+  };
 }
 
 /** 自定义 renderer 的 vnode 树可能通过 component.subTree 复用同一子树；按节点身份去重，防止指数级重复遍历。 */
@@ -769,4 +802,340 @@ describe("B 修复回归（第四轮父审）：异步列表刷新与换人归�
     expect(text).toContain("当前的待确认恢复请求已更新");
     expect(buttonByText(root.subTree, "以原请求重试")).toBeDefined();
   });
+});
+
+// ---------------------------------------------------------------------------
+// UI-R06 / UI-C（预览返回失败呈现）与 UI-R07（保护态分区）回归
+// ---------------------------------------------------------------------------
+
+describe("父审第一轮修复（UI-R06/UI-R07）", () => {
+  it("UI-R06 D2 浏览器返回 D1：列表分区复位，版本按钮恢复可选", async () => {
+    const snapshots = await buildSnapshots();
+    const local = baseLocal();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2), versionEntry(1)] } });
+    createPreviewMock.mockResolvedValue({ ok: true, preview: previewResponse(1) });
+    fetchPreviewSnapshotMock.mockResolvedValue({ ok: true, snapshot: snapshots.target, snapshotSha256: "b".repeat(64) });
+    fetchSnapshotMock.mockResolvedValue({ ok: true, snapshot: { documentGeneration: generation, revision: 2, snapshot: snapshots.current } });
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = mountPanelControlled(local, flushDraft, { visibleSection: "list" });
+    await flushPanel();
+    await selectOldestVersion(panel.instance);
+    expect(panel.requestSections).toContain("preview");
+    panel.updateProps({ visibleSection: "preview" });
+    await flushPanel();
+    expect(collectText(panel.instance.subTree)).toContain("将增加");
+    // 浏览器返回 D1：同一实例回到列表分区，预览状态复位，版本按钮重新可选。
+    panel.updateProps({ visibleSection: "list" });
+    await flushPanel();
+    const text = collectText(panel.instance.subTree);
+    expect(buttonsByText(panel.instance.subTree, "预览此版本").length).toBeGreaterThan(0);
+    expect(text).not.toContain("将增加");
+  });
+
+  it("UI-R06 begin 登记后 pendingSync 拦截首次派发：进入 D3 原请求流程，不卡 D2", async () => {
+    const snapshots = await buildSnapshots();
+    const local = baseLocal();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2), versionEntry(1)] } });
+    createPreviewMock.mockResolvedValue({ ok: true, preview: previewResponse(1) });
+    fetchPreviewSnapshotMock.mockResolvedValue({ ok: true, snapshot: snapshots.target, snapshotSha256: "b".repeat(64) });
+    fetchSnapshotMock.mockResolvedValue({ ok: true, snapshot: { documentGeneration: generation, revision: 2, snapshot: snapshots.current } });
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = mountPanelControlled(local, flushDraft, { visibleSection: "list" });
+    await flushPanel();
+    await selectOldestVersion(panel.instance);
+    panel.updateProps({ visibleSection: "preview" });
+    await flushPanel();
+    // begin 的异步边界期间另一窗口保存（pendingSync=true）：begin 成功登记原请求。
+    local.beginRestoreRequest = vi.fn(async () => {
+      local.pendingSync.value = true;
+      local.pendingRestore.value = { requestId: "00000000-0000-4000-8000-0000000000f1", requestFingerprint: "fixed" };
+      return { ok: true, pending: { requestId: "00000000-0000-4000-8000-0000000000f1", requestFingerprint: "fixed" }, message: "" };
+    });
+    await (buttonByText(panel.instance.subTree, "恢复到此版本")!.onClick as () => Promise<void>)();
+    await flushPanel();
+    // 修正行为：地址进入 D3 原请求分区，首次派发被拦但保留以原请求重试入口。
+    expect(panel.requestSections).toContain("result");
+    expect(local.submitPendingRestore).not.toHaveBeenCalled();
+    const text = collectText(panel.instance.subTree);
+    expect(text).toContain("尚未同步的修改");
+    expect(text).toContain("以原请求重试");
+  });
+
+  it("UI-R06 已有持久原请求时再次确认：不覆盖请求，进入 D3 原请求流程", async () => {
+    const snapshots = await buildSnapshots();
+    const local = baseLocal();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2), versionEntry(1)] } });
+    createPreviewMock.mockResolvedValue({ ok: true, preview: previewResponse(1) });
+    fetchPreviewSnapshotMock.mockResolvedValue({ ok: true, snapshot: snapshots.target, snapshotSha256: "b".repeat(64) });
+    fetchSnapshotMock.mockResolvedValue({ ok: true, snapshot: { documentGeneration: generation, revision: 2, snapshot: snapshots.current } });
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = mountPanelControlled(local, flushDraft, { visibleSection: "list" });
+    await flushPanel();
+    await selectOldestVersion(panel.instance);
+    panel.updateProps({ visibleSection: "preview" });
+    await flushPanel();
+    // flush 的异步边界期间另一窗口持久了原请求 P1：本次确认不覆盖、不派发。
+    flushDraft.mockImplementation(async () => {
+      local.pendingRestore.value = { requestId: "00000000-0000-4000-8000-0000000000f2", requestFingerprint: "fixed" };
+      return { ok: true, message: "" };
+    });
+    await (buttonByText(panel.instance.subTree, "恢复到此版本")!.onClick as () => Promise<void>)();
+    await flushPanel();
+    expect(flushDraft).toHaveBeenCalledTimes(1);
+    expect(panel.requestSections).toContain("result");
+    expect(local.submitPendingRestore).not.toHaveBeenCalled();
+    expect(collectText(panel.instance.subTree)).toContain("已有待确认的恢复请求");
+  });
+
+  it("UI-C 预览返回取消失败：不宣称已删除，提示返回后重新预览", async () => {
+    const snapshots = await buildSnapshots();
+    const local = baseLocal();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2), versionEntry(1)] } });
+    createPreviewMock.mockResolvedValue({ ok: true, preview: previewResponse(1) });
+    fetchPreviewSnapshotMock.mockResolvedValue({ ok: true, snapshot: snapshots.target, snapshotSha256: "b".repeat(64) });
+    fetchSnapshotMock.mockResolvedValue({ ok: true, snapshot: { documentGeneration: generation, revision: 2, snapshot: snapshots.current } });
+    cancelPreviewMock.mockResolvedValue({ cancelled: false });
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = mountPanelControlled(local, flushDraft, { visibleSection: "list" });
+    await flushPanel();
+    await selectOldestVersion(panel.instance);
+    panel.updateProps({ visibleSection: "preview" });
+    await flushPanel();
+    await (buttonByText(panel.instance.subTree, "取消预览")!.onClick as () => Promise<void>)();
+    await flushPanel();
+    expect(collectText(panel.instance.subTree)).toContain("未能确认预览已关闭；返回后请重新预览。");
+  });
+
+  it("UI-R07 保护态 D3：不显示「重新预览/返回」普通写入入口；非保护态显示", async () => {
+    const local = baseLocal();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(1)] } });
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const protectedPanel = mountPanelControlled(local, flushDraft, { visibleSection: "result", protectionMode: true });
+    await flushPanel();
+    expect(buttonByText(protectedPanel.instance.subTree, "重新预览当前数据")).toBeUndefined();
+    expect(buttonByText(protectedPanel.instance.subTree, "返回数据页")).toBeUndefined();
+    // 对照：非保护态（激活代次）的 D3 终态提供普通入口。
+    const activePanel = mountPanelControlled(local, flushDraft, { visibleSection: "result" });
+    await flushPanel();
+    expect(buttonByText(activePanel.instance.subTree, "重新预览当前数据")).toBeDefined();
+    expect(buttonByText(activePanel.instance.subTree, "返回数据页")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 父审第二轮修复（UI-R06 分区协调与取消 / UI-R07 旧取消回调归属）
+// ---------------------------------------------------------------------------
+
+describe("父审第二轮修复（UI-R06/UI-R07）", () => {
+  /** 预览面板的完整 mock 预置：必须在挂载前完成（onMounted 即刷新列表）。 */
+  async function preparePreviewMocks(): Promise<void> {
+    const snapshots = await buildSnapshots();
+    listBackupsMock.mockReset();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2), versionEntry(1)] } });
+    createPreviewMock.mockReset();
+    createPreviewMock.mockResolvedValue({ ok: true, preview: previewResponse(1) });
+    fetchPreviewSnapshotMock.mockReset();
+    fetchPreviewSnapshotMock.mockResolvedValue({ ok: true, snapshot: snapshots.target, snapshotSha256: "b".repeat(64) });
+    fetchSnapshotMock.mockReset();
+    fetchSnapshotMock.mockResolvedValue({ ok: true, snapshot: { documentGeneration: generation, revision: 2, snapshot: snapshots.current } });
+  }
+
+  async function openPreviewPanel(create: () => PanelControl): Promise<PanelControl> {
+    await preparePreviewMocks();
+    const panel = create();
+    await flushPanel();
+    await selectOldestVersion(panel.instance);
+    panel.updateProps({ visibleSection: "preview" });
+    await flushPanel();
+    return panel;
+  }
+
+  it("UI-R06 二轮 A1：begin 控制锁发现他窗已登记原请求（ok:false + pending）——进入 D3 原请求流程", async () => {
+    const local = baseLocal();
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list" }));
+    local.beginRestoreRequest = vi.fn(async () => ({
+      ok: false,
+      pending: { requestId: "00000000-0000-4000-8000-0000000000f1", requestFingerprint: "fixed" },
+      message: "已有待确认的恢复请求，不会用新请求覆盖",
+    }));
+    await (buttonByText(panel.instance.subTree, "恢复到此版本")!.onClick as () => Promise<void>)();
+    await flushPanel();
+    expect(panel.requestSections).toContain("result");
+    expect(local.submitPendingRestore).not.toHaveBeenCalled();
+    expect(collectText(panel.instance.subTree)).toContain("已有待确认的恢复请求");
+  });
+
+  it("UI-R06 二轮 A2：flush 期间同时出现 pending 与 pendingSync——pending 优先进入 D3", async () => {
+    const local = baseLocal();
+    const flushDraft = vi.fn(async () => {
+      local.pendingSync.value = true;
+      local.pendingRestore.value = { requestId: "00000000-0000-4000-8000-0000000000f2", requestFingerprint: "fixed" };
+      return { ok: true, message: "" };
+    });
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list" }));
+    await (buttonByText(panel.instance.subTree, "恢复到此版本")!.onClick as () => Promise<void>)();
+    await flushPanel();
+    expect(panel.requestSections).toContain("result");
+    expect(collectText(panel.instance.subTree)).toContain("已有待确认的恢复请求");
+    expect(collectText(panel.instance.subTree)).not.toContain("已暂停本次恢复");
+  });
+
+  it("UI-R06 二轮 B：not_committed 终态清 pending 后停留 D3，可显示终态不被赶回 D0", async () => {
+    const local = baseLocal();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2)] } });
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    // 挂载前已存在持久原请求（直接 URL 进入 D3 的形状）。
+    local.pendingRestore.value = { requestId: "00000000-0000-4000-8000-0000000000f3", requestFingerprint: "fixed" };
+    const panel = mountPanelControlled(local, flushDraft, { visibleSection: "result" });
+    await flushPanel();
+    // 本人以原请求重试得到确定 not_committed：组合层先持久终态并清内存 pending。
+    local.submitPendingRestore = vi.fn(async () => {
+      local.pendingRestore.value = null;
+      return { kind: "not_committed", reason: "preview_expired" };
+    });
+    await (buttonByText(panel.instance.subTree, "以原请求重试")!.onClick as () => Promise<void>)();
+    await flushPanel();
+    const text = collectText(panel.instance.subTree);
+    // 确定的未执行说明与重新预览入口保留在 D3；不 emit 回数据页。
+    expect(text).toContain("预览已过期");
+    expect(text).toContain("重新预览当前数据");
+    expect(panel.requestSections).not.toContain("data");
+  });
+
+  it("UI-R06 二轮 B 对照：直接打开 D3 且确无结果（无 pending 无终态）——回数据页", async () => {
+    const local = baseLocal();
+    listBackupsMock.mockResolvedValue({ ok: true, list: { initialized: true, currentGeneration: generation, currentRevision: 2, versions: [versionEntry(2)] } });
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = mountPanelControlled(local, flushDraft, { visibleSection: "result" });
+    await flushPanel();
+    expect(panel.requestSections).toContain("data");
+  });
+
+  it("UI-R06 二轮 C1：D2 返回 D1 时精确取消未提交预览（携带当前 previewId；pending 存在时不取消）", async () => {
+    const local = baseLocal();
+    cancelPreviewMock.mockResolvedValue({ cancelled: true });
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list" }));
+    expect(cancelPreviewMock).not.toHaveBeenCalled();
+    // 浏览器返回 D1：对返回前的那份预览发送精确取消。
+    panel.updateProps({ visibleSection: "list" });
+    await flushPanel();
+    expect(cancelPreviewMock).toHaveBeenCalledTimes(1);
+    expect(cancelPreviewMock).toHaveBeenCalledWith(expect.objectContaining({ accountId: accountA }), "00000000-0000-4000-8000-0000000000c1");
+  });
+
+  it("UI-R06 二轮 C1 对照：有待确认请求时返回 D1 不取消任何请求（原请求流程优先）", async () => {
+    const local = baseLocal();
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list" }));
+    // 返回前他窗口的待确认请求到达：返回不发送取消（请求与预览都不动服务端）。
+    local.pendingRestore.value = { requestId: "00000000-0000-4000-8000-0000000000f4" };
+    await flushPanel();
+    panel.updateProps({ visibleSection: "list" });
+    await flushPanel();
+    expect(cancelPreviewMock).not.toHaveBeenCalled();
+  });
+
+  it("UI-R06 二轮 C2：显式取消失败与列表读取失败两项事实同时可见", async () => {
+    const local = baseLocal();
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list" }));
+    // 取消失败 + 取消后的列表读取也失败：两项事实须同时可见。
+    cancelPreviewMock.mockResolvedValue({ cancelled: false });
+    listBackupsMock.mockResolvedValue({ ok: false, error: "unauthorized" });
+    await (buttonByText(panel.instance.subTree, "取消预览")!.onClick as () => Promise<void>)();
+    await flushPanel();
+    const text = collectText(panel.instance.subTree);
+    expect(text).toContain("未能确认预览已关闭；返回后请重新预览。");
+    expect(text).toContain("会话已失效");
+  });
+
+  it("UI-R07 二轮：在途取消的响应迟到时保护态/新 pending 已接管——旧回调不清状态、不发路由意图", async () => {
+    const local = baseLocal();
+    let resolveCancel!: (value: { cancelled: boolean }) => void;
+    cancelPreviewMock.mockImplementation(async () => await new Promise((resolve) => { resolveCancel = resolve; }));
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list" }));
+    const cancelDone = (buttonByText(panel.instance.subTree, "取消预览")!.onClick as () => Promise<void>)();
+    await nextTick();
+    // 取消在途：另一窗口的待确认请求 P 到达（epoch 推进，新流程接管）。
+    local.pendingRestore.value = { requestId: "00000000-0000-4000-8000-0000000000f5", requestFingerprint: "fixed" };
+    await nextTick();
+    resolveCancel({ cancelled: false });
+    await cancelDone;
+    await flushPanel();
+    // 旧取消回调不 emit 回列表、不写取消未确认提示（新待确认流程的事实优先）。
+    expect(panel.requestSections).not.toContain("list");
+    expect(collectText(panel.instance.subTree)).not.toContain("未能确认预览已关闭");
+  });
+
+  // ---------------------------------------------------------------------------
+  // 父审第三轮修复（UI-R06.1 确认互斥 / UI-R06.2 卸载取消承接）
+  // ---------------------------------------------------------------------------
+
+  it("UI-R06.1：确认登记在途（begin 阻塞、pending 尚 null）时离开——不取消预览，登记链继续", async () => {
+    const local = baseLocal();
+    let releaseBegin!: () => void;
+    local.beginRestoreRequest = vi.fn(async () => await new Promise<{ ok: boolean; pending: { requestId: string; requestFingerprint: string } | null; message: string }>((resolve) => {
+      releaseBegin = () => resolve({ ok: true, pending: { requestId: "00000000-0000-4000-8000-0000000000f1", requestFingerprint: "fixed" }, message: "" });
+    }));
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list" }));
+    // 点击「恢复到此版本」：flush 完成，begin 登记（指纹/控制事务）在途，pending 仍 null。
+    const confirming = (buttonByText(panel.instance.subTree, "恢复到此版本")!.onClick as () => Promise<void>)();
+    await flushPanel();
+    expect(local.beginRestoreRequest).toHaveBeenCalledTimes(1);
+    // 用户离开（卸载路径与分区返回路径都不取消本人已确认的操作）。
+    panel.updateProps({ visibleSection: "list" });
+    panel.unmountPanel();
+    await flushPanel();
+    expect(cancelPreviewMock).not.toHaveBeenCalled();
+    releaseBegin();
+    await confirming;
+    await flushPanel();
+    // 登记链继续：提交同一预览对应的请求（不被离开取消打断）。
+    expect(local.submitPendingRestore).toHaveBeenCalledTimes(1);
+  });
+
+  it("UI-R06.2：卸载后取消失败由承接层可达（emit 未确认陈述），新预览开始时清除", async () => {
+    const local = baseLocal();
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list" }));
+    cancelPreviewMock.mockResolvedValue({ cancelled: false });
+    // 工作区「返回」离开备份区：面板卸载、精确取消发出、失败结果晚于卸载返回。
+    panel.unmountPanel();
+    await flushPanel();
+    expect(cancelPreviewMock).toHaveBeenCalledTimes(1);
+    // 组件已销毁：本地 cancelUnconfirmed 不可达，未确认陈述经事件交给承接层。
+    expect(panel.cancelUnconfirmedMessages).toContainEqual(["未能确认预览已关闭；返回后请重新预览。", expect.any(Number)]);
+
+    // 对照：非确认场景的卸载取消仍精确执行（UI-R06-C 已有路径保持）。
+    const panel2 = await openPreviewPanel(() => mountPanelControlled(baseLocal(), flushDraft, { visibleSection: "list" }));
+    cancelPreviewMock.mockClear();
+    panel2.unmountPanel();
+    await flushPanel();
+    expect(cancelPreviewMock).toHaveBeenCalledTimes(1);
+
+    // 新预览创建（openPreviewPanel 内已选版本进入比较视图）：承接层收到清除
+    // （空消息）——旧操作的未确认失败不带给新流程。
+    const panel3 = await openPreviewPanel(() => mountPanelControlled(baseLocal(), flushDraft, { visibleSection: "list" }));
+    // 清除消息不带代次（承接层对空消息只递增代次，不核对）。
+    expect(panel3.cancelUnconfirmedMessages).toContainEqual(["", undefined]);
+  });
+  it("UI-R06.2 四轮：跨实例投递代次——发起时捕获、随取消结果一起交给承接层", async () => {
+    const local = baseLocal();
+    const flushDraft = vi.fn(async () => ({ ok: true, message: "" }));
+    // 工作区承接层当前代次为 5（此前已有过若干次新流程清除）。
+    const panel = await openPreviewPanel(() => mountPanelControlled(local, flushDraft, { visibleSection: "list", cancelDeliveryEpoch: 5 }));
+    cancelPreviewMock.mockResolvedValue({ cancelled: false });
+    // 离开（卸载路径）：取消发起时捕获当前代次 5，失败结果携带它投递。
+    panel.unmountPanel();
+    await flushPanel();
+    expect(panel.cancelUnconfirmedMessages).toContainEqual(["未能确认预览已关闭；返回后请重新预览。", 5]);
+    // 期间工作区代次推进（新预览/新确认）后，同一结果携带的仍是发起时捕获的 5：
+    // 承接层据当前代次核对并拒绝——该核对合同由工作区测试断言。
+  });
+
+
 });

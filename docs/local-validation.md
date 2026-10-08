@@ -1,6 +1,6 @@
 # 本地最小验证进展
 
-更新：2026-10-05。设计文档 [PR #4](https://github.com/LoTwT/hako/pull/4)、本地验证版 [PR #5](https://github.com/LoTwT/hako/pull/5)、登录切片 PR1 至 PR3（[#7](https://github.com/LoTwT/hako/pull/7)、[#8](https://github.com/LoTwT/hako/pull/8)、[#9](https://github.com/LoTwT/hako/pull/9)）、页面门禁 [PR #10](https://github.com/LoTwT/hako/pull/10) 和账号同步 [PR #11](https://github.com/LoTwT/hako/pull/11) 均已合入；独立备份切片（[PR #13](https://github.com/LoTwT/hako/pull/13)、文案对齐 [PR #14](https://github.com/LoTwT/hako/pull/14)）已于 2026-10-04 合入、部署并完成首份真实备份读回，见[发布记录](./releases/2026-10-04-independent-backup.md)；恢复交付 A（[PR #18](https://github.com/LoTwT/hako/pull/18)）与 B（[PR #19](https://github.com/LoTwT/hako/pull/19) 实现、[PR #20](https://github.com/LoTwT/hako/pull/20) 浏览器修复）已于 2026-10-05 合入并分阶段部署，A 完成两端设备接受、B 完成两端备份列表与无变化预览的用户验收，见[恢复发布记录](./releases/2026-10-05-restore.md)。本文件维护实现进度、历史本地验证和运行入口；协议 v1 首次发布的精确候选、当时的平台读回与首轮真实协作验收由[同步发布与验收记录](./releases/2026-10-03-sync.md)（2026-10-03）维护，当前协议 v2 的 A/B 发布身份、平台读回与最新验收统一见[恢复发布记录](./releases/2026-10-05-restore.md)，产品规则仍以[重新设计记录](./specs/redesign.md)和对应专项合同为准。
+更新：2026-10-07。设计文档 [PR #4](https://github.com/LoTwT/hako/pull/4)、本地验证版 [PR #5](https://github.com/LoTwT/hako/pull/5)、登录切片 PR1 至 PR3（[#7](https://github.com/LoTwT/hako/pull/7)、[#8](https://github.com/LoTwT/hako/pull/8)、[#9](https://github.com/LoTwT/hako/pull/9)）、页面门禁 [PR #10](https://github.com/LoTwT/hako/pull/10) 和账号同步 [PR #11](https://github.com/LoTwT/hako/pull/11) 均已合入；独立备份切片（[PR #13](https://github.com/LoTwT/hako/pull/13)、文案对齐 [PR #14](https://github.com/LoTwT/hako/pull/14)）已于 2026-10-04 合入、部署并完成首份真实备份读回，见[发布记录](./releases/2026-10-04-independent-backup.md)；恢复交付 A（[PR #18](https://github.com/LoTwT/hako/pull/18)）与 B（[PR #19](https://github.com/LoTwT/hako/pull/19) 实现、[PR #20](https://github.com/LoTwT/hako/pull/20) 浏览器修复）已于 2026-10-05 合入并分阶段部署，A 完成两端设备接受、B 完成两端备份列表与无变化预览的用户验收，见[恢复发布记录](./releases/2026-10-05-restore.md)；应用外框与独立启动状态（PR #22）已于 2026-10-06 合入。本文件维护实现进度、历史本地验证和运行入口；协议 v1 首次发布的精确候选、当时的平台读回与首轮真实协作验收由[同步发布与验收记录](./releases/2026-10-03-sync.md)（2026-10-03）维护，当前协议 v2 的 A/B 发布身份、平台读回与最新验收统一见[恢复发布记录](./releases/2026-10-05-restore.md)，产品规则仍以[重新设计记录](./specs/redesign.md)和对应专项合同为准。已确认 UI/UX 重设计的应用实施见[UI/UX 重设计实施](#已确认-uiux-重设计实施2026-10-07隔离-worktree未合并未部署)一节，尚未合并与部署。
 
 当前状态：同源 Worker 承载 `/api`，登录、页面门禁、账号数据隔离与最小双副本同步均已部署；独立备份（2026-10-04）与恢复功能（同步协议 v2、备份格式 v2 及「备份与恢复」面板，2026-10-05）亦已部署，设备与用户验收范围见对应发布记录。普通浏览器双向同步、不同字段离线合并、本机草稿退出重登，以及 iPhone 主屏幕 PWA 登录、同步与联网重开已在首轮真实协作验收中通过；电脑为工具观察，手机为本人回报，范围与未知项见发布记录。账号存储、导入和持久确认以[账号同步规格](./specs/account-sync.md)为准，登录及期限以[登录接入规格](./specs/eruoo-login-integration.md)为准。
 
@@ -18,7 +18,7 @@
 - 登录后端（PR2）：`POST /api/auth/login`、`GET /api/auth/callback`、`GET /api/auth/session`、`POST /api/auth/logout`。登录事务短期（10 分钟）、绑定发起浏览器环境（`__Host-hako_login`），回调到达时原子消费、OIDC 兑换完成后在同一 SQLite 事务里删除事务并插入会话；退出或同环境重新发起会删除事务，因此在途登录不会建立会话。回调使用 oauth4webapi 完成 state/iss 校验、PKCE S256 兑换、ID token 签名与 claims（nonce/aud/azp/期限/at_hash）验证、UserInfo `sub` 核对与固定 owner 比对；成功后才建立 Hako 自己的会话（`__Host-hako_session`，仅保存凭据哈希）。会话在服务端绑定固定 issuer 与 owner `sub`，状态读取与续期都要求身份匹配（缺少有效登录配置时带 Cookie 的读取返回配置错误）。凭证不进入响应体、日志或缓存；回调收尾返回最小静态 HTML（no-store、`Referrer-Policy: no-referrer`、不加载第三方资源），不回退首页。
 - 账号级 SQLite Durable Object（PR2）：登录事务与会话状态在 `cloudflare.config.ts` 声明的 `HakoAccountDurableObject` 中原子处理（消费、过期、撤销、续期）；续期能力（24 小时间隔、180 天有效期、365 天绝对上限）已在 DO 内实现并由测试覆盖，PR2 阶段尚未接入前台同步，后续 PR #11 已完成该接线，没有新增保活接口；参数与兼容边界见登录规格。
 - 出站接线（PR2）：discovery、JWKS、token 与 UserInfo 使用普通公开 HTTPS，出站只允许固定 issuer origin 与既定端点路径；未采用 Service Binding（绑定目标未经核实，不做猜测）。
-- 登录 UI 与草稿保护（PR3，已合入）：[AuthStatus.vue](../src/components/auth/AuthStatus.vue) 显示登录状态、登录/退出与可读错误；账号面板与草稿提示分区显示，登录状态只由 `GET /api/auth/session` 决定。未保存输入写入独立草稿库（严格持久性），页面线索命中自动恢复、无线索时只提供恢复/放弃选择；新建草稿的页面立即占住草稿（Web Locks），其他窗口与复制标签页不能抢占。登录跳转只发生在草稿 `flush()` 成功之后，写失败或草稿库不可用时阻止跳转并提示；返回后恢复编辑现场，恢复的金额差异必须重新确认，退出不影响本机记录与未保存输入。
+- 登录 UI 与草稿保护（PR3，已合入；本轮 UI/UX 重设计实施后，账号状态与退出入口并入设置层和各页顶栏，原 AuthStatus 组件移除）：显示登录状态、登录/退出与可读错误；账号面板与草稿提示分区显示，登录状态只由 `GET /api/auth/session` 决定。未保存输入写入独立草稿库（严格持久性），页面线索命中自动恢复、无线索时只提供恢复/放弃选择；新建草稿的页面立即占住草稿（Web Locks），其他窗口与复制标签页不能抢占。登录跳转只发生在草稿 `flush()` 成功之后，写失败或草稿库不可用时阻止跳转并提示；返回后恢复编辑现场，恢复的金额差异必须重新确认，退出不影响本机记录与未保存输入。
 - Worker 与前端的产物与类型隔离（PR1）：client 构建输出与预缓存固定在 Build Output 的 Worker 资源目录（官方 `getWorkerAssetsDir` 路径函数对齐），Worker bundle 只含 Worker 代码；Service Worker 每次构建只生成一次，`navigateFallbackDenylist` 覆盖裸 `/api` 与 `/api/*`。
 
 原验证数据使用 `hako-local-validation-v1` IndexedDB，后续账号切片保留它，由用户显式选择已保存记录导入；正式账号存储及导入语义只在[账号同步规格](./specs/account-sync.md)维护。记录列表日常金额只显示实付。
@@ -559,6 +559,104 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界与合成边界：烟测的会话响应、`online`/`pageshow` 事件与静态服务均为本地合成，未点击登录按钮、未访问 eruoo 或生产、未使用真实账号，`/api/auth/login` 未被调用；真实 bfcache 跨进程恢复、真实 OIDC 登录/退出与真机 PWA、生产部署与真实 Worker/DO/R2、Service Worker 更新与离线重开交互、其他浏览器与视口、屏幕阅读器实际播报均未验证。组件测试不替代真实浏览器，浏览器烟测也不替代真机与生产验收；应用发布与真机结果仍由各发布记录维护。
 
+## 已确认 UI/UX 重设计实施（2026-10-07，隔离 worktree；未合并、未部署）
+
+用户确认已定设计（`@ayingott/theme` Paper/Ink、首页工具卡仅图标 + 完整名称、Lucide 普通图标、全尺寸六件完整版品牌、记录为根页的三入口、有限 hash 地址与编辑保活等）并授权本地实施；设计取舍与来源见项目外设计包 `ui-ux-design-current-r4-confirmed-20261007-a9e673l1`，页面与导航规则已并入[重新设计记录](./specs/redesign.md#功能首页与页面切换)。本节记录实现范围、验证证据与未验边界；代码与文档保持未提交、未推送、未部署，主检出与旧分支未改动。基线为 `c600f19c`（tree `6f05dae`，PR #22 合并后的 main），任务分支 `feat/ui-ux-redesign`（Lody 独立 worktree）。
+
+实现摘要（服务端 Worker、数据层与可靠性合同不变，仅组合层新增 `syncStatus` 只读暴露）：
+
+- 主题基建：实际安装 `@ayingott/theme@0.3.0`（CSS-first，Tailwind v4 必需 peer，官方接入路径 `@import "tailwindcss"` + 主题 + 选择 `fonts.css` 字体），组件样式改用主题语义角色（`--surface-*`/`--text-*`/`--accent-*`/`--status-*`/`--focus-*`），不用 brutal。外观偏好（跟随系统/浅色/深色）集中在设置中选择，本机 localStorage 记住，`<html>` 切换 `.dark`；[index.html](../index.html) 内联首帧引导避免闪烁。主题字体（霞鹜文楷等 woff2，Regular 7.65 MiB / Medium 8.54 MiB）按官方 `unicode-range` 按需加载、`font-display: swap`，超过预缓存 5 MiB 上限不进入 SW 预缓存。
+- 品牌资产：六件完整版纸箱图全尺寸接入（favicon PNG/ICO/SVG、页头 mark、首页插画、PWA any/maskable、Apple Touch），仅等比缩放/居中/留白；PNG/ICO 纳入 `globPatterns` 预缓存，`skipWaiting` 仍为 false（不静默丢输入）。
+- 图标：`@lucide/vue@1.52.0`（ISC）按需命名导入，覆盖工具/导航/操作/状态/数据事实图标；仅图标按钮带具体可访问名称，图标随文字为装饰。
+- 外框与导航：手机根页底部三导航（记录/统计/数据）、子页来源返回、Web（≥880px）侧栏（品牌、‹ 首页、加油分组、三项导航、设置）与顶栏（面包屑、无时间同步摘要、账号入口）。设置层 Web 为右侧层（Esc/遮罩关闭、焦点还原），手机为整页。
+- 有限 hash 地址（`src/ui/app-route.ts`）：`/`、`/#login`、`/#settings`、`/#refueling`（records/new/records/:id/edit/statistics/data/backups/backups/preview/restore/retained/legacy-import）。地址只承载页面身份；未知加油子路径回记录根页，其他未知地址回首页；非法/不存在记录统一回根页且不泄露归属。认证回调与返回类别仍只有 home/refueling。
+- 记录/详情/表单：手机月份分组列表 + 筛选（全部/待核对 n，n 为业务待核对数）+ 跳到月份；Web 主从视图（初始不选中、↑↓ 移动选择、宽屏 Enter 聚焦详情标题、窄屏进入详情页）；详情两端同组字段、只读无编辑暗示；表单按时间/账单/车辆/更多信息分组，新建加满不预选，来源标签（自动计算/本人填写/原记录/默认），参考里程按表单时间取前后相邻记录，错误汇总可聚焦第一项。展示精度按已确认口径（金额 2 位、加油量 3 位、单价 4 位、里程 1 位）。
+- 编辑器生命周期：每窗口单实例，路由切换 `v-show` 保活；离开加油区（含编辑器路由）先 `flushDraft` 落盘、失败保持原页（浏览器返回同样经守卫，失败推回原地址）；根页主动作在有挂起编辑时变为「继续填写」；草稿选择层（多草稿先选择、也可空白新建；占用不可接管）；放弃草稿二次确认、默认焦点「继续填写」；保存/放弃按一次性来源标记在历史邻项可信时返回、否则替换到已知来源。
+- 数据页与恢复：D0 分区陈述事实（本机/账号同步/独立备份/保留内容/旧验证导入），备份等待只用服务端 `nextActionAtMs`（未知明确未知、blocked 需要排查），待确认恢复请求条件入口；备份与恢复面板按 D1/D2/D3 地址分区呈现（同一状态机与既有归属/收尾逻辑不变，预览页直达/刷新回列表并要求重选）；保留内容页（D4）与旧验证导入页（D5）页面化。
+- 统计页（F4）：入口与布局接线只呈现现有真实能力——期间切换（累计/月度/年度）与按加油日期（北京时间）的直接费用汇总（应付/优惠券/实付）及期间记录数；平均油耗、每公里油费、趋势与记录覆盖里程明确标注「统计计算尚未实施」，不显示合成数字；从统计进入记录带可移除期间/待核对筛选标签（仅内存，不写地址）。
+- 保护与门禁：独立启动/明确匿名/暂不可确认与 PR #22 语义一致（门禁期间目标路由与标题保留）；代次保护面板替换普通工作区、导航禁用、保留受控入口（打开恢复后数据/查看保留内容/查看恢复结果），D4 保护态只读；会话失效立即隐藏私人内容、实例保留。
+
+验证环境与结果（Node v24.18.0、pnpm 11.25.0、Playwright-core 1.63.0 + 本机缓存 Chromium headless shell 1243、`pnpm preview` 4173 完整 Workers 产物；新增依赖 `@ayingott/theme@0.3.0`、`@lucide/vue@1.52.0`、dev `tailwindcss@4.3.3` + `@tailwindcss/vite@4.3.3`）：
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 单元/组件测试 | `pnpm run test` 通过：主配置 28 文件 **474 项**（新增路由解析/外观偏好纯逻辑 10 项，既有 464 项全部通过，含账号隔离、同步、备份/恢复 Worker 与恢复异步归属回归），组件配置 6 文件 **56 项**（更新 App 编排与工作区接线到新 UI 并保留全部可靠性断言；新增工作区编辑器路由接线 4 项与数据页分区接线 5 项；BackupRestore 三套既有测试在保留原逻辑与合同文案下全部通过） |
+| 类型与构建 | `pnpm run typecheck`（`cf workers types` + vue-tsc + 两段 tsc）与 `pnpm run build` 通过：预缓存 21 项、第一轮实测 4137.54 KiB（修复轮 4150.73 KiB；含 PNG/ICO 品牌与应用图标、Wasm；主题字体 woff2 超 5 MiB 上限不入预缓存）；CSS 产物含 Paper/Ink 语义变量与字体 `@font-face` |
+| 真实浏览器验证（合成数据） | 45 项检查全部通过、控制台零错误/警告：G0/G1/G2 三态（外框保留、无私人内容、地址/标题语义）；手机 Paper 首页（图标 + 完整名称工具卡、无描述、整卡可点）→ 记录根页（月份分组、筛选、底部导航、待核对真实计数）→ 窄屏详情 → 表单（分组顺序、默认值、参考里程、加满不预选）→ 保存回列；手机 Ink 主题一致性、设置三选一（跟随系统/浅色/深色）、手动选择覆盖系统、localStorage 记忆、根字号放大到 200% 时正文无横向溢出（第一轮仅验证根字号缩放下的这一布局表现；全部文本以 rem 计算由修复第一轮补验，手机 390px/200% 的单选组重排与无横向溢出由修复第二轮实测，见下两节；浏览器整页缩放不在任何一轮验证范围）；Web 1440 侧栏/面包屑/主从（未选中提示、行点击、↑↓ 键、Enter 聚焦）、编辑（原记录标签）、暂离横幅 + 继续填写保活（输入保留）、放弃确认默认焦点、统计（真实费用合计 + 未实施标注 + 可移除筛选标签）、数据页分区、备份版本列表（恢复基线/清理中不可选）、保留内容诚实空态、设置右侧层（Esc 关闭、切深色生效）；会话失效门禁立即隐藏私人内容；720px 窄窗口切换单列外框 |
+| 视觉抽查 | 关键页截图（Paper/Ink、手机/Web、门禁/表单/统计/数据/备份/设置）已目检：品牌六件图、主题语义色、Lucide 图标与布局与设计一致；截图存于证据目录 |
+
+证据入口：项目外证据目录 `/Users/caoyujie/.agents/task-artifacts/hako/ui-ux-redesign-implementation-20261007-anby-impl/`（`browser-checks.json`、`screenshots/` 20 张、验证脚本副本与审核回执）。
+
+### 已确认 UI/UX 重设计修复（第一轮父审，2026-10-08，同一隔离 worktree；未合并、未部署）
+
+父审对第一轮实施给出 CHANGES_REQUIRED（UI-R01–R13 可靠性缺陷、UI-C01/C02 已确认设计补全、UI-V01 文本缩放、UI-D01 文档更正）；修复继续在同一 worktree/分支（`feat/ui-ux-redesign`，基线 `c600f19c`）完成，代码与文档保持未提交。同时更正第一轮完成通知中的计数口径：新增测试为 19 项（app-route 解析 6、appearance 纯逻辑 4、组件接线 9），主配置“新增 10 项”与最终 474+56=530 的总数无误；有限页面地址按统一口径为 14 种（home/login/settings 与 11 种加油子路由）。
+
+修复内容（每项的实际修复与验证详见修复回执）：
+
+- 可靠性：代次保护分段（草稿保护成功前不卸载表单，失败保留输入可重试）；同 ID 再进入恢复既有实例与输入；隐藏旧账号工作区不再产生路由副作用（记录解析/地址改写/导航均按锁定门禁）；浏览器导航归属（迟到 flush 不覆盖新目标、popstate/hashchange 配对事件串行处理且失败离开只恢复一次地址）；空白新建进入编辑地址、直接编辑多草稿先出选择层；D1↔D2 地址与面板状态协调（返回复位列表、pending 早退进 D3 原请求流程）；保护态 D3 挂载原请求面板；统计期间/待核对筛选真实过滤记录列表；统计当前期按北京时间计算（设备时区无关）；折叠可选字段错误进入可聚焦的错误清单（aria-invalid + 查看第一项）；跨记录警告由工作区统一计算传入列表与详情；子页选择不重置滚动、跨大页切换复位；设置层焦点陷阱与 Esc 关闭还原焦点（含单选组停靠与背景层恢复可见后的焦点还原）。
+- 已确认设计补全：保留副本按「保留值/当前值」对照逐字段勾选带回（相同禁选）；旧验证导入逐项状态（已导入/来源冲突不可选、可选项勾选导入、空态区分）。
+- 文本缩放：全部组件字号改为 rem，根字号 200% 时正文与记录行计算字号随之放大（浏览器实测翻倍）；整页缩放仍不在验证范围。
+- 文档：本节与[重新设计记录](./specs/redesign.md#功能首页与页面切换)中被 2026-10-07 规则替代的旧当前语态已标历史。
+
+修复轮验证（Node v24.18.0、pnpm 11.25.0、Playwright-core 1.63.0 + 本机缓存 Chromium headless shell 1243、`pnpm preview` 4173 完整 Workers 产物；合成数据经 Playwright 路由拦截注入，无真实 eruoo 登录、生产访问或真实数据）：
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 单元/组件测试 | `pnpm run test` 通过：主配置 **477 项**（新增 `tests/modal-focus.test.ts` 焦点陷阱/还原 3 项，其余 474 项不变），组件配置 9 文件 **85 项**（新增导航归属 4、账号隔离与保护面板 6、呈现层回归 8 项三个文件；既有文件追加工作区保护分段/同 ID 恢复/草稿选择 6 项与备份面板 D1/D2/D3 状态协调及取消失败呈现 5 项；第一轮 9 项接线断言更新为逐字段带回等新合同；合计新增 32 项用例） |
+| 类型与构建 | `pnpm run typecheck` 与 `pnpm run build` 通过：预缓存 21 项 4150.73 KiB |
+| 真实浏览器验证（合成数据） | 15 项检查全部通过：D2 浏览器返回 D1 列表复位（非空壳）；统计“查看本期记录”真实过滤且标签可移除；TZ=UTC 且时间固定在北京月初边界时月度分期仍为北京月份；子页选择保留滚动位置、首页↔加油区复位；设置层打开焦点入层、连续 20 次 Tab 不逃出、Esc 关闭并还原触发点；根字号 200% 时正文与记录行计算字号翻倍。控制台零错误/警告 |
+
+修复轮证据入口：项目外证据目录 `/Users/caoyujie/.agents/task-artifacts/hako/ui-ux-redesign-fix1-20261008-anby/`（`browser-verify-fix1.json`、`screenshots/`、验证脚本副本）。
+
+### 已确认 UI/UX 重设计修复（第二轮父审，2026-10-08，同一隔离 worktree；未合并、未部署）
+
+父侧第二轮内容复审（CHANGES_REQUIRED）针对修复第一轮候选的 10 个剩余项（UI-R01/R03/R04/R05/R06/R07 剩余边界、UI-C01/C02 剩余、UI-R13 真实触发点、UI-V01 手机排版、UI-D01 证据精度）；修复继续在同一 worktree/分支完成，代码与文档保持未提交。路径集合相对第一轮 49 路径为 49+8（6 个新文件 + `backup-restore.test.ts`、`retained-copy.test.ts` 两个既有测试首次纳入变更），总 57；第一轮回执写"49+6"为误，以本节为准。`RefuelingRecords.vue` 为基线中存在、未纳入任何变更路径的未改动文件（与基线字节一致，SHA-256 `7433856bb8d3d538f0b5949d1c927fc3e5c034e623a01e787582e5770e1291c9`）；第一轮修复中途误删后恢复不构成内容变更，不做清理。
+
+修复内容与逐项验证见第二轮回执（证据目录 `/Users/caoyujie/.agents/task-artifacts/hako/ui-ux-redesign-fix2-20261008-anby/`），要点：首次挂载即 protected 的实例在草稿初始化后统一解析保护状态；隐藏旧账号的保存/放弃迟到完成经 AccountWorkspace 活动门禁与编辑器归属复核，不再夺走当前账号路由；App 导航任务绑定账号、相同 routeKey 的重复意图也作废在途任务；详情「编辑记录」入口共用多草稿选择决策；持久 pending 的全部早退统一进入 D3 原请求流程、not_committed 等确定终态清 pending 后仍在 D3 显示说明与重新预览、D2 返回（分区切换与卸载两种路径）精确取消未提交预览、取消未确认与列表失败独立并存；在途取消回调按 epoch/previewId/pending 归属复核，保护态下隐藏的普通面板失去路由权；草稿对照补当前值列并正确区分解析失败/空/明确否与业务相等，带回保留所选原始字符串交表单校验；旧验证导入冲突优先于已导入映射、无可选项时逐项身份可见；设置层触发点解析到真实可聚焦按钮、浏览器 Back 关闭统一还原焦点（页面标题聚焦不与触发点还原争夺）；单选组 `minmax(min(9rem, 100%), 1fr)` 真实重排。
+
+第二轮验证（环境同前；合成数据经 Playwright 路由拦截注入，无真实 eruoo 登录、生产访问或真实数据）：
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 单元/组件测试 | `pnpm run test` 通过：主配置 29 文件 **480 项**，组件配置 9 文件 **104 项**（第一轮 477+85 → 新增 22：R03 异步出口 2、R04 归属 2、R01/R05/C01 工作区 3、R06/R07 面板 8、C01 对照 2、C02 状态 2、modal-focus 单元净增 3） |
+| 类型与构建 | `pnpm run typecheck` 与 `pnpm run build` 通过：预缓存 21 项 4152.89 KiB |
+| 真实浏览器验证（合成数据） | 10 项全部通过：R13 首页文字触发 Esc 还原、Back 关闭还原（均回账号按钮）；V01 390px/200% 无横向溢出（scrollWidth=clientWidth=390）与单选组完整可见；R06 D2 返回精确取消（DELETE 携带 previewId）、not_committed 终态停留 D3 且重新预览入口可见。两条 console error 为脚本注入的 503/410 合成响应，非产品错误 |
+| 父侧合同探针复验 | 父侧 45 项统一探针（只读复制执行后删除临时副本）：43 通过 / 1 跳过（父侧已撤回的 settings 滚动 mock）/ 1 失败——唯一失败项的 save-with-null 断言为缺陷行为 characterization，修复后原始字符串保留（renderedValue=1.234）且普通表单校验拒绝保存（save 0 次调用，与 R10 对同一输入的合同一致），按"不把错误观察改成绿"原则不迎合 |
+
+未验边界（第二轮）：同前——浏览器验证全部基于合成响应；真实 bfcache、真机/PWA、读屏播报、对比度实测、浏览器整页缩放、Service Worker 更新流程仍未验证；R01 retained-only 的数据库到组件完整启动链为源码推导 + 组件实测，非端到端实跑；统计计算（油耗/趋势）仍未实施。
+
+### 已确认 UI/UX 重设计修复（第三轮父审，2026-10-08，同一隔离 worktree；未合并、未部署）
+
+父侧第三轮内容复审（CHANGES_REQUIRED）针对 fix2 候选的 6 个 P2（R03/R04 异步收尾归属、R06 卸载取消生命周期）与 1 个 P3（C01 时间判同）；修复继续在同一 worktree/分支完成，未提交。上轮回执两处计数在此更正：相对 round2 的内容更新文件为 **17**（回执开头误写 12，后文清单正确）；测试净增为 **+22**（回执摘要的「面板7、modal净增1」分组与实际不符，实际为组件 +19、主配置 +3）。
+
+修复要点（逐项验证见第三轮回执 `/Users/caoyujie/.agents/task-artifacts/hako/ui-ux-redesign-fix3-20261008-anby/`）：
+
+- R03.1/R03.2：`returnFromEditor` 拆分两层归属——本机结束（仍拥有本次编辑即结束，隐藏账号的已保存/已放弃编辑不再悬置可继续）与全局导航（额外要求仍在发起时的编辑地址上；同账号较新的导航不被旧完成抢回）。
+- R04.1/R04.2：App 导航任务绑定**会话生命周期代次**（账号任何变化即失效，A→B→A 不重新授权旧任务）；flush 失败提示由归属复核通过后发布，旧任务的失败不写给切换后的账号，当前账号自身失败仍可读。
+- R06.1：确认登记/提交在途（confirmBusy）时离开（卸载或分区返回）不取消本人已确认的预览——「可离开而不取消」，登记链继续提交同一请求。
+- R06.2：离开取消的未确认陈述由仍存活的同账号工作区承接（备份面板以显式 prop 传入承接回调——Vue 的 emit 在组件卸载后会被丢弃；卸载前同步提取闭包），在数据页/备份列表可读，新预览或新确认开始时清除。
+- C01.1：草稿时间按领域规范化（`normalizeOccurredAtLocal`）判同（分钟与零秒为同一业务时间），原文展示与带回保留。
+
+第三轮验证（环境同前；合成数据经 Playwright 路由拦截注入，无真实 eruoo 登录、生产访问或真实数据）：
+
+| 验证 | 实际结果 |
+| --- | --- |
+| 单元/组件测试 | `pnpm run test` 通过：主配置 29 文件 **480 项**，组件配置 9 文件 **111 项**（fix2 104 + 7：R03.1/R03.2/R04.1/R04.2/R06.1/R06.2/C01.1） |
+| 类型与构建 | `pnpm run typecheck` 与 `pnpm run build` 通过：预缓存 21 项 4153.44 KiB |
+| 父侧合同探针复验 | 父侧 52 项统一探针（只读复制执行后删除临时副本）：**51 通过 / 1 跳过（父侧已撤回的 settings 滚动 mock）/ 0 失败**（父侧基线 9 失败） |
+| 真实浏览器验证（合成数据） | 5/5 通过：R06.2 卸载取消失败由承接层在数据页与回列表可读、精确取消携带 previewId；记录加载烟测。1 条 console error 为脚本注入的 503 合成响应，非产品错误 |
+
+未验边界（第三轮）：同前——真实多设备/生产、bfcache、真机/PWA、读屏、对比度、浏览器整页缩放、SW 更新流程；R06.1 的服务端 not_committed 后果仍为源码推导（父审同口径）；统计计算仍未实施。
+
+### 已确认 UI/UX 重设计修复（第四轮父审，2026-10-08，同一隔离 worktree；未合并、未部署）
+
+父侧第四轮内容复审（CHANGES_REQUIRED）仅剩 2 个 P2：旧保存完成结束同记录重开的新编辑（R03.3）、旧面板卸载取消失败写到新预览/新请求（R06.2 剩余）。修复要点：编辑收尾按**编辑实例身份**（pendingEditor 对象引用——每个编辑入口新建、暂离/继续/同 ID 再进入不换）复核，同记录先后两次编辑互不干扰；离开取消的跨面板归属由工作区承接层的**投递代次**核对（`backupCancelEpoch`——新预览/新确认递增，旧取消结果携带发起时代次，被作废的不再写呈现；无新流程时照常可读）。更正前两处表述：fix3 回执的父报告相对链接应为 `../`（原件不追改）；`normalizeOccurredAtLocal` 位于领域层（`src/domain/refueling/form.ts`），非 Worker/数据层。
+
+验证：`pnpm run test` 主配置 480 + 组件 **114**（+3：R03.3、R06.2 投递代次、承接核对）；typecheck/build 通过（预缓存 21 项 4153.60 KiB，`git diff --check` 0）；父侧 59 项统一探针只读复验 **58 通过 / 1 既定跳过 / 0 失败**（父侧基线 3 失败）；真实浏览器 4/4（核心反例：Q1 取消晚到 Q2 新预览——DELETE 仅 Q1、Q2 保持、无错误横幅；对照 D0 可读）。逐项回执：`/Users/caoyujie/.agents/task-artifacts/hako/ui-ux-redesign-fix4-20261008-anby/`。未验边界同前。
+
+未验边界（修复轮）：同第一轮未验边界——浏览器验证全部基于合成响应，真实 bfcache、真机/PWA、读屏播报、对比度实测、整页缩放与 Service Worker 更新流程仍未验证；统计计算（油耗/趋势）仍未实施。修复不卸载旧账号工作区、不清 pending、不换请求号、不绕过身份门禁、不清理旧副本。
+
+未验边界与合成边界：浏览器验证的会话/引导/快照/同步回声/备份状态与列表响应均为 Playwright 路由拦截注入的合成数据，无真实 eruoo 登录、生产访问或真实 R2；D2 预览比较与 D3 原请求结果流、代次保护面板与多窗口草稿占用未在浏览器逐一走查（由既有组件/单元回归覆盖，见上表）；真实 bfcache、真机/PWA 安装、系统图标裁切、读屏播报、对比度实测、整页缩放（非根字号）、真实主题字体下的长名极限与 Service Worker 更新流程未验证。统计计算（含记录覆盖里程与趋势）、AI 识图与登录完成码后备交互仍未实现，本实施不伪造其结果。应用未提交、未合并、未部署；发布事实仍由发布记录维护。
 ## 代码入口
 
 | 位置 | 职责 |
@@ -570,16 +668,17 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 | [src/worker/auth/oidc.ts](../src/worker/auth/oidc.ts) | eruoo 出站接线：固定 issuer discovery 与端点半白名单、授权地址组装、code 兑换、ID token 签名与 claims、UserInfo。 |
 | [src/worker/auth/account-state.ts](../src/worker/auth/account-state.ts)、[account-durable-object.ts](../src/worker/account-durable-object.ts) | 登录事务与会话的 SQLite 原子语义（消费、完成、过期、身份校验、续期、撤销）及 Durable Object 运行时包装。 |
 | [src/worker/auth/account-rpc.ts](../src/worker/auth/account-rpc.ts)、[cookies.ts](../src/worker/auth/cookies.ts)、[secrets.ts](../src/worker/auth/secrets.ts)、[session-policy.ts](../src/worker/auth/session-policy.ts) | DO RPC 合同、Cookie 读写与属性、随机凭据与哈希、会话与事务时间参数（集中定义）。 |
-| [App.vue](../src/App.vue)、[RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue) | 会话门禁、功能首页与固定页面切换、单一账号/PWA 接线与登录双次落盘编排；工作区保留新增/编辑、保存、草稿恢复及占用生命周期。 |
-| [LoginPage.vue](../src/components/auth/LoginPage.vue)、[StartupPage.vue](../src/components/auth/StartupPage.vue)、[SessionUnavailablePage.vue](../src/components/auth/SessionUnavailablePage.vue)、[AuthStatus.vue](../src/components/auth/AuthStatus.vue)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、[session-client.ts](../src/domain/auth/session-client.ts) | 登录入口、启动等待与暂不可确认（含重试）、header 账号状态/操作、状态读取和可读错误；发起地址只接受 https（本机 http 例外），网络失败不谎报成功。 |
+| [App.vue](../src/App.vue)、[src/ui/app-route.ts](../src/ui/app-route.ts)、[src/ui/appearance.ts](../src/ui/appearance.ts) | 会话门禁与呈现、有限 hash 地址解析/守卫（离开加油区先等待草稿落盘）、设置层与外观偏好接线、单一账号/PWA 与登录双次落盘编排。 |
+| [HomePage.vue](../src/components/home/HomePage.vue)、[SettingsPanel.vue](../src/components/settings/SettingsPanel.vue)、[LoginPage.vue](../src/components/auth/LoginPage.vue)、[StartupPage.vue](../src/components/auth/StartupPage.vue)、[SessionUnavailablePage.vue](../src/components/auth/SessionUnavailablePage.vue)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、[session-client.ts](../src/domain/auth/session-client.ts) | 工具首页（图标 + 完整名称工具卡）、账号与外观设置（跟随系统/浅色/深色，仅本机记住）、登录入口、启动等待与暂不可确认（含重试）、状态读取和可读错误；发起地址只接受 https（本机 http 例外），网络失败不谎报成功。 |
+| [RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue)、[RecordsRoot.vue](../src/components/refueling/RecordsRoot.vue)、[RecordDetailPanel.vue](../src/components/refueling/RecordDetailPanel.vue)、[RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[StatisticsPage.vue](../src/components/refueling/StatisticsPage.vue)、[DataPage.vue](../src/components/refueling/DataPage.vue)、[DraftSelectionLayer.vue](../src/components/refueling/DraftSelectionLayer.vue) | 加油工作区路由化（记录/统计/数据三入口、底部导航与 Web 侧栏、编辑器保活与一次性来源返回、代次保护面板）、记录列表与主从/键盘选择、详情、表单（分组/默认值/来源标签/参考里程）、统计页（真实费用汇总 + 未实施标注）、数据页分区与草稿选择层。 |
 | [useRefuelingDrafts.ts](../src/composables/useRefuelingDrafts.ts)、[refueling-draft-session.ts](../src/data/refueling-draft-session.ts)、[refueling-draft-store.ts](../src/data/refueling-draft-store.ts)、[draft-environment.ts](../src/data/draft-environment.ts)、[draft-recovery.ts](../src/domain/refueling/draft-recovery.ts) | 草稿会话（绑定表单、flush、采用/放弃、保存后清理）、独立草稿库（严格持久性）、sessionStorage 线索与 Web Locks 页面占用、恢复决策（线索恢复/选择/幽灵清理/孤儿保留）。 |
-| [RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[form.ts](../src/domain/refueling/form.ts) | 录入、校验与核对确认；确定性表单规则、十进制计算和定点金额。 |
+| [RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[form.ts](../src/domain/refueling/form.ts) | 录入、校验与核对确认；确定性表单规则、十进制计算、定点金额与按确认口径的展示格式。 |
 | [refueling-document.ts](../src/data/refueling-document.ts) | Loro 文档读写、字段级变更与完整历史快照。 |
 | [local-refueling-v2.ts](../src/data/local-refueling-v2.ts) | v2 账号控制锁与 IndexedDB 严格事务（documents/control）、v1→G0 迁移合并、代次切换接收与保留副本、待确认恢复结构。 |
-| [useLocalRefueling.ts](../src/composables/useLocalRefueling.ts) | 页面状态、保存结果、窗口通知与聚焦刷新。 |
-| [StorageStatus.vue](../src/components/refueling/StorageStatus.vue)、[vite.config.ts](../vite.config.ts) | 离线准备、持久存储申请、更新提示；cf/Vite/PWA 组合与预缓存范围。 |
-| [restore 相关入口](../src/worker/restore/)（回执存储/服务/固定预览暂存/路由）、[backup-verify.ts](../src/worker/backup/backup-verify.ts)、[refueling-restore.ts](../src/data/refueling-restore.ts)、[restore-comparison.ts](../src/data/restore-comparison.ts)、[BackupRestore.vue](../src/components/refueling/BackupRestore.vue)、[refueling-server-api.ts](../src/data/refueling-server-api.ts)、[RetainedRefuelingCopy.vue](../src/components/refueling/RetainedRefuelingCopy.vue)、[scripts/backup-verify.ts](../scripts/backup-verify.ts) | 备份列表/固定预览/保护校验/唯一切换与回执、共享严格 v1/v2 完成备份验证器、本机 pending/终态与提交编排、独立只读比较、恢复面板、bootstrap/只读快照客户端、保留副本只读查看与逐项带回、离线 `backup:verify` CLI。 |
-| [refueling-form.test.ts](../tests/refueling-form.test.ts)、[refueling-document.test.ts](../tests/refueling-document.test.ts)、[refueling-draft-store.test.ts](../tests/refueling-draft-store.test.ts)、[refueling-draft-session.test.ts](../tests/refueling-draft-session.test.ts)、[auth-session-client.test.ts](../tests/auth-session-client.test.ts)、[worker-api.test.ts](../tests/worker-api.test.ts)、[worker-login-config.test.ts](../tests/worker-login-config.test.ts)、[worker-auth-flow.test.ts](../tests/worker-auth-flow.test.ts)、[worker-account-state.test.ts](../tests/worker-account-state.test.ts) | 表单规则、Loro 文档、草稿库与恢复/占用语义、认证客户端与跳转安全、Worker 路由/配置合同、登录协议与失败路径、DO 会话语义；受控 OIDC 提供方与 SQLite 账号状态见 [tests/helpers/](../tests/helpers)。 |
+| [useLocalRefueling.ts](../src/composables/useLocalRefueling.ts) | 页面状态、保存结果、窗口通知与聚焦刷新；对外只读暴露文档级 `syncStatus` 供顶栏摘要。 |
+| [vite.config.ts](../vite.config.ts)、[index.html](../index.html)、[public/](../public/) | cf/Vite/PWA/Tailwind+主题组合与预缓存范围（PNG/ICO 入缓存、字体按需）；首帧主题引导、favicon/Apple Touch 品牌接线；六件完整版品牌资产。 |
+| [restore 相关入口](../src/worker/restore/)（回执存储/服务/固定预览暂存/路由）、[backup-verify.ts](../src/worker/backup/backup-verify.ts)、[refueling-restore.ts](../src/data/refueling-restore.ts)、[restore-comparison.ts](../src/data/restore-comparison.ts)、[BackupRestore.vue](../src/components/refueling/BackupRestore.vue)、[refueling-server-api.ts](../src/data/refueling-server-api.ts)、[RetainedRefuelingCopy.vue](../src/components/refueling/RetainedRefuelingCopy.vue)、[LegacyImport.vue](../src/components/refueling/LegacyImport.vue)、[scripts/backup-verify.ts](../scripts/backup-verify.ts) | 备份列表/固定预览/保护校验/唯一切换与回执、共享严格 v1/v2 完成备份验证器、本机 pending/终态与提交编排、独立只读比较、恢复面板（按 D1/D2/D3 地址分区呈现）、bootstrap/只读快照客户端、保留副本只读查看与逐项带回（页面化）、旧验证导入页、离线 `backup:verify` CLI。 |
+| [refueling-form.test.ts](../tests/refueling-form.test.ts)、[refueling-document.test.ts](../tests/refueling-document.test.ts)、[refueling-draft-store.test.ts](../tests/refueling-draft-store.test.ts)、[refueling-draft-session.test.ts](../tests/refueling-draft-session.test.ts)、[auth-session-client.test.ts](../tests/auth-session-client.test.ts)、[app-route.test.ts](../tests/app-route.test.ts)、[appearance.test.ts](../tests/appearance.test.ts)、[worker-api.test.ts](../tests/worker-api.test.ts)、[worker-login-config.test.ts](../tests/worker-login-config.test.ts)、[worker-auth-flow.test.ts](../tests/worker-auth-flow.test.ts)、[worker-account-state.test.ts](../tests/worker-account-state.test.ts) | 表单规则、Loro 文档、草稿库与恢复/占用语义、认证客户端与跳转安全、有限地址解析与编辑器路由、外观偏好、Worker 路由/配置合同、登录协议与失败路径、DO 会话语义；受控 OIDC 提供方与 SQLite 账号状态见 [tests/helpers/](../tests/helpers)。 |
 | [.dev.vars.example](../.dev.vars.example) | 本地合成 owner 主体示例；复制为 `.dev.vars` 使用（已被 Git 忽略）。 |
 
 `src-tauri/` 保留早期原生骨架，当前交付方向是浏览器和 PWA，原生分发不作为前置。
@@ -616,3 +715,5 @@ pnpm exec cf deploy --prebuilt --dry-run --mode production
 加油业务文档的整文档恢复与「备份与恢复」面板已由交付 B 实现、合并（PR #19 + #20）并部署（2026-10-05，见[恢复操作](#恢复操作b2026-10-05隔离-worktree未合并未部署)与[恢复发布记录](./releases/2026-10-05-restore.md)）；生产真实恢复、有差异预览与保护门禁未执行，等待用户实际恢复需求。完整统计、AI 识图，以及[完成码后备交互](./specs/eruoo-login-integration.md#62-浏览器--pwa-发起环境绑定)仍未实现。已有旧验证记录选择导入入口不等于真实导入已验。服务端副本与本机未上传修改、草稿的边界见账号同步规格；恢复能力与未验边界以[恢复设计](./specs/restore.md)和[恢复发布记录](./releases/2026-10-05-restore.md)为准。
 
 1,000/10,000 条含历史的容量与延迟、Cloudflare Free CPU 和其他平台仍按[后续验证安排](./specs/architecture-validation-research.md#5-下一步最小验证)执行。会话与事务的时钟边界已有本地可控时钟证据，真机长期 Cookie 保存行为尚未验证；本次文档收尾没有追加这些检查。
+
+已确认 UI/UX 重设计的应用实施（主题/品牌/图标/三入口导航/有限 hash 地址/编辑保活/数据页与统计接线）已在隔离 worktree 完成并通过本地验证，但尚未提交、合并或部署，见[UI/UX 重设计实施](#已确认-uiux-重设计实施2026-10-07隔离-worktree未合并未部署)一节；完整统计计算（含平均油耗、每公里油费、趋势与记录覆盖里程）、AI 识图与完成码后备交互仍为后续项。

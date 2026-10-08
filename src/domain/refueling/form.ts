@@ -83,9 +83,14 @@ export function shanghaiDateTime(date: Date): string {
     .slice(0, 19);
 }
 
+/** 加油时间（北京时间）规范化：分钟精度补秒（16 位 → :00），其余原样。 */
+export function normalizeOccurredAtLocal(value: string): string {
+  return value.length === 16 ? `${value}:00` : value;
+}
+
 export function validDateTime(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(value)) return false;
-  const canonical = value.length === 16 ? `${value}:00` : value;
+  const canonical = normalizeOccurredAtLocal(value);
   const date = new Date(`${canonical}+08:00`);
   return (
     Number.isFinite(date.getTime()) && shanghaiDateTime(date) === canonical
@@ -94,6 +99,14 @@ export function validDateTime(value: string): boolean {
 
 export function unscale(value: number, decimals: number): string {
   return new Money(value).div(new Money(10).pow(decimals)).toString();
+}
+
+/** 展示格式：按已确认精度固定位数（金额 2 位、加油量 3 位、单价 4 位、里程 1 位），带千分位。 */
+export function formatQuantity(value: number, decimals: number): string {
+  return new Intl.NumberFormat("zh-CN", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }).format(new Money(value).div(new Money(10).pow(decimals)).toNumber());
 }
 
 export function formatPaidAmount(cents: number): string {
@@ -255,10 +268,7 @@ export function validateDraft(draft: RefuelingDraft): {
       | "fuelGrade"
       | "orderNumber"
     >),
-    occurredAtLocal:
-      draft.values.occurredAtLocal.length === 16
-        ? `${draft.values.occurredAtLocal}:00`
-        : draft.values.occurredAtLocal,
+    occurredAtLocal: normalizeOccurredAtLocal(draft.values.occurredAtLocal),
     fullTank: draft.values.fullTank === "yes",
     lowFuelLight:
       draft.values.lowFuelLight === ""

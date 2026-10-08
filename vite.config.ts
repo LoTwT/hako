@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
+import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { getWorkerAssetsDir } from "@cloudflare/build-output-utils";
@@ -36,31 +37,49 @@ function isolateWorkerBundleFromPwaPlugin(): Plugin {
 export default defineConfig(async () => ({
   plugins: [
     vue(),
+    // @ayingott/theme 的 CSS-first 主题需要 Tailwind v4 编译 @theme/@utility
+    // 等指令；仅使用主题语义变量与 focus-ring/touch-target 原语。
+    tailwindcss(),
     cloudflare(),
     VitePWA({
       registerType: "prompt",
       outDir: clientAssetsDirectory,
       manifest: {
-        name: "Hako 本地验证",
+        name: "Hako",
         short_name: "Hako",
+        description: "把日常的小事收好，先从记录每一次加油开始。",
         lang: "zh-CN",
         start_url: "/",
         display: "standalone",
-        theme_color: "#356b51",
-        background_color: "#f6f7f3",
+        theme_color: "#faf8f4",
+        background_color: "#faf8f4",
         icons: [
           {
-            src: "/icon.svg",
-            sizes: "any",
-            type: "image/svg+xml",
+            src: "/hako-app-192.png",
+            sizes: "192x192",
+            type: "image/png",
             purpose: "any",
+          },
+          {
+            src: "/hako-app-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "/hako-maskable-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
           },
         ],
       },
       workbox: {
         skipWaiting: false,
         clientsClaim: false,
-        globPatterns: ["**/*.{js,css,html,wasm,svg}"],
+        // 品牌与应用图标为 PNG/ICO，纳入预缓存；主题字体 woff2（7.5MB+）超过
+        // 5MB 上限，走 HTTP 缓存（font-display: swap），不进入 SW 预缓存。
+        globPatterns: ["**/*.{js,css,html,wasm,svg,png,ico}"],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         // 裸 /api 与 /api/* 都是服务端接口，导航回退不得接管（会绕过 Worker 的 API 404）。
         navigateFallbackDenylist: [/^\/api(?:\/|$)/],
