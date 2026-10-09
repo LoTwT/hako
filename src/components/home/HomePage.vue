@@ -52,6 +52,9 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 
 <style scoped>
 .home-page {
+  /* 显式占满可用宽度并保留 65rem 上限：作为 .app-root 纵向 flex 子项，仅靠
+     auto 水平 margin 不会拉伸（会按内容收缩成窄栏）。 */
+  width: 100%;
   max-width: 65rem;
   margin: 0 auto;
   padding: 22px 24px 48px;

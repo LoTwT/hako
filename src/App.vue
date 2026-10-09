@@ -56,7 +56,12 @@ const targetRoute = shallowRef<AppRoute>(initialTargetRoute());
  * 调用 history.back，否则替换到已知来源页（设计 §3.3 一次性来源标记）。
  */
 const lastPush = shallowRef<{ from: string; to: string } | null>(null);
-/** 设置层的来源页面（内存）：直接打开/刷新时无来源，Web 叠在首页。 */
+/**
+ * 设置层的来源页面（内存）：直接打开/刷新时无来源，Web 叠在首页。不变量：
+ * 来源仅在设置层打开期间存在，由导航写入与路由离开设置（popstate/替换）清空；
+ * 来源同时作为设置历史条目状态持久于该条目（见 historyEntryState），同一设置
+ * 历史项的 Back/Forward 与按钮导航使用一致的背景规则（父审 R1 HS-R1）。
+ */
 const settingsBackdrop = shallowRef<AppRoute | null>(null);
 
 const accounts = shallowRef<{ id: string; opened: boolean }[]>([]);
@@ -72,8 +77,9 @@ const settingsPanel = shallowRef<InstanceType<typeof SettingsPanel> | null>(null
  */
 const settingsFocus = createModalFocus({
   close: () => {
+    // 来源在路由真正离开设置时清空（历史返回的 popstate 或替换路由的写入），
+    // 关闭动作本身不清——back() 到 popstate 之间背景页面必须保持原身份渲染。
     const backdrop = settingsBackdrop.value?.name === "refueling" ? settingsBackdrop.value : { name: "home" as const };
-    settingsBackdrop.value = null;
     backTo(backdrop);
   },
   initialFocus: () => (typeof document !== "undefined" && typeof document.querySelector === "function"
@@ -122,8 +128,17 @@ const wideShell = shallowRef(typeof window === "undefined" || typeof window.matc
 const accountLabel = computed(() =>
   auth.value.status === "authenticated" ? authenticatedAccountLabel.value : "未登录");
 
-const refuelingRoute = computed<RefuelingRoute>(() =>
-  targetRoute.value.name === "refueling" ? targetRoute.value.refueling : { name: "records" });
+/**
+ * 工作区视角的加油业务路由：设置层叠在加油区上时保持背景页（打开设置前的
+ * 来源子路由）——覆盖层有自己的地址与门禁，不改变背景业务页面身份；其余非
+ * 加油目标回记录根页，仅供隐藏工作区的占位渲染。
+ */
+const refuelingRoute = computed<RefuelingRoute>(() => {
+  const route = targetRoute.value;
+  if (route.name === "refueling") return route.refueling;
+  if (route.name === "settings" && settingsBackdrop.value?.name === "refueling") return settingsBackdrop.value.refueling;
+  return { name: "records" };
+});
 const workspaceRoute = computed(() => targetRoute.value);
 /** 工作区在加油路由下保持可见；设置层叠在加油区之上时同样保留渲染（仅被覆盖）。 */
 const workspaceVisible = computed(() => {
@@ -170,11 +185,34 @@ function routeTitle(route: AppRoute): string {
   }
 }
 
+/**
+ * 历史条目状态：应用写入的条目都带 hako 标记；设置层条目额外携带来源地址键，
+ * 随条目在 Back/Forward 间存续（HS-R1）。刷新视为无可恢复来源（背景业务实例
+ * 不随文档存活，仅恢复身份会得到空背景），仍按直接打开的首页兜底。
+ */
+function historyEntryState(): { hako: true; settingsSource?: string } {
+  const route = targetRoute.value;
+  const backdrop = settingsBackdrop.value;
+  if (route.name === "settings" && backdrop !== null && (backdrop.name === "refueling" || backdrop.name === "home")) {
+    return { hako: true, settingsSource: routeKey(backdrop) };
+  }
+  return { hako: true };
+}
+
+/** 设置历史项来源恢复：仅接受应用写入（hako 标记）条目中的合法页面身份。 */
+function parseSettingsHistorySource(state: unknown): AppRoute | null {
+  if (typeof state !== "object" || state === null) return null;
+  const entry = state as { hako?: unknown; settingsSource?: unknown };
+  if (entry.hako !== true || typeof entry.settingsSource !== "string") return null;
+  const parsed = parseAppRoute(entry.settingsSource.replace(/^\//, ""));
+  return parsed.name === "refueling" || parsed.name === "home" ? parsed : null;
+}
+
 function syncVisiblePage() {
   // 未确认会话时不挂载业务组件；已有实例仅隐藏，待写草稿与占用继续存活。
   const presentation = sessionPresentation.value;
   const href = presentation === "login" ? "/#login" : routeHref(targetRoute.value);
-  window.history.replaceState(null, "", href);
+  window.history.replaceState(historyEntryState(), "", href);
   try {
     if (canEnter.value) window.sessionStorage.removeItem(loginReturnPageKey);
     else window.sessionStorage.setItem(loginReturnPageKey, targetRoute.value.name === "refueling" ? "refueling" : "home");
@@ -185,7 +223,7 @@ function syncVisiblePage() {
   document.title = presentation === "login" ? "登录 · Hako" : routeTitle(targetRoute.value);
 }
 syncVisiblePage();
-watch([canEnter, sessionPresentation, () => auth.value.accountId, targetRoute], () => {
+watch([canEnter, sessionPresentation, () => auth.value.accountId, targetRoute, settingsBackdrop], () => {
   syncVisiblePage();
 }, { flush: "sync" });
 
@@ -282,20 +320,25 @@ async function navigate(next: AppRoute): Promise<void> {
   if (!canEnter.value || navigationBusy.value) return;
   const previous = targetRoute.value;
   const wantedBackdrop = next.name === "settings" ? previous : null;
-  const { changed } = await commitRouteChange(previous, next, () => {
+  await commitRouteChange(previous, next, () => {
+    // 设置层来源与目标路由在同一同步块落位：write 先于 targetRoute 赋值执行，
+    // refuelingRoute/workspaceVisible 的求值不经过「目标已是设置、来源仍为空」
+    // 的中间态（该中间态会卸载并重建背景业务页面）。导航被拒（落盘失败、归属
+    // 失效）时 write 不执行，来源保持原值（不变量：来源仅在设置层打开期间存在）。
+    settingsBackdrop.value = wantedBackdrop;
     window.history.pushState({ hako: true }, "", routeHref(next));
     lastPush.value = { from: routeKey(previous), to: routeKey(next) };
   }, () => canEnter.value && !navigationBusy.value);
-  if (changed) settingsBackdrop.value = wantedBackdrop;
-  else settingsBackdrop.value = null;
 }
 
 /** 地址替换（记录解析失败回根页等内部修正）：不新增历史条目。 */
 async function replaceRoute(next: AppRoute): Promise<void> {
   if (!canEnter.value) return;
   const previous = targetRoute.value;
-  if (next.name === "settings") settingsBackdrop.value = null;
   await commitRouteChange(previous, next, () => {
+    // 内部修正不建立设置来源；经此离开设置层（backTo 的替换回退）时同步清空
+    // 来源，与写入同块落位，避免背景页面经过中间态。
+    settingsBackdrop.value = null;
     window.history.replaceState({ hako: true }, "", routeHref(next));
     lastPush.value = null;
   }, () => canEnter.value && !navigationBusy.value);
@@ -324,6 +367,14 @@ function backTo(target: AppRoute): void {
 let locationChangeInFlight = false;
 let locationChangeQueued = false;
 
+/** 最近一次浏览器历史导航的条目状态：popstate 携带；hashchange 与其配对复用。 */
+let pendingHistoryEntryState: unknown = null;
+
+function onPopState(event: PopStateEvent): void {
+  pendingHistoryEntryState = event.state;
+  void onLocationChanged();
+}
+
 async function onLocationChanged(): Promise<void> {
   if (locationChangeInFlight) {
     locationChangeQueued = true;
@@ -344,7 +395,7 @@ async function handleLocationChangeOnce(): Promise<void> {
   // 浏览器发起的前进/后退打断应用压入链：邻项可信标记失效。
   lastPush.value = null;
   if (navigationBusy.value) {
-    window.history.replaceState(null, "", sessionPresentation.value === "login" ? "/#login" : routeHref(targetRoute.value));
+    window.history.replaceState(historyEntryState(), "", sessionPresentation.value === "login" ? "/#login" : routeHref(targetRoute.value));
     return;
   }
   const hash = window.location.hash;
@@ -352,13 +403,20 @@ async function handleLocationChangeOnce(): Promise<void> {
   // 登录页本身不覆盖原先要进入的固定页面，历史记录也不能绕过会话检查。
   if (parsed.name === "login" && sessionPresentation.value !== "enter") return;
   const previous = targetRoute.value;
-  if (parsed.name !== "settings") settingsBackdrop.value = null;
+  // 设置历史项的来源恢复（HS-R1）：前进/后退重新进入同一设置历史项时，按该
+  // 条目落位时写入的状态恢复背景（仅接受应用写入的合法页面身份）；无可信来源
+  // （直接打开/刷新/手动输入）保持 null，按首页兜底。
+  const entryBackdrop = parsed.name === "settings" ? parseSettingsHistorySource(pendingHistoryEntryState) : null;
   if (routeKey(parsed) === routeKey(previous)) {
     // 同一逻辑目标（popstate/hashchange 配对事件的第二次）：不重新赋值，避免
     // 对象身份变化再次触发页面级 watcher（焦点/滚动）。
     return;
   }
-  const { changed, superseded } = await commitRouteChange(previous, parsed, () => undefined, () => window.location.hash === hash);
+  const { changed, superseded } = await commitRouteChange(previous, parsed, () => {
+    // 来源与目标路由同块落位（与 navigate 一致）：设置项恢复条目来源，离开
+    // 设置清空；被拒（落盘失败/归属失效）时 write 不执行，来源保持原值。
+    settingsBackdrop.value = entryBackdrop;
+  }, () => window.location.hash === hash);
   if (!changed && !superseded) {
     if (window.location.hash === hash) {
       // 草稿未落盘且地址仍是被拒绝的目标：把地址推回原页面（离开保护），
@@ -371,6 +429,35 @@ async function handleLocationChangeOnce(): Promise<void> {
 function openSettings(event?: Event) {
   settingsFocus.focusOnOpen(event);
   void navigate({ name: "settings" });
+}
+
+/**
+ * 设置层打开期间来自背景工作区的路由请求（HS-R2）：背景组件的异步完成（备份
+ * 预览推进 D1→D2、恢复结果协调回数据页、记录解析回退等）只推进背景业务页面
+ * 身份，不关闭设置层——设置层保持自己的地址/标题/焦点；关闭与 Forward 再入
+ * 都按最新背景页运行（历史条目状态随 settingsBackdrop 同步重写）。返回 true
+ * 表示已按背景处理；背景已是目标时同样视为已处理（不产生冗余状态写入）。
+ */
+function advanceBackdropUnderSettings(next: AppRoute): boolean {
+  if (targetRoute.value.name !== "settings" || next.name !== "refueling") return false;
+  const backdrop = settingsBackdrop.value;
+  if (backdrop === null || backdrop.name !== "refueling") return false;
+  if (routeKey(backdrop) !== routeKey(next)) settingsBackdrop.value = next;
+  return true;
+}
+
+/** 工作区导航回调：先经覆盖层归属协调，未命中时走常规导航/返回。 */
+function navigateFromWorkspace(next: AppRoute): void {
+  if (advanceBackdropUnderSettings(next)) return;
+  void navigate(next);
+}
+function replaceRouteFromWorkspace(next: AppRoute): void {
+  if (advanceBackdropUnderSettings(next)) return;
+  void replaceRoute(next);
+}
+function backToFromWorkspace(target: AppRoute): void {
+  if (advanceBackdropUnderSettings(target)) return;
+  backTo(target);
 }
 
 /** 关闭设置层：焦点还原与关闭导航都由 settingsFocus 的统一关闭动作完成。 */
@@ -463,7 +550,9 @@ function onShellMediaChange(event: MediaQueryListEvent) {
 
 let shellMedia: MediaQueryList | null = null;
 onMounted(() => {
-  window.addEventListener("popstate", onLocationChanged);
+  // popstate 捕获条目状态（HS-R1 的来源恢复依据）；hashchange 与其配对，复用同
+  // 一次导航的捕获状态。
+  window.addEventListener("popstate", onPopState);
   window.addEventListener("hashchange", onLocationChanged);
   window.addEventListener("pageshow", onPageShow);
   if (typeof window.matchMedia === "function") {
@@ -472,7 +561,7 @@ onMounted(() => {
   }
 });
 onUnmounted(() => {
-  window.removeEventListener("popstate", onLocationChanged);
+  window.removeEventListener("popstate", onPopState);
   window.removeEventListener("hashchange", onLocationChanged);
   window.removeEventListener("pageshow", onPageShow);
   shellMedia?.removeEventListener("change", onShellMediaChange);
@@ -508,7 +597,7 @@ syncVisibleWorkspace();
       :active="accountActive && auth.accountId === account.id" :opened="account.opened"
       :visible="workspaceVisible && auth.accountId === account.id"
       :route="refuelingRoute" :app-route="workspaceRoute"
-      :navigate="navigate" :replace-route="replaceRoute" :back-to="backTo" :open-settings="openSettings"
+      :navigate="navigateFromWorkspace" :replace-route="replaceRouteFromWorkspace" :back-to="backToFromWorkspace" :open-settings="openSettings"
       :navigating-for-login="loginPhase === 'navigating'" @session-rejected="recheckRejectedSession" />
 
     <!-- 账号与外观（G4）：Web 右侧设置层，手机整页；关闭还原焦点。 -->
