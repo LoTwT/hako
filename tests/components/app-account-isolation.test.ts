@@ -32,9 +32,20 @@ vi.mock("../../src/ui/appearance", async () => {
   const { shallowRef: sr } = await import("vue");
   return { useAppearance: () => ({ appearance: sr("system"), systemDark: sr(false), setAppearance() {}, dispose() {} }) };
 });
-vi.mock("../../src/composables/useAuthSession", () => ({
-  useAuthSession: () => ({ auth: observed.auth, refresh: async () => undefined, login: vi.fn(), logout: vi.fn(), recheckRejectedSession: vi.fn() }),
-}));
+vi.mock("../../src/composables/useAuthSession", async () => {
+  const { shallowRef: sr } = await import("vue");
+  return {
+    useAuthSession: () => ({
+      auth: observed.auth,
+      authenticatedAccountLabel: sr("已登录 · eruoo"),
+      localDevelopment: false,
+      refresh: async () => undefined,
+      login: vi.fn(),
+      logout: vi.fn(),
+      recheckRejectedSession: vi.fn(),
+    }),
+  };
+});
 vi.mock("../../src/composables/useLocalRefueling", () => ({
   useLocalRefueling: ({ accountId }: { accountId: string }) => observed.locals.get(accountId),
 }));

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "cf dev",
+    "dev:local": "cf dev --mode local-dev",
     "build": "pnpm run typecheck && cf build --mode production",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "tauri": "tauri",
