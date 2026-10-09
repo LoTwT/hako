@@ -32,6 +32,11 @@
   ],
   "exclude": [
     "src/worker",
+    // 本地开发登录共享常量属于 Node 侧项目（tsconfig.node.json）：同一文件不能
+    // 同时由两个项目编译（引用项目要求已构建的声明文件）。浏览器侧只读取
+    // vite.config.ts 注入的构建标志，Worker 侧从 HAKO_LOCAL_DEVELOPMENT 绑定读值，
+    // 都不直接导入本文件。
+    "src/shared/local-development.ts",
     "tests/integration/worker-entry.ts"
   ],
   "references": [{ "path": "./tsconfig.node.json" }]

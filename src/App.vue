@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, shallowRef, watch } from "vue";
 import { useRegisterSW } from "virtual:pwa-register/vue";
-import LoginPage from "./components/auth/LoginPage.vue";
 import SessionUnavailablePage from "./components/auth/SessionUnavailablePage.vue";
 import StartupPage from "./components/auth/StartupPage.vue";
 import HomePage from "./components/home/HomePage.vue";
@@ -9,6 +8,8 @@ import SettingsPanel from "./components/settings/SettingsPanel.vue";
 import AccountWorkspace from "./components/refueling/AccountWorkspace.vue";
 import { useAuthSession } from "./composables/useAuthSession";
 import { useAppearance } from "./ui/appearance";
+import { createGateHeadingFocus } from "./ui/gate-heading-focus";
+import { LoginGateComponent } from "./ui/login-gate";
 import { createModalFocus } from "./ui/modal-focus";
 import {
   parseAppRoute,
@@ -60,7 +61,7 @@ const settingsBackdrop = shallowRef<AppRoute | null>(null);
 
 const accounts = shallowRef<{ id: string; opened: boolean }[]>([]);
 const workspaces = shallowRef<InstanceType<typeof AccountWorkspace>[]>([]);
-const loginPage = shallowRef<InstanceType<typeof LoginPage> | null>(null);
+const loginPage = shallowRef<{ focusHeading: () => void } | null>(null);
 const startupPage = shallowRef<InstanceType<typeof StartupPage> | null>(null);
 const unavailablePage = shallowRef<InstanceType<typeof SessionUnavailablePage> | null>(null);
 const homePage = shallowRef<InstanceType<typeof HomePage> | null>(null);
@@ -83,7 +84,7 @@ const settingsFocus = createModalFocus({
   restoreOnClose: false,
 });
 
-const { auth, refresh: refreshAuth, login: startLogin, logout: endLogin, recheckRejectedSession } = useAuthSession();
+const { auth, refresh: refreshAuth, login: startLogin, logout: endLogin, recheckRejectedSession, authenticatedAccountLabel } = useAuthSession();
 const appearanceState = useAppearance();
 const refreshingRestoredPage = shallowRef(false);
 const canEnter = computed(() => auth.value.status === "authenticated" && auth.value.accountId !== null && !refreshingRestoredPage.value);
@@ -95,6 +96,12 @@ const sessionPresentation = computed<SessionPresentation>(() => {
   if (auth.value.status === "unavailable") return "unavailable";
   return "startup";
 });
+/**
+ * 门禁页标题聚焦：异步门禁页（dev:local 的本地登录页由动态导入载入）在会话/路由
+ * watcher 运行时尚未挂载，这里在实例就绪、且仍属当前登录呈现时补一次聚焦；迟到或
+ * 已离开登录呈现不抢焦点，同一实例只补偿一次（见 src/ui/gate-heading-focus.ts）。
+ */
+const loginGateHeading = createGateHeadingFocus(loginPage, () => sessionPresentation.value === "login");
 const loginNotice = shallowRef("");
 const navigationNotice = shallowRef("");
 const sessionFeedback = computed(() => loginNotice.value || auth.value.message);
@@ -111,7 +118,9 @@ const { offlineReady, needRefresh } = useRegisterSW({
 const wideShell = shallowRef(typeof window === "undefined" || typeof window.matchMedia !== "function"
   ? true
   : window.matchMedia(shellWideMediaQuery).matches);
-const accountLabel = computed(() => (auth.value.status === "authenticated" ? "已登录 · eruoo" : "未登录"));
+/** 账号标签：已登录时使用当前协议适配的标签（dev:local 为本地测试账号）。 */
+const accountLabel = computed(() =>
+  auth.value.status === "authenticated" ? authenticatedAccountLabel.value : "未登录");
 
 const refuelingRoute = computed<RefuelingRoute>(() =>
   targetRoute.value.name === "refueling" ? targetRoute.value.refueling : { name: "records" });
@@ -191,13 +200,15 @@ watch([canEnter, sessionPresentation, targetRoute], (_values, previous) => {
   if (sessionPresentation.value === "enter") {
     if (targetRoute.value.name === "settings") settingsPanel.value?.focusHeading();
     else if (targetRoute.value.name === "home" && !leavingSettings) homePage.value?.focusHeading();
-  } else if (sessionPresentation.value === "login") loginPage.value?.focusHeading();
+  } else if (sessionPresentation.value === "login") loginGateHeading.focusNow();
   else if (sessionPresentation.value === "unavailable") unavailablePage.value?.focusHeading();
   else if (!leavingSettings) startupPage.value?.focusHeading();
   const coarsePage = targetRoute.value.name === "refueling" ? "refueling" : targetRoute.value.name === "home" ? "home" : null;
   if (coarsePage !== null && coarsePage !== previousCoarsePage) window.scrollTo?.(0, 0);
   previousCoarsePage = coarsePage;
 }, { flush: "post" });
+
+
 
 /**
  * 隐藏的加油工作区在离开加油区前也须完成待写草稿（成功才隐藏）。失败只返回
@@ -396,6 +407,9 @@ async function login() {
       loginNotice.value = result.message;
       return;
     }
+    // 本地测试账号登录在本次响应里建立会话（in-place）：没有顶层跳转，
+    // 页面原地进入下一次会话读取；门禁仍由会话读取决定。
+    if (!result.redirect) return;
     if (!(await confirmDraftSaved())) return;
     try {
       window.sessionStorage.setItem(loginReturnPageKey, targetRoute.value.name === "refueling" ? "refueling" : "home");
@@ -481,7 +495,7 @@ syncVisibleWorkspace();
       </header>
       <StartupPage v-if="sessionPresentation === 'startup'" ref="startupPage" />
       <SessionUnavailablePage v-else-if="sessionPresentation === 'unavailable'" ref="unavailablePage" :message="sessionFeedback" :busy="navigationBusy" @retry="refreshAuth" />
-      <LoginPage v-else-if="sessionPresentation === 'login'" ref="loginPage" :notice="loginNotice" :busy="navigationBusy" @login="login" @retry="refreshAuth" />
+      <component :is="LoginGateComponent" v-else-if="sessionPresentation === 'login'" ref="loginPage" :notice="loginNotice" :busy="navigationBusy" @login="login" @retry="refreshAuth" />
     </div>
 
     <!-- 已确认身份：工具首页（设置层叠在首页时保留渲染，仅被覆盖）。 -->

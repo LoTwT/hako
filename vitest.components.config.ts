@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
+import { LOCAL_DEVELOPMENT_AUTH_PATHS } from "./src/shared/local-development.ts";
 
 /**
  * 组件接线测试配置：真实编译 SFC。vitest 的 node 环境默认按 SSR 请求 SFC
@@ -17,5 +18,10 @@ transform.handler = function (code: string, id: string, options: { ssr?: boolean
 
 export default defineConfig({
   plugins: [plugin],
+  // 与 vite.config.ts 相同的构建标志：组件测试默认不是本地开发构建。
+  define: {
+    __HAKO_LOCAL_DEV__: JSON.stringify(false),
+    __HAKO_LOCAL_DEV_AUTH_PATHS__: JSON.stringify(LOCAL_DEVELOPMENT_AUTH_PATHS),
+  },
   test: { environment: "node", include: ["tests/components/**/*.test.ts"] },
 });

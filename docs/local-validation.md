@@ -20,6 +20,7 @@
 - 出站接线（PR2）：discovery、JWKS、token 与 UserInfo 使用普通公开 HTTPS，出站只允许固定 issuer origin 与既定端点路径；未采用 Service Binding（绑定目标未经核实，不做猜测）。
 - 登录 UI 与草稿保护（PR3，已合入；本轮 UI/UX 重设计实施后，账号状态与退出入口并入设置层和各页顶栏，原 AuthStatus 组件移除）：显示登录状态、登录/退出与可读错误；账号面板与草稿提示分区显示，登录状态只由 `GET /api/auth/session` 决定。未保存输入写入独立草稿库（严格持久性），页面线索命中自动恢复、无线索时只提供恢复/放弃选择；新建草稿的页面立即占住草稿（Web Locks），其他窗口与复制标签页不能抢占。登录跳转只发生在草稿 `flush()` 成功之后，写失败或草稿库不可用时阻止跳转并提示；返回后恢复编辑现场，恢复的金额差异必须重新确认，退出不影响本机记录与未保存输入。
 - Worker 与前端的产物与类型隔离（PR1）：client 构建输出与预缓存固定在 Build Output 的 Worker 资源目录（官方 `getWorkerAssetsDir` 路径函数对齐），Worker bundle 只含 Worker 代码；Service Worker 每次构建只生成一次，`navigateFallbackDenylist` 覆盖裸 `/api` 与 `/api/*`。
+- 隔离的本地开发登录（2026-10-09，见[本切片](#隔离的本地开发登录devlocal2026-10-09隔离-worktree未提交未合并未部署)）：`pnpm dev:local` 提供独立的本地 Worker 入口与本地认证适配层（合成身份、真实 DO 会话、独立持久目录与模拟 R2、HMR），只由显式 `--mode local-dev` 选中；生产构建、生产预览与部署入口不含本地登录 handler。启动方式、地址与数据位置见下文[本地查看](#带登录的本地开发pnpm-devlocal)。
 
 原验证数据使用 `hako-local-validation-v1` IndexedDB，后续账号切片保留它，由用户显式选择已保存记录导入；正式账号存储及导入语义只在[账号同步规格](./specs/account-sync.md)维护。记录列表日常金额只显示实付。
 
@@ -674,6 +675,24 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界：登录后的页面与记录详情由 Playwright 路由拦截的合成会话（合成账号 + 合成初始代次与空快照）驱动，本机写入只发生在临时浏览器上下文；无真实 eruoo 登录（本地开发登录属另一 PR）、无生产访问、无读屏播报、无真机/PWA 与整页缩放验证。`src/components/refueling/RefuelingRecords.vue` 为基线中未被任何入口引用的旧文件，本轮未改动；共享原语 `.eyebrow`（拉丁文本，仅该旧文件使用）保留 600。逐项回执与原始浏览器证据（脚本、36 张截图、逐状态样式与对比度）：`/Users/caoyujie/.agents/task-artifacts/hako/ui-polish-pr1-focus-font-primary-20261009-a44932f6/`。
 
+## 隔离的本地开发登录（dev:local，2026-10-09，隔离 worktree；未提交、未合并、未部署）
+
+范围：2026-10-09 诊断（`/Users/caoyujie/.agents/task-artifacts/hako/hako-local-login-theme-diagnosis-20261009-pms0wxs6/MODIFICATION_PLAN.md` 第 1 项）的本地开发登录，按独立 PR 实施并可登录进入现有 UI。基线为本轮最新 `main` = `ffac9012ed313ccdf86e2d35bc486be0f5e1c77b`（tree `32f77111e95d102daa31f90c526df2f536cc4ee9`，即 PR #24 合并提交），在独立 worktree 的 `feat/local-development-login` 分支上实施；本轮不 commit、不 push、不部署。启动方式、地址、测试身份、数据位置与清理说明的权威来源是上文[本地查看](#带登录的本地开发pnpm-devlocal)，本节只维护实现范围与验证结果。
+
+四项规则的当前权威实现位置：
+
+| 规则 | 权威位置 | 内容 |
+| --- | --- | --- |
+| 独立入口与模式隔离 | [package.json](../package.json)、[cloudflare.config.ts](../cloudflare.config.ts)、[vite.config.ts](../vite.config.ts)、[src/shared/local-development.ts](../src/shared/local-development.ts) | `pnpm dev:local` = `cf dev --mode local-dev`；只有该模式选中 `hako-local-dev` 的独立 Worker 定义（合成 `HAKO_LOGIN`/`HAKO_OWNER_SUBJECT`/`HAKO_LOCAL_DEVELOPMENT`、本地模拟 R2、无正式域名、关闭 workers.dev）、独立持久目录 `.cloudflare/local-dev-state/`、端口 1422 与客户端构建标志。默认构建、生产预览与部署入口只使用生产 Worker，不载入本地适配模块。 |
+| 本地认证适配层 | [src/worker/local-dev/entry.ts](../src/worker/local-dev/entry.ts)、[routes.ts](../src/worker/local-dev/routes.ts)、[synthetic-session.ts](../src/worker/local-dev/synthetic-session.ts) | 精确校验 Host 与来源（唯一 `http://127.0.0.1:1422`；写入必须有来源，读取可不带）；浏览器本地专用标识在进入既有 `/api` 路由前映射为生产会话 Cookie 名与内部固定来源；本地测试账号经既有认证 DO 的登录事务合同建立真实会话（随机凭据、服务端只存哈希、身份绑定合成 issuer 与 owner）。不含测试入口的 SQL/debug/故障注入接口。 |
+| 浏览器侧入口 | [LocalDevelopmentLoginPage.vue](../src/components/auth/LocalDevelopmentLoginPage.vue)、[local-development-session-client.ts](../src/domain/auth/local-development-session-client.ts)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、[login-gate.ts](../src/ui/login-gate.ts)、[App.vue](../src/App.vue) | 「本地开发环境」标注与「使用本地测试账号」入口；登录在本次响应内建立会话（in-place，无顶层跳转），随后由会话读取确认；账号标签为「本地测试账号」。未登录入口组件由 [login-gate.ts](../src/ui/login-gate.ts) 按构建选择：生产用静态 eruoo 登录页，dev:local 用动态导入的本地登录页；本地模块只在本地开发产物中载入，生产构建不包含。 |
+| 异步门禁页标题聚焦 | [gate-heading-focus.ts](../src/ui/gate-heading-focus.ts)、[App.vue](../src/App.vue) | 会话/路由 watcher 运行时代码尚未挂载（动态导入）时，门禁页实例就绪后补一次标题聚焦；只在仍属当前登录呈现时聚焦，迟到或已离开登录不抢焦点，同一实例不重复补偿。规则不变：交互控件保留可见焦点环，程序定位标题按 PR1 规则不画装饰 outline。 |
+| 生产边界不变 | [src/worker/login-config.ts](../src/worker/login-config.ts)、[src/worker/auth/routes.ts](../src/worker/auth/routes.ts)、[src/worker/auth/cookies.ts](../src/worker/auth/cookies.ts) | 正式 origin/issuer/client/owner 校验、`__Host-`/Secure/HttpOnly/SameSite/Path 生产 Cookie 策略与生产 `/api/auth` 路由均未改动；本地开发使用独立的合成值与独立 Cookie 名。 |
+
+验证（本次实测）：`pnpm run typecheck` 通过（`cf workers types` + vue-tsc + Worker/Node 两段 tsc）；`pnpm run test` 主配置 31 文件 / **497 通过**、组件配置 12 文件 / **119 通过**（新增 `worker-local-development-auth` 12 项、`local-development-session-client` 5 项，以及异步门禁页聚焦回归 `local-development-login-focus` 3 项、`app-login-gate-focus-readiness` 1 项、`app-login-gate-late-load` 1 项）；`pnpm run build` 通过（生产产物无本地开发登录痕迹，见下）。真实浏览器（Playwright-core 1.61.1 + 缓存 Chromium headless shell 153.0.8010.12）与真实本地 Worker/DO/模拟 R2（`pnpm dev:local`，`http://127.0.0.1:1422`）：干净环境无 `.dev.vars` 与生产凭据，匿名入口显示「本地开发环境」且 1.2 秒后仍未登录（不自动登录）；点击「使用本地测试账号」后进入首页，账号标签为「本地测试账号」，浏览器标识为 `hako_local_dev_session`（HttpOnly、SameSite=Lax、Path=/、无 Secure、约 365 天）；刷新仍为已登录。保存一条合成记录（¥341.42、43.000 L、12,345.6 km、未加满）后真实 `POST /api/sync/refueling` 返回 200 且响应头含账号与代次（映射后的会话与内部固定来源生效）；独立备份按 30 秒窗口真实完成（先 revision 1 空文档、再 revision 2 一条记录），版本列表可从模拟 R2 读回；按「共 1 条记录」版本预览显示「将移除 1 条」，确认恢复后工作区只剩该条记录（真实 DO 切换与代次保护流程，含「打开恢复后数据」）。退出后浏览器无本地标识、重开回到登录页，旧标识在会话端点返回未认证、在业务端点返回 401；进程重启后重新登录，记录仍可读（同一独立持久目录）。HMR：改动本地登录页文案后页面即时更新，还原后即时恢复，工作区文件未被留下修改。焦点（首轮父审 LD-R1 修复后复验）：真实 dev:local 首次打开与把本地登录页模块延迟 600 ms 的两次运行中，`#login-title` 都是 `document.activeElement` 且 `outline-style: none`；登录页模块延迟 2 秒、期间用真实本地登录离开登录呈现后，迟到的模块不夺回焦点（停在首页标题，登录标题不在 DOM 中）。生产边界：`cf build --mode local-dev` 的客户端产物含本地登录页与客户端适配两个独立 chunk、Worker 配置为 `hako-local-dev`（无正式域名、无 owner Secret、模拟 R2）；普通 `pnpm run build` 的客户端与 Worker 产物中「本地测试账号/本地开发环境/`/api/auth/local`/`hako_local_dev_session`/`HAKO_LOCAL_DEVELOPMENT`」全部为 0 命中，且客户端只有一个入口 chunk；`pnpm preview`（4173，生产构建）显示 eruoo 登录入口、`/api/auth/local/*` 返回 JSON 404、`/test/*` 不暴露测试控制面、`GET /api/auth/session` 仍返回 `{"authenticated":false}`。
+
+未验边界：本轮为隔离的本地开发登录，不是真实 eruoo OIDC 联调——无真实登录、无生产访问、无远端 R2、无部署；本地测试身份、数据与浏览器状态均为合成。真实设备/PWA、读屏播报、整页缩放与 Service Worker 更新流程未验证（沿用既有边界）；本地会话的长期期限、Cookie 保存行为与真机一致性与生产同类项一样未经真机实测。逐项回执与原始证据（脚本、截图、逐文件 SHA-256、构建与运行日志）：`/Users/caoyujie/.agents/task-artifacts/hako/local-dev-login-pr2-20261009-q7k2m4x9/`；首轮父审 LD-R1（异步门禁页标题聚焦）修复的增量回执、差异与复验证据：`/Users/caoyujie/.agents/task-artifacts/hako/local-dev-login-pr2-fix-20261009-t5m8w2q4/`。
+
 ## 代码入口
 
 | 位置 | 职责 |
@@ -693,9 +712,12 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 | [refueling-document.ts](../src/data/refueling-document.ts) | Loro 文档读写、字段级变更与完整历史快照。 |
 | [local-refueling-v2.ts](../src/data/local-refueling-v2.ts) | v2 账号控制锁与 IndexedDB 严格事务（documents/control）、v1→G0 迁移合并、代次切换接收与保留副本、待确认恢复结构。 |
 | [useLocalRefueling.ts](../src/composables/useLocalRefueling.ts) | 页面状态、保存结果、窗口通知与聚焦刷新；对外只读暴露文档级 `syncStatus` 供顶栏摘要。 |
-| [vite.config.ts](../vite.config.ts)、[index.html](../index.html)、[public/](../public/) | cf/Vite/PWA/Tailwind+主题组合与预缓存范围（PNG/ICO 入缓存、字体按需）；首帧主题引导、favicon/Apple Touch 品牌接线；六件完整版品牌资产。 |
+| [vite.config.ts](../vite.config.ts)、[index.html](../index.html)、[public/](../public/) | cf/Vite/PWA/Tailwind+主题组合与预缓存范围（PNG/ICO 入缓存、字体按需）；首帧主题引导、favicon/Apple Touch 品牌接线；六件完整版品牌资产。`--mode local-dev` 时改用本地开发端口/持久目录与客户端构建标志。 |
+| [src/shared/local-development.ts](../src/shared/local-development.ts)、[package.json](../package.json) | 本地开发登录的共享常量（模式名、来源/Host、端点、会话标识名、合成身份与内部固定值）与 `dev:local` 命令；值是唯一权威来源。 |
+| [src/worker/local-dev/entry.ts](../src/worker/local-dev/entry.ts)、[routes.ts](../src/worker/local-dev/routes.ts)、[synthetic-session.ts](../src/worker/local-dev/synthetic-session.ts) | dev:local 独立 Worker 入口（从 `HAKO_LOCAL_DEVELOPMENT` 绑定注入合成身份）、精确 Host/来源校验与会话映射、经既有认证 DO 登录事务建立合成会话；不含 SQL/debug 接口。 |
+| [LocalDevelopmentLoginPage.vue](../src/components/auth/LocalDevelopmentLoginPage.vue)、[local-development-session-client.ts](../src/domain/auth/local-development-session-client.ts)、[useAuthSession.ts](../src/composables/useAuthSession.ts) | 本地开发登录页（「本地开发环境」+「使用本地测试账号」）、in-place 登录客户端适配（端点由构建标志注入）与构建期选择；只在 dev:local 构建动态载入。 |
 | [restore 相关入口](../src/worker/restore/)（回执存储/服务/固定预览暂存/路由）、[backup-verify.ts](../src/worker/backup/backup-verify.ts)、[refueling-restore.ts](../src/data/refueling-restore.ts)、[restore-comparison.ts](../src/data/restore-comparison.ts)、[BackupRestore.vue](../src/components/refueling/BackupRestore.vue)、[refueling-server-api.ts](../src/data/refueling-server-api.ts)、[RetainedRefuelingCopy.vue](../src/components/refueling/RetainedRefuelingCopy.vue)、[LegacyImport.vue](../src/components/refueling/LegacyImport.vue)、[scripts/backup-verify.ts](../scripts/backup-verify.ts) | 备份列表/固定预览/保护校验/唯一切换与回执、共享严格 v1/v2 完成备份验证器、本机 pending/终态与提交编排、独立只读比较、恢复面板（按 D1/D2/D3 地址分区呈现）、bootstrap/只读快照客户端、保留副本只读查看与逐项带回（页面化）、旧验证导入页、离线 `backup:verify` CLI。 |
-| [refueling-form.test.ts](../tests/refueling-form.test.ts)、[refueling-document.test.ts](../tests/refueling-document.test.ts)、[refueling-draft-store.test.ts](../tests/refueling-draft-store.test.ts)、[refueling-draft-session.test.ts](../tests/refueling-draft-session.test.ts)、[auth-session-client.test.ts](../tests/auth-session-client.test.ts)、[app-route.test.ts](../tests/app-route.test.ts)、[appearance.test.ts](../tests/appearance.test.ts)、[worker-api.test.ts](../tests/worker-api.test.ts)、[worker-login-config.test.ts](../tests/worker-login-config.test.ts)、[worker-auth-flow.test.ts](../tests/worker-auth-flow.test.ts)、[worker-account-state.test.ts](../tests/worker-account-state.test.ts) | 表单规则、Loro 文档、草稿库与恢复/占用语义、认证客户端与跳转安全、有限地址解析与编辑器路由、外观偏好、Worker 路由/配置合同、登录协议与失败路径、DO 会话语义；受控 OIDC 提供方与 SQLite 账号状态见 [tests/helpers/](../tests/helpers)。 |
+| [refueling-form.test.ts](../tests/refueling-form.test.ts)、[refueling-document.test.ts](../tests/refueling-document.test.ts)、[refueling-draft-store.test.ts](../tests/refueling-draft-store.test.ts)、[refueling-draft-session.test.ts](../tests/refueling-draft-session.test.ts)、[auth-session-client.test.ts](../tests/auth-session-client.test.ts)、[app-route.test.ts](../tests/app-route.test.ts)、[appearance.test.ts](../tests/appearance.test.ts)、[worker-api.test.ts](../tests/worker-api.test.ts)、[worker-login-config.test.ts](../tests/worker-login-config.test.ts)、[worker-auth-flow.test.ts](../tests/worker-auth-flow.test.ts)、[worker-account-state.test.ts](../tests/worker-account-state.test.ts)、[worker-local-development-auth.test.ts](../tests/worker-local-development-auth.test.ts)、[local-development-session-client.test.ts](../tests/local-development-session-client.test.ts) | 表单规则、Loro 文档、草稿库与恢复/占用语义、认证客户端与跳转安全、有限地址解析与编辑器路由、外观偏好、Worker 路由/配置合同、登录协议与失败路径、DO 会话语义、本地开发适配层的 Host/来源校验与会话映射、本地登录客户端的 in-place 完成方式；受控 OIDC 提供方与 SQLite 账号状态见 [tests/helpers/](../tests/helpers)。 |
 | [.dev.vars.example](../.dev.vars.example) | 本地合成 owner 主体示例；复制为 `.dev.vars` 使用（已被 Git 忽略）。 |
 
 `src-tauri/` 保留早期原生骨架，当前交付方向是浏览器和 PWA，原生分发不作为前置。
@@ -704,14 +726,34 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 Node、pnpm 版本与运行命令以 [package.json](../package.json) 为准，依赖版本以[锁文件](../pnpm-lock.yaml)为准。`pnpm dev` 经 cf CLI 委派给 Vite（端口 1420）；`pnpm preview` 在 4173 端口以 Workers 运行时承载完整构建产物（先构建再预览）。
 
+### 带登录的本地开发（`pnpm dev:local`）
+
+本节是本地开发登录启动方式的权威说明；其他位置引用本节，不复制这些值。
+
+| 项 | 值 |
+| --- | --- |
+| 命令 | `pnpm dev:local`（等价 `cf dev --mode local-dev`；只有该模式载入本地登录适配层） |
+| 地址 | `http://127.0.0.1:1422`。仅绑定 IPv4 loopback，端口固定；`localhost:1422`、其他端口与其他来源都不是允许的来源 |
+| 入口 | 页面标注「本地开发环境」，点击「使用本地测试账号」建立真实本地会话；不自动登录，也不把合成身份呈现成 eruoo 身份验证 |
+| 测试身份 | 稳定合成身份对 `(issuer, owner)` = `https://hako-local-dev-issuer.invalid` / `local-development-synthetic-owner`；全部为合成常量，不对应任何真实身份或凭据 |
+| 数据位置 | `.cloudflare/local-dev-state/`（本地 Durable Object 与模拟 R2）。与 `pnpm dev` / `pnpm preview` 使用的 `.cloudflare/state` 分别存放，互不读取 |
+| 会话标识 | 浏览器侧 `hako_local_dev_session`（HttpOnly、SameSite=Lax、Path=/，HTTP 本地开发不设 Secure）；服务端仍是既有 DO 会话，生产 `__Host-hako_session` 与 Secure/HttpOnly/SameSite/Path 策略不变 |
+| 退出 | 页面「退出登录」撤销服务端会话并清除浏览器标识；退出后重开页面回到未登录，旧标识在服务端不再可用；重新登录生成新的随机凭据 |
+| 重启 | 停止并重新执行 `pnpm dev:local` 后，登录状态与已同步数据都在本地持久目录中；重新登录后继续可读 |
+| 清理 | 数据不会自动清理。需要重置本地测试数据时由使用者手动删除 `.cloudflare/local-dev-state/`（已被 Git 忽略）；不会触碰其他目录 |
+| 边界 | 只使用本地 Worker、Durable Object 与模拟 R2，不读取生产 owner Secret（无需 `.dev.vars`），不访问远端 R2，也不登记真实 SSO 测试客户端；真实 eruoo 联调仍走生产路径（`pnpm dev` / `pnpm preview` + 已配置的真实环境），不由本命令提供 |
+
+写入（登录、退出、同步、备份、恢复）要求精确来源 `http://127.0.0.1:1422`；来源不一致或写入缺少来源一律拒绝，读取不携带来源仍按既有语义处理。集成测试入口的 API 控制面（`/test/*`）不属于本入口，未随 `dev:local` 提供。
+
 ```sh
+pnpm dev:local           # 本地开发登录（端口 1422，独立持久目录，HMR）
 pnpm install --frozen-lockfile
 pnpm run test
 pnpm run build
 pnpm preview
 ```
 
-打开 `http://localhost:4173`，页面会先检查会话；匿名预览停在登录页。功能交互验证使用上述临时 loopback 合成 API，不能把真实 owner 凭据注入前端或当作本地测试数据。离线场景的当前结果见[登录门禁验证](#登录后访问首页)，旧阶段匿名离线进入表单的步骤已不适用。开发用 `pnpm dev`（当前端口为 `1420`，vite 仅监听 IPv6 `localhost`，`127.0.0.1` 可能不可达）；Service Worker 验证应使用生产构建预览。对已构建产物做无凭据部署演练：
+打开 `http://localhost:4173`，页面会先检查会话；匿名预览停在登录页。功能交互验证使用上述临时 loopback 合成 API，不能把真实 owner 凭据注入前端或当作本地测试数据。离线场景的当前结果见[登录门禁验证](#登录后访问首页)，旧阶段匿名离线进入表单的步骤已不适用。开发用 `pnpm dev`（当前端口为 `1420`，vite 仅监听 IPv6 `localhost`，`127.0.0.1` 可能不可达）；Service Worker 验证应使用生产构建预览。`pnpm dev` 与 `pnpm preview` 不包含本地开发登录入口：未配置真实 owner 与真实来源时登录会失败，需要可登录的本地环境时使用上面的 `pnpm dev:local`，需要真实联调时按[登录接入规格](./specs/eruoo-login-integration.md)配置对应环境。对已构建产物做无凭据部署演练：
 
 ```sh
 pnpm exec cf deploy --prebuilt --dry-run --mode production
@@ -721,7 +763,7 @@ pnpm exec cf deploy --prebuilt --dry-run --mode production
 
 配置责任：`HAKO_LOGIN` 中的固定 origin、issuer、client、resource 是公开部署值，由 [cloudflare.config.ts](../cloudflare.config.ts) 声明并与[登录接入规格](./specs/eruoo-login-integration.md#3-客户端登记合同)保持一致；真实 owner 主体只能通过部署 Secret（本地用 `.dev.vars`，示例见 [.dev.vars.example](../.dev.vars.example)）输入，不进入前端、日志、公共配置或文档。`.cloudflare/`（类型与构建产物、本地 DO 状态）与 `.dev.vars` 均被 Git 忽略，类型由 `pnpm run typecheck` 先生成再检查。
 
-登录后端与登录页面已随 `pnpm dev`/`pnpm preview` 提供：页面可读取登录状态、发起登录与退出。点击登录会跳转 eruoo 授权页，因此真实登录需要 eruoo 实际服务与真实 owner Secret；本地协议验证使用测试内的受控 OIDC 提供方（见 [worker-auth-flow.test.ts](../tests/worker-auth-flow.test.ts) 与 [tests/helpers/oidc-provider-mock.ts](../tests/helpers/oidc-provider-mock.ts)）。无 Cookie 的 `GET /api/auth/session` 返回 `{"authenticated":false}`，且在调用 DO 前直接返回，只能证明匿名路由行为；携带会话 Cookie 的读取及登录事务才涉及 DO。`POST /api/auth/login` 与 `POST /api/auth/logout` 要求精确 `Origin: https://hako.eruoo.me`。
+登录后端与登录页面已随 `pnpm dev`/`pnpm preview` 提供：页面可读取登录状态、发起登录与退出。点击登录会跳转 eruoo 授权页，因此真实登录需要 eruoo 实际服务与真实 owner Secret；需要不依赖生产凭据、可直接登录进入现有 UI 的本地开发环境时使用上面的 `pnpm dev:local`。本地协议验证使用测试内的受控 OIDC 提供方（见 [worker-auth-flow.test.ts](../tests/worker-auth-flow.test.ts) 与 [tests/helpers/oidc-provider-mock.ts](../tests/helpers/oidc-provider-mock.ts)）。无 Cookie 的 `GET /api/auth/session` 返回 `{"authenticated":false}`，且在调用 DO 前直接返回，只能证明匿名路由行为；携带会话 Cookie 的读取及登录事务才涉及 DO。`POST /api/auth/login` 与 `POST /api/auth/logout` 要求精确 `Origin: https://hako.eruoo.me`。
 
 在合成会话确认的本地预览中，可先保存一条合成记录，再打开两个同源窗口编辑不同字段并依次或同时保存，刷新后检查两项都在；会话允许进入工作区后，未保存的输入从独立草稿库恢复，金额差异需要重新确认，另一个窗口正在编辑的草稿不会被静默接管。草稿写入使用严格持久性事务；草稿库不可用（例如浏览器禁用站点数据）时会阻止登录跳转而不是丢掉输入。
 

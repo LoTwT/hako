@@ -4,7 +4,11 @@
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    // vite.config.ts 导入共享常量时保留 .ts 扩展名：Vite 的原生配置加载器
+    // 不支持无扩展名导入（会发出将来会失败的警告）。
+    "allowImportingTsExtensions": true,
+    "emitDeclarationOnly": true
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "src/shared/local-development.ts"]
 }
