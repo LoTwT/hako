@@ -905,7 +905,7 @@ onUnmounted(() => {
       <a class="side-brand" href="/" aria-label="返回 Hako 首页" :aria-disabled="locked || navigatingForLogin"
         @click.prevent="navigate({ name: 'home' })">
         <img class="side-brand-mark" :src="'/hako-mark-32.png'" :srcset="'/hako-mark-48.png 1.5x, /hako-mark-64.png 2x'" width="32" height="32" alt="" decoding="async" />
-        <span class="side-brand-name">Hako</span>
+        <span class="side-brand-name brand-wordmark">Hako</span>
       </a>
       <a class="side-home" href="/" :aria-disabled="locked || navigatingForLogin"
         @click.prevent="navigate({ name: 'home' })">
@@ -949,7 +949,7 @@ onUnmounted(() => {
           <button v-else type="button" class="topbar-back" @click="backToSubParent">
             <span aria-hidden="true">‹</span> 返回
           </button>
-          <h1 ref="routeHeading" class="topbar-title" tabindex="-1">
+          <h1 ref="routeHeading" class="topbar-title programmatic-focus-heading" tabindex="-1">
             <span class="topbar-crumb" aria-hidden="true">加油 / </span>{{ routeTitle }}
           </h1>
         </div>
@@ -1217,16 +1217,11 @@ onUnmounted(() => {
 .topbar-title {
   margin: 0;
   font-size: 1.0625rem;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: -0.2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.topbar-title:focus-visible {
-  outline: 2px solid var(--focus-ring-color);
-  outline-offset: 3px;
-  box-shadow: var(--focus-ring-shadow);
 }
 .topbar-crumb {
   display: none;
@@ -1351,7 +1346,7 @@ onUnmounted(() => {
 .editor-title {
   margin: 0;
   font-size: 1.0625rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .editor-more {
   min-height: 40px;
@@ -1374,7 +1369,7 @@ onUnmounted(() => {
 .protection-notice-title {
   margin: 0;
   font-size: 1.0625rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .protection-notice .protection-sub {
   color: inherit;
@@ -1401,7 +1396,7 @@ onUnmounted(() => {
 .protection-title {
   margin: 0;
   font-size: 1.1875rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .protection-sub {
   margin: 0;
@@ -1485,7 +1480,7 @@ onUnmounted(() => {
     border-radius: 10px;
   }
   .side-brand-mark { width: 30px; height: 30px; display: block; }
-  .side-brand-name { font-size: 1.0625rem; font-weight: 600; }
+  .side-brand-name { font-size: 1.0625rem; }
   .side-home {
     display: inline-flex;
     align-items: center;

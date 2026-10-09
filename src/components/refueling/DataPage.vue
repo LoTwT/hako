@@ -221,7 +221,7 @@ function retryRetained() {
 .data-heading {
   margin: 0 0 2px;
   font-size: 1.125rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .data-section {
   padding: 18px 20px;
@@ -235,7 +235,7 @@ function retryRetained() {
   gap: 8px;
   margin: 0;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .data-section-title svg { color: var(--text-secondary); flex-shrink: 0; }
 .data-fact {

@@ -38,7 +38,7 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 
 <template>
   <section class="settings-panel" aria-labelledby="settings-title">
-    <h2 id="settings-title" ref="heading" tabindex="-1">设置</h2>
+    <h2 id="settings-title" ref="heading" tabindex="-1" class="programmatic-focus-heading">设置</h2>
 
     <div class="settings-section">
       <h3>账号</h3>
@@ -77,12 +77,7 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 .settings-panel h2 {
   margin: 0;
   font-size: 1.25rem;
-  font-weight: 600;
-}
-.settings-panel h2:focus-visible {
-  outline: 2px solid var(--focus-ring-color);
-  outline-offset: 4px;
-  box-shadow: var(--focus-ring-shadow);
+  font-weight: 500;
 }
 .settings-section {
   display: flex;

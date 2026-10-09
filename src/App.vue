@@ -477,7 +477,7 @@ syncVisibleWorkspace();
     <div v-if="sessionPresentation !== 'enter'" class="gate-frame">
       <header class="gate-brand">
         <img class="gate-brand-mark" :src="'/hako-mark-32.png'" :srcset="'/hako-mark-48.png 1.5x, /hako-mark-64.png 2x'" width="32" height="32" alt="" decoding="async" />
-        <span class="gate-brand-name">Hako</span>
+        <span class="gate-brand-name brand-wordmark">Hako</span>
       </header>
       <StartupPage v-if="sessionPresentation === 'startup'" ref="startupPage" />
       <SessionUnavailablePage v-else-if="sessionPresentation === 'unavailable'" ref="unavailablePage" :message="sessionFeedback" :busy="navigationBusy" @retry="refreshAuth" />
@@ -542,7 +542,7 @@ syncVisibleWorkspace();
   border-bottom: 1px solid var(--border-default);
 }
 .gate-brand-mark { display: block; width: 32px; height: 32px; }
-.gate-brand-name { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.3px; }
+.gate-brand-name { font-size: 1.25rem; letter-spacing: -0.3px; }
 @media (max-width: 719px) {
   .gate-frame { padding: 16px 16px 32px; }
 }
@@ -584,7 +584,7 @@ syncVisibleWorkspace();
 .settings-heading {
   margin: 0;
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .settings-back {
   min-height: 40px;

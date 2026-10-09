@@ -109,7 +109,7 @@ onMounted(() => layerFocus.focusOnOpen());
   gap: 12px;
   margin-bottom: 6px;
 }
-.draft-header h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+.draft-header h2 { margin: 0; font-size: 1rem; font-weight: 500; }
 .draft-close {
   display: grid;
   place-items: center;
@@ -142,7 +142,7 @@ onMounted(() => layerFocus.focusOnOpen());
   padding: 12px 0;
   border-top: 1px solid var(--border-default);
 }
-.draft-item-meta { font-size: 0.8125rem; font-weight: 600; }
+.draft-item-meta { font-size: 0.8125rem; font-weight: 500; }
 .draft-item-summary { flex: 1 1 140px; font-size: 0.8125rem; color: var(--text-secondary); overflow-wrap: anywhere; }
 .draft-item-actions { display: inline-flex; align-items: center; gap: 10px; }
 .draft-continue { min-height: 36px; padding: 5px 14px; font-size: 0.8125rem; }

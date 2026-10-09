@@ -425,7 +425,7 @@ function submit() {
 }
 .error-summary-title {
   margin: 0;
-  font-weight: 600;
+  font-weight: 500;
 }
 .error-summary-list {
   margin: 0;

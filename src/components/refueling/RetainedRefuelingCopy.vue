@@ -434,7 +434,7 @@ function retainedAmount(record: SavedRefuelingRecord): string {
 .retained-header h3 {
   margin: 0;
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .retained-caption {
   margin: 4px 0 0;
@@ -533,7 +533,7 @@ function retainedAmount(record: SavedRefuelingRecord): string {
   gap: 4px 12px;
 }
 .draft-meta {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 0.8125rem;
 }
 .draft-summary {

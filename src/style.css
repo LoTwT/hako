@@ -68,6 +68,32 @@ select:focus-visible,
   box-shadow: var(--focus-ring-shadow);
 }
 
+/*
+ * 程序定位标题（.programmatic-focus-heading）：带 tabindex=-1、只由脚本聚焦的
+ * 页面/分组标题，用于把辅助技术的阅读位置带到当前内容。键盘无法 Tab 到达，
+ * 因此不画键盘焦点装饰环——只保留焦点本身，去掉仅程序聚焦时出现的 outline
+ * 与环状阴影（此前与输入框外观混淆）。语义标题、tabindex 与路由/会话门禁的
+ * 程序定位不变；交互控件的 :focus-visible 不受影响。
+ */
+.programmatic-focus-heading:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+/* 高对比模式：阴影被系统移除，保留系统色描边作为可核查的程序定位反馈。 */
+@media (forced-colors: active) {
+  .programmatic-focus-heading:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* 品牌词标：Hako 英文品牌文字使用展示字体，与正文/中文标题角色区分。 */
+.brand-wordmark {
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+
 .primary {
   background: var(--accent-primary);
   border-color: transparent;
@@ -77,11 +103,13 @@ select:focus-visible,
 
 .primary:hover:not(:disabled) {
   background: var(--accent-primary-hover);
+  color: var(--accent-contrast-hover);
   border-color: transparent;
 }
 
 .primary:active:not(:disabled) {
   background: var(--accent-primary-active);
+  color: var(--accent-contrast-active);
 }
 
 .primary:focus-visible {
@@ -157,7 +185,7 @@ input::placeholder {
 
 .section-heading h2 {
   font-size: 1.25rem;
-  font-weight: 600;
+  font-weight: 500;
   margin: 6px 0 0;
 }
 

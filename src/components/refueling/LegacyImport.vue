@@ -132,7 +132,7 @@ async function importSelected() {
 .legacy-import h2 {
   margin: 0;
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .legacy-import p { margin: 0; color: var(--text-secondary); }
 fieldset { border: 0; padding: 0; margin: 4px 0 0; }
