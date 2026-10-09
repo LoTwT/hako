@@ -183,7 +183,7 @@ const atLatestMonth = computed(() => year.value === now.year && month.value === 
 .statistics-heading {
   margin: 0;
   font-size: 1.125rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .period-controls {
   display: flex;
@@ -240,7 +240,7 @@ const atLatestMonth = computed(() => year.value === now.year && month.value === 
 .stat-section h3 {
   margin: 0 0 4px;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .expense-note { margin: 0 0 10px; font-size: 0.75rem; }
 .expense-rows {

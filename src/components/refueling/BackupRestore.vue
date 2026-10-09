@@ -949,7 +949,7 @@ async function refreshProtection() {
   justify-content: space-between;
   align-items: center;
 }
-.panel-header h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+.panel-header h2 { margin: 0; font-size: 1rem; font-weight: 500; }
 .preview-missing {
   display: flex;
   flex-direction: column;
@@ -987,13 +987,13 @@ async function refreshProtection() {
 }
 .version-list ul > li.unselectable { opacity: 0.6; }
 .version-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.8125rem; }
-.version-time { font-weight: 600; }
+.version-time { font-weight: 500; }
 .muted { color: var(--text-secondary); font-size: 0.8125rem; }
 .error { color: var(--status-danger-fg); font-size: 0.8125rem; line-height: 1.8; }
 .list-hint { font-size: 0.8125rem; }
-.compare-summary { font-weight: 600; font-size: 0.8125rem; }
+.compare-summary { font-weight: 500; font-size: 0.8125rem; }
 .compare-record-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
-.record-id { font-weight: 600; font-size: 0.8125rem; }
+.record-id { font-weight: 500; font-size: 0.8125rem; }
 .status-added { color: var(--status-success-fg); }
 .status-removed { color: var(--status-danger-fg); }
 .status-changed { color: var(--status-warning-fg); }
@@ -1001,7 +1001,7 @@ async function refreshProtection() {
 .field-label { min-width: 72px; color: var(--text-secondary); }
 .field-before { text-decoration: line-through; opacity: 0.8; }
 .field-arrow { color: var(--text-muted); }
-.field-after { font-weight: 600; }
+.field-after { font-weight: 500; }
 .confirm-block { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
 .confirm-warning { margin: 0; padding: 12px 14px; font-size: 0.8125rem; line-height: 1.8; border: 1px solid var(--status-warning-border); border-radius: 10px; background: var(--status-warning-bg); color: var(--status-warning-fg); }
 .generation-actions { display: flex; flex-wrap: wrap; gap: 10px; }

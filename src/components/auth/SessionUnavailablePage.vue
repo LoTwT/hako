@@ -24,7 +24,7 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
     <span class="unavailable-mark" aria-hidden="true">
       <Info :size="22" :stroke-width="2" />
     </span>
-    <h1 id="unavailable-title" ref="heading" tabindex="-1">暂时无法确认登录状态</h1>
+    <h1 id="unavailable-title" ref="heading" tabindex="-1" class="programmatic-focus-heading">暂时无法确认登录状态</h1>
     <p class="unavailable-description" role="status">{{ message }}</p>
     <div class="unavailable-actions">
       <button class="primary" :disabled="busy" @click="emit('retry')">
@@ -55,14 +55,9 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 h1 {
   margin: 24px 0 12px;
   font-size: 1.625rem;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: -0.5px;
   line-height: 1.4;
-}
-h1:focus-visible {
-  outline: 2px solid var(--focus-ring-color);
-  outline-offset: 5px;
-  box-shadow: var(--focus-ring-shadow);
 }
 .unavailable-description {
   margin: 0;

@@ -24,7 +24,7 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
     <header class="home-header">
       <span class="brand">
         <img class="brand-mark" :src="'/hako-mark-32.png'" :srcset="'/hako-mark-48.png 1.5x, /hako-mark-64.png 2x'" width="32" height="32" alt="" decoding="async" />
-        <span class="brand-name">Hako</span>
+        <span class="brand-name brand-wordmark">Hako</span>
       </span>
       <button type="button" class="account-button" :disabled="busy" @click="emit('openSettings', $event)">
         <UserRound aria-hidden="true" :size="18" :stroke-width="2" />
@@ -35,7 +35,7 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
     <img class="home-illustration" :src="'/hako-illustration-256.png'" width="256" height="256" alt="" decoding="async" aria-hidden="true" />
 
     <section class="tools" aria-labelledby="tools-title">
-      <h1 id="tools-title" ref="heading" tabindex="-1">我的工具</h1>
+      <h1 id="tools-title" ref="heading" tabindex="-1" class="programmatic-focus-heading">我的工具</h1>
       <div class="tool-grid">
         <a class="tool-card" href="/#refueling" :aria-disabled="busy" @click.prevent="emit('openRefueling')">
           <span class="tool-icon" aria-hidden="true">
@@ -79,7 +79,6 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 }
 .brand-name {
   font-size: 1.25rem;
-  font-weight: 600;
   letter-spacing: -0.3px;
 }
 .account-button {

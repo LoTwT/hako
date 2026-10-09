@@ -657,6 +657,23 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 未验边界（修复轮）：同第一轮未验边界——浏览器验证全部基于合成响应，真实 bfcache、真机/PWA、读屏播报、对比度实测、整页缩放与 Service Worker 更新流程仍未验证；统计计算（油耗/趋势）仍未实施。修复不卸载旧账号工作区、不清 pending、不换请求号、不绕过身份门禁、不清理旧副本。
 
 未验边界与合成边界：浏览器验证的会话/引导/快照/同步回声/备份状态与列表响应均为 Playwright 路由拦截注入的合成数据，无真实 eruoo 登录、生产访问或真实 R2；D2 预览比较与 D3 原请求结果流、代次保护面板与多窗口草稿占用未在浏览器逐一走查（由既有组件/单元回归覆盖，见上表）；真实 bfcache、真机/PWA 安装、系统图标裁切、读屏播报、对比度实测、整页缩放（非根字号）、真实主题字体下的长名极限与 Service Worker 更新流程未验证。统计计算（含记录覆盖里程与趋势）、AI 识图与登录完成码后备交互仍未实现，本实施不伪造其结果。应用未提交、未合并、未部署；发布事实仍由发布记录维护。
+
+## 标题焦点、字体角色与主按钮状态配色（2026-10-09，隔离 worktree；未提交、未合并、未部署）
+
+范围：2026-10-09 诊断（`/Users/caoyujie/.agents/task-artifacts/hako/hako-local-login-theme-diagnosis-20261009-pms0wxs6/MODIFICATION_PLAN.md` 第 2/3/4 项）的界面修正；第 1 项「本地开发登录」按独立 PR 另行实施，本切片不包含。基线为已部署 `main` = `9dea7ebda44381de164aab11e007c541c453c11b`（tree `596717cf7a29749d51763b3f3d70de5f82dd0bca`），在独立 worktree 的 `fix/theme-focus-typography` 分支上实施；本轮不 commit、不 push、不部署。
+
+三项规则的当前权威实现位置：
+
+| 规则 | 权威位置 | 内容 |
+| --- | --- | --- |
+| 程序定位标题 | [src/style.css](../src/style.css) `.programmatic-focus-heading` | 带 `tabindex=-1`、只由脚本聚焦的页面/分组标题（登录 `#login-title`、启动 `#startup-title`、暂不可确认 `#unavailable-title`、首页 `#tools-title`、设置 `#settings-title`、加油区 `.topbar-title`、`.detail-heading` 与记录详情占位标题）不画键盘焦点装饰环：`:focus-visible` 下 `outline: none` 与无环阴影；`forced-colors: active` 下保留 2px 系统色 `Highlight` 描边作为定位反馈。语义标题、`tabindex` 与 App 的路由/会话门禁程序定位不变，交互控件与错误定位的 `:focus-visible` 不受影响。 |
+| 字体角色 | [src/style.css](../src/style.css) `.brand-wordmark`，各页面标题样式 | Hako 英文品牌词标统一 `--font-display`（Bricolage Grotesque）600：`.gate-brand-name`、`.brand-name`、`.side-brand-name` 复用该共享类。中文页面/分组标题与中文强调一律 `--font-sans` 500（文楷只有真实 400/500），层级改用字号与间距表达；正文/表单维持 400，字段标签等强调 500；金额、里程与统计数值保留原字重与既有 `.num` 原语的表格数字对齐（不做代码等宽字体）。主题版本、`font-synthesis: none`、字体资源与回退不变。 |
+| 主按钮状态配色 | [src/style.css](../src/style.css) `.primary` | 普通/悬停/按下完整配对主题状态角色：`--accent-primary[-hover/-active]` 配 `--accent-contrast[-hover/-active]`；禁用态仍由 `button:disabled` 的 0.55 不透明度表达，`:focus-visible` 与强制颜色模式不受影响。 |
+
+验证（本次实测）：`pnpm run typecheck` 通过；`pnpm run test` 主配置 480 + 组件 114 全部通过（未新增测试：本次为共享样式与标记类，组件测试的合成宿主不承载 CSS，按门禁要求不写镜像实现）；`pnpm run build` 通过（预缓存 21 项 4153.34 KiB）。真实浏览器（本 session 自有 `vite preview` 127.0.0.1:4181，生产构建 + Workers 运行时，Playwright-core 1.61.1 + Chromium 153）：匿名入口 `document.activeElement=#login-title` 且标题 `outline: none`、无环阴影，首次 Tab 落在主按钮并有可见焦点环，Shift+Tab 回退正确；启动等待与暂不可确认标题同类（启动页首帧不重触发 App 的聚焦 watcher，脚本聚焦下同样无装饰环）；键盘打开设置层后标题为初始焦点、Tab 三次均在层内、Esc 关闭后焦点还原到账号按钮；加油区键盘切换路由后 `.topbar-title` 获得程序焦点且无装饰环，记录行 Enter 聚焦 `.detail-heading` 后无装饰环、Tab 到详情面板首控件显示焦点环。主按钮实测对比度（可操作文字阈值 4.5:1）：Paper 普通 5.50、悬停 6.21、按下 8.43（旧实现按 token 复算为 2.53 / 1.87），Ink 8.56 / 11.21 / 13.19；禁用态单独记录（颜色不变 + 0.55 不透明度）。字体平台信息：中文标题 WenKai Medium、正文 WenKai Regular + 系统 UI、品牌 Bricolage Grotesque（600 与 400 渲染宽度不同，变体轴生效）；手机 390px 与根字号 200%（文字放大，非整页缩放）下标题、品牌与卡片均无横向溢出与裁切；`forced-colors: active` 下程序定位标题保留系统色描边、交互焦点正常。
+
+未验边界：登录后的页面与记录详情由 Playwright 路由拦截的合成会话（合成账号 + 合成初始代次与空快照）驱动，本机写入只发生在临时浏览器上下文；无真实 eruoo 登录（本地开发登录属另一 PR）、无生产访问、无读屏播报、无真机/PWA 与整页缩放验证。`src/components/refueling/RefuelingRecords.vue` 为基线中未被任何入口引用的旧文件，本轮未改动；共享原语 `.eyebrow`（拉丁文本，仅该旧文件使用）保留 600。逐项回执与原始浏览器证据（脚本、36 张截图、逐状态样式与对比度）：`/Users/caoyujie/.agents/task-artifacts/hako/ui-polish-pr1-focus-font-primary-20261009-a44932f6/`。
+
 ## 代码入口
 
 | 位置 | 职责 |

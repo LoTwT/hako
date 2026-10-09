@@ -17,7 +17,7 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
     <span class="startup-mark" aria-hidden="true">
       <LoaderCircle class="startup-spinner" :size="22" :stroke-width="2" />
     </span>
-    <h1 id="startup-title" ref="heading" tabindex="-1">正在打开…</h1>
+    <h1 id="startup-title" ref="heading" tabindex="-1" class="programmatic-focus-heading">正在打开…</h1>
     <p class="startup-description" role="status">正在确认你的 Hako 会话，请稍候。</p>
   </section>
 </template>
@@ -56,14 +56,9 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 h1 {
   margin: 24px 0 12px;
   font-size: 1.625rem;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: -0.5px;
   line-height: 1.4;
-}
-h1:focus-visible {
-  outline: 2px solid var(--focus-ring-color);
-  outline-offset: 5px;
-  box-shadow: var(--focus-ring-shadow);
 }
 .startup-description {
   margin: 0;

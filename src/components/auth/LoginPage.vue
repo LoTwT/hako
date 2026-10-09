@@ -24,7 +24,7 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
     <span class="login-icon" aria-hidden="true">
       <LockKeyhole :size="22" :stroke-width="2" />
     </span>
-    <h1 id="login-title" ref="heading" tabindex="-1">登录后继续</h1>
+    <h1 id="login-title" ref="heading" tabindex="-1" class="programmatic-focus-heading">登录后继续</h1>
     <p class="login-description">使用你的 eruoo 账号登录，即可进入 Hako。</p>
     <p v-if="notice" class="login-feedback" role="status">{{ notice }}</p>
     <div class="login-actions">
@@ -61,14 +61,9 @@ defineExpose({ focusHeading: () => heading.value?.focus({ preventScroll: true })
 h1 {
   margin: 24px 0 12px;
   font-size: 1.625rem;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: -0.5px;
   line-height: 1.4;
-}
-h1:focus-visible {
-  outline: 2px solid var(--focus-ring-color);
-  outline-offset: 5px;
-  box-shadow: var(--focus-ring-shadow);
 }
 .login-description,
 .login-feedback {

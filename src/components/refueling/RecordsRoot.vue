@@ -245,11 +245,11 @@ function jumpToMonth(event: Event) {
       <!-- Web 右栏详情（F2）：未选中时提示，编辑只经明确按钮进入。 -->
       <aside v-if="wide" class="records-detail" aria-label="记录详情">
         <template v-if="selectedRecord">
-          <h3 ref="detailHeading" class="detail-heading" tabindex="-1">记录详情</h3>
+          <h3 ref="detailHeading" class="detail-heading programmatic-focus-heading" tabindex="-1">记录详情</h3>
           <slot name="detail" :record="selectedRecord"></slot>
         </template>
         <div v-else class="detail-placeholder">
-          <h3 tabindex="-1">选择一条记录查看详情</h3>
+          <h3 tabindex="-1" class="programmatic-focus-heading">选择一条记录查看详情</h3>
           <p>↑↓ 切换记录 · Enter 聚焦详情</p>
         </div>
       </aside>
@@ -289,7 +289,7 @@ function jumpToMonth(event: Event) {
 .records-title {
   margin: 0;
   font-size: 1.125rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .records-count { font-size: 0.75rem; }
 .records-filters {
@@ -407,13 +407,12 @@ function jumpToMonth(event: Event) {
   white-space: nowrap;
   margin: 0;
 }
+/* 聚焦时显形（仅由脚本聚焦）：装饰环由 .programmatic-focus-heading 统一处理。 */
 .detail-heading:focus-visible {
   position: fixed;
   width: auto;
   height: auto;
   clip-path: none;
-  outline: 2px solid var(--focus-ring-color);
-  outline-offset: 3px;
 }
 .empty-filter { padding: 24px 0; }
 .records-primary {
@@ -452,10 +451,6 @@ function jumpToMonth(event: Event) {
 }
 .detail-placeholder h3 { margin: 0; font-size: 0.9375rem; font-weight: 500; }
 .detail-placeholder p { margin: 0; font-size: 0.75rem; color: var(--text-muted); }
-.detail-placeholder h3:focus-visible {
-  outline: 2px solid var(--focus-ring-color);
-  outline-offset: 3px;
-}
 /* Web 主从：宽屏两列，窄屏单列流程。 */
 @media (min-width: 880px) {
   .records-layout {
