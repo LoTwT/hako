@@ -693,6 +693,24 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界：本轮为隔离的本地开发登录，不是真实 eruoo OIDC 联调——无真实登录、无生产访问、无远端 R2、无部署；本地测试身份、数据与浏览器状态均为合成。真实设备/PWA、读屏播报、整页缩放与 Service Worker 更新流程未验证（沿用既有边界）；本地会话的长期期限、Cookie 保存行为与真机一致性与生产同类项一样未经真机实测。逐项回执与原始证据（脚本、截图、逐文件 SHA-256、构建与运行日志）：`/Users/caoyujie/.agents/task-artifacts/hako/local-dev-login-pr2-20261009-q7k2m4x9/`；首轮父审 LD-R1（异步门禁页标题聚焦）修复的增量回执、差异与复验证据：`/Users/caoyujie/.agents/task-artifacts/hako/local-dev-login-pr2-fix-20261009-t5m8w2q4/`。
 
+## 首页桌面宽度与设置层背景路由修复（2026-10-09，隔离 worktree；未提交、未合并、未部署）
+
+范围：父侧诊断（`/Users/caoyujie/.agents/task-artifacts/hako/home-settings-diagnosis-20261009-xvhcbjqb/`）确认的两项实现缺陷——H-1 桌面首页被缩成窄栏（.home-page 作为 .app-root 纵向 flex 子项仅有 max-width 与水平 auto margin，不占满可用宽度，1440/1920 实测 372px）；S-1 从数据/统计/编辑/备份等加油子页打开设置层时背景回退到记录根页（refuelingRoute 在 targetRoute=settings 时一律回 records，可见工作区被整体切走）。基线 `main` = `66727727694e743431cb02630aa4bc7844d495d8`（PR #25 合并提交），在独立 worktree 的 `fix/home-width-settings-background` 分支实施；本轮不 commit、不 push、不部署。
+
+五项规则的当前权威实现位置：
+
+| 规则 | 权威位置 | 内容 |
+| --- | --- | --- |
+| 首页容器占满可用宽度 | [HomePage.vue](../src/components/home/HomePage.vue) `.home-page` | `width: 100%` + `max-width: 65rem` + 水平居中 auto margin：作为 `.app-root` 纵向 flex 子项显式占满可用宽度并保留 65rem 上限与响应式内边距（与 App.vue 的 `.gate-frame`/`.app-notice` 同一组合）。65rem 以内视口全宽、≥1040px 封顶；手机（≤719px）仍为单面板列表，不添加假工具、不改主题/图标/焦点规范。 |
+| 设置层背景业务页面身份 | [App.vue](../src/App.vue) `refuelingRoute`/`settingsBackdrop` | 工作区视角的业务路由（传给 AccountWorkspace/RefuelingWorkspace 的 `route`）在设置层叠在加油区上时保持背景页（打开设置前的来源子路由，含完整来源子路由），覆盖层有自己的地址/标题/焦点/门禁，不改变背景业务页面身份（业务页不卸载重建、实例保持；`appRoute` 等 prop 仍随应用路由更新）；非加油目标仍回记录根页仅供隐藏工作区占位渲染。`workspaceRoute`（`appRoute` prop）保持应用级目标路由，工作区据此区分覆盖层状态。 |
+| 设置来源生命周期与历史项来源恢复 | [App.vue](../src/App.vue) `navigate`/`replaceRoute`/`historyEntryState`/`handleLocationChangeOnce` | 来源仅在设置层打开期间存在：由 `navigate` 的写入回调与目标路由在同一同步块落位（避免「目标已是设置、来源仍为空」的中间态——该中间态会卸载并重建背景页并触发未提交预览的卸载取消），路由真正离开设置（popstate 或替换路由写入）时清空；关闭动作本身不清，history.back() 到 popstate 之间背景保持原身份渲染。来源同时作为历史条目状态（`{ hako, settingsSource }`）随条目存续：Forward/Back 重新进入同一设置历史项时经 popstate 状态恢复背景（仅接受应用写入的合法 home/refueling 身份，关闭与按钮导航同一规则）；直接打开/刷新 `#settings` 视为无可恢复来源，Web 叠在首页。 |
+| 覆盖层下的背景异步路由协调 | [App.vue](../src/App.vue) `advanceBackdropUnderSettings` 及工作区导航回调 | 设置层打开期间，背景组件的异步完成（备份预览推进 D1→D2、恢复结果协调回数据页、记录解析回退等）经工作区导航回调（`navigateFromWorkspace`/`replaceRouteFromWorkspace`/`backToFromWorkspace`）只推进背景业务页面身份（`settingsBackdrop`），不关闭设置层——设置层保持自己的地址/标题/焦点；历史条目状态随最新背景页同步重写，关闭与 Forward 再入按最新背景页运行。设置层关闭自身的导航不经此协调。 |
+| 迟到编辑完成归属 | [RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue) `returnFromEditor`、route 切换 watcher | 保存/放弃清理在途时「已离开编辑地址」按**应用级路由**（`props.appRoute`）核对：导航去统计等页面或打开设置层（地址变为 `#settings`）都属已离开，迟到完成只结束编辑不抢回页面；设置层打开时业务路由保持编辑地址但地址已变，旧实现按业务路由核对会误判未离开。设置层覆盖期间背景路由推进不改变背景焦点与滚动（焦点归设置层所有）。 |
+
+验证（两轮实测；第二轮为父审 R1 的 HS-R1/HS-R2 定点修复与 HS-D1 表述更正）：`pnpm run typecheck` 通过；`pnpm run test` 主配置 31 文件 / **497 通过**、组件配置 13 文件 / **127 通过**（`app-settings-backdrop` 共 8 项：S-1 六项在未修基线实测红 4/6、修复后绿；父审 R1 新增 HS-R1「Forward 重新进入同一设置历史项恢复来源与关闭目标」与 HS-R2「设置层打开期间背景面板迟到完成只推进背景身份、不抢走设置层、背景不抢焦点/滚动」，对修复前候选实测红 2/8、修复后绿 8/8）；`pnpm run build` 通过（第二轮预缓存 21 项 4156.44 KiB）、`git diff --check` 0。真实浏览器（Playwright-core + Chromium headless shell 153，全部 `/api` 响应为路由拦截注入的明确标注合成夹具；第一轮基线/修复两份生产构建 + 本 session 自有 `vite preview`，第二轮为父侧冻结复验协议——逐字节拦截提供本地构建静态文件，未运行新服务器）：H-1 宽度修前→修后 390:356→390、719:356→719、720:372→720、1024:372→1024、1440:372→1040、1920:372→1040（1040=65rem 封顶；720 为两列、1024 及以上三列网格轨道，390/719 保持手机单面板），Paper/Ink 全部视口无横向溢出，根字号 200%（文字放大）与 CSS zoom 2（CSS 缩放属性模拟；**浏览器菜单整页缩放未验**）分开测量均无溢出；S-1 修前数据/统计打开设置背景变为「加油 / 加油记录」且数据页从 DOM 消失，修后保持来源子路由、标题、侧栏高亮与页面实例，Esc 与浏览器 Back 均回来源页、焦点还原触发点（`topbar-account`）；编辑中开关设置同一表单实例与输入保留；**父侧源码推导的备份预览取消风险已实测确认**：修前从恢复预览（含活跃未提交预览）打开设置触发 1 次 `DELETE /api/restores/refueling/previews/:id` 且面板卸载，修复后打开/关闭设置 0 次 DELETE、面板与比较视图保持，真正离开预览（面板「关闭」回数据页）仍精确取消 1 次；直接打开与刷新 `#settings` 均叠在首页（工作区不挂载）；设置层打开期间会话失效（可见性重查 401）门禁关闭、私有内容隐藏，会话恢复后设置层回到原数据背景。父审 R1 复验（父侧 probe 未改动，`HAKO_REVIEW_ASSET_ROOT` 指向本轮新构建）**7/7 通过**：含「数据→设置→Esc→Forward 再入设置背景仍为数据页、再关闭回数据页」（HS-R1）与「预览 POST 受控在途时打开设置、响应释放后设置层保持打开（hash `#settings`、焦点 `settings-title`）、背景标题推进为「加油 / 恢复预览」且比较视图可见、DELETE 0」（HS-R2），页面错误 0、控制台错误 0。页面错误 0；第一轮控制台 5 条资源错误均为合成夹具范围（4×同步 POST 未提供夹具 404、1×故意的 401 会话失效）。
+
+未验边界：浏览器验证全部基于合成会话/快照/备份/预览响应（含 Loro 合成快照比较），无真实 eruoo 登录、生产访问、真实 R2 或真实备份预览；多工具压力布局（>1 个真实工具）未在产品中存在，也未用夹具伪造进产品数据；真实 bfcache、真机/PWA、读屏播报、**浏览器菜单整页缩放**、Service Worker 更新流程与生产计量未验证（沿用既有边界）。修复不改离开加油区的草稿落盘保护、账号/导航归属、authLifecycleEpoch、隐藏账号保活、直接打开 `#settings` 的首页兜底与登录返回两分类合同（由既有套件全绿佐证）。逐项回执与原始证据：第一轮 `/Users/caoyujie/.agents/task-artifacts/hako/home-settings-fix-20261009-tq2_cf_a/receipt/`；父审 R1 修复增量回执 `/Users/caoyujie/.agents/task-artifacts/hako/home-settings-fix-20261009-tq2_cf_a/receipt-r1/`。
+
 ## 代码入口
 
 | 位置 | 职责 |

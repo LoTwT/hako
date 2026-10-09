@@ -337,9 +337,11 @@ function returnFromEditor(context: { mode: "create" | "edit"; recordId: string }
   pendingEditor.value = null;
   startFreshForm();
   if (!routeInteractionsAllowed.value) return;
-  // 用户已离开本次编辑地址（保存/放弃在途时导航去了统计等页面）：较新的
-  // 导向意图优先，旧完成只结束编辑，不抢回页面。
-  if (routeKey({ name: "refueling", refueling: props.route }) !== routeKey(originRoute)) return;
+  // 用户已离开本次编辑地址（保存/放弃在途时导航去了统计等页面，或打开设置层
+  // 覆盖在编辑器上）：较新的导向意图优先，旧完成只结束编辑，不抢回页面。
+  // 以应用级路由（appRoute）核对——设置层打开时业务路由保持编辑地址，但
+  // 地址已变为 #settings，仍属「已离开」。
+  if (routeKey(props.appRoute) !== routeKey(originRoute)) return;
   if (source !== null) props.backTo(source);
   else refuelingNavigate({ name: "records" });
 }
@@ -857,6 +859,8 @@ watch(routeInteractionsAllowed, (allowed) => {
 
 // 路由切换：键盘焦点移到当前页标题；子页回到顶部。主从选择（records↔detail）
 // 不滚动，保留正在浏览的位置；编辑器返回记录族时恢复离开前的滚动位置。
+// 设置层覆盖期间（appRoute 为 settings）背景路由推进（HS-R2）不改变焦点与
+// 滚动——焦点归设置层所有，背景只在覆盖层关闭后恢复自己的焦点/滚动行为。
 const routeHeading = shallowRef<HTMLHeadingElement | null>(null);
 let recordsFamilyScrollY = 0;
 watch(routeName, async (name, previous) => {
@@ -872,6 +876,7 @@ watch(routeName, async (name, previous) => {
     recordsFamilyScrollY = 0;
   }
   await Promise.resolve();
+  if (props.appRoute.name === "settings") return;
   routeHeading.value?.focus?.({ preventScroll: true });
   if (returningFromEditor) {
     if (typeof window !== "undefined") window.scrollTo?.(0, recordsFamilyScrollY);
