@@ -1,8 +1,10 @@
 # 本地最小验证进展
 
-更新：2026-10-07。设计文档 [PR #4](https://github.com/LoTwT/hako/pull/4)、本地验证版 [PR #5](https://github.com/LoTwT/hako/pull/5)、登录切片 PR1 至 PR3（[#7](https://github.com/LoTwT/hako/pull/7)、[#8](https://github.com/LoTwT/hako/pull/8)、[#9](https://github.com/LoTwT/hako/pull/9)）、页面门禁 [PR #10](https://github.com/LoTwT/hako/pull/10) 和账号同步 [PR #11](https://github.com/LoTwT/hako/pull/11) 均已合入；独立备份切片（[PR #13](https://github.com/LoTwT/hako/pull/13)、文案对齐 [PR #14](https://github.com/LoTwT/hako/pull/14)）已于 2026-10-04 合入、部署并完成首份真实备份读回，见[发布记录](./releases/2026-10-04-independent-backup.md)；恢复交付 A（[PR #18](https://github.com/LoTwT/hako/pull/18)）与 B（[PR #19](https://github.com/LoTwT/hako/pull/19) 实现、[PR #20](https://github.com/LoTwT/hako/pull/20) 浏览器修复）已于 2026-10-05 合入并分阶段部署，A 完成两端设备接受、B 完成两端备份列表与无变化预览的用户验收，见[恢复发布记录](./releases/2026-10-05-restore.md)；应用外框与独立启动状态（PR #22）已于 2026-10-06 合入。本文件维护实现进度、历史本地验证和运行入口；协议 v1 首次发布的精确候选、当时的平台读回与首轮真实协作验收由[同步发布与验收记录](./releases/2026-10-03-sync.md)（2026-10-03）维护，当前协议 v2 的 A/B 发布身份、平台读回与最新验收统一见[恢复发布记录](./releases/2026-10-05-restore.md)，产品规则仍以[重新设计记录](./specs/redesign.md)和对应专项合同为准。已确认 UI/UX 重设计的应用实施见[UI/UX 重设计实施](#已确认-uiux-重设计实施2026-10-07隔离-worktree未合并未部署)一节，尚未合并与部署。
+更新：2026-10-11。设计文档 [PR #4](https://github.com/LoTwT/hako/pull/4)、本地验证版 [PR #5](https://github.com/LoTwT/hako/pull/5)、登录切片 PR1 至 PR3（[#7](https://github.com/LoTwT/hako/pull/7)、[#8](https://github.com/LoTwT/hako/pull/8)、[#9](https://github.com/LoTwT/hako/pull/9)）、页面门禁 [PR #10](https://github.com/LoTwT/hako/pull/10) 和账号同步 [PR #11](https://github.com/LoTwT/hako/pull/11) 均已合入；独立备份切片（[PR #13](https://github.com/LoTwT/hako/pull/13)、文案对齐 [PR #14](https://github.com/LoTwT/hako/pull/14)）已于 2026-10-04 合入、部署并完成首份真实备份读回，见[发布记录](./releases/2026-10-04-independent-backup.md)；恢复交付 A（[PR #18](https://github.com/LoTwT/hako/pull/18)）与 B（[PR #19](https://github.com/LoTwT/hako/pull/19) 实现、[PR #20](https://github.com/LoTwT/hako/pull/20) 浏览器修复）已于 2026-10-05 合入并分阶段部署，A 完成两端设备接受、B 完成两端备份列表与无变化预览的用户验收，见[恢复发布记录](./releases/2026-10-05-restore.md)；应用外框与独立启动状态（PR #22）已于 2026-10-06 合入，并与 UI/UX 重设计（[PR #23](https://github.com/LoTwT/hako/pull/23)）一同于 2026-10-08 部署，见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。本文件维护实现进度、历史本地验证和运行入口；协议 v1 首次发布的精确候选、当时的平台读回与首轮真实协作验收由[同步发布与验收记录](./releases/2026-10-03-sync.md)（2026-10-03）维护，协议 v2 的 A/B 首次发布身份、当时的平台读回与设备验收见[恢复发布记录](./releases/2026-10-05-restore.md)，最近一次已确认部署及其验收边界见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)，产品规则仍以[重新设计记录](./specs/redesign.md)和对应专项合同为准。已确认 UI/UX 重设计的应用实施见[UI/UX 重设计实施](#已确认-uiux-重设计实施2026-10-07隔离-worktree未合并未部署)一节，已随 PR #23 合并并部署。
 
-当前状态：同源 Worker 承载 `/api`，登录、页面门禁、账号数据隔离与最小双副本同步均已部署；独立备份（2026-10-04）与恢复功能（同步协议 v2、备份格式 v2 及「备份与恢复」面板，2026-10-05）亦已部署，设备与用户验收范围见对应发布记录。普通浏览器双向同步、不同字段离线合并、本机草稿退出重登，以及 iPhone 主屏幕 PWA 登录、同步与联网重开已在首轮真实协作验收中通过；电脑为工具观察，手机为本人回报，范围与未知项见发布记录。账号存储、导入和持久确认以[账号同步规格](./specs/account-sync.md)为准，登录及期限以[登录接入规格](./specs/eruoo-login-integration.md)为准。
+当前状态：同源 Worker 承载 `/api`，登录、页面门禁、账号数据隔离与最小双副本同步均已部署；独立备份（2026-10-04）与恢复功能（同步协议 v2、备份格式 v2 及「备份与恢复」面板，2026-10-05）亦已部署，UI/UX 重设计与独立启动状态已于 2026-10-08 部署，设备与用户验收范围见对应发布记录。普通浏览器双向同步、不同字段离线合并、本机草稿退出重登，以及 iPhone 主屏幕 PWA 登录、同步与联网重开已在首轮真实协作验收中通过；电脑为工具观察，手机为本人回报，范围与未知项见发布记录。账号存储、导入和持久确认以[账号同步规格](./specs/account-sync.md)为准，登录及期限以[登录接入规格](./specs/eruoo-login-integration.md)为准。
+
+**状态更新（2026-10-11）**：main 已包含 PR #23 至 #26；PR #23 已合并、已部署，后续 PR #24、#25、#26 已合并、未部署。精确合并时间、部署身份和后续验证归属由[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md#合并与部署状态)维护。`dev:local` 仅提供独立本地测试身份与存储，生产构建排除本地登录模块。
 
 下文保留各阶段当时的验证和权限快照，包括当时的“未发布”“待真机验收”和临时回执存放说明；这些不代表当前状态或新的操作授权。首次部署和 UI 阶段分别见[首次登录发布单](./releases/2026-10-02-login.md)、[UI 发布记录](./releases/2026-10-02-ui.md)。本次文档收尾未重跑下文的应用测试或验收；原同步交付工作区及原始回执的缺口见[同步发布与验收记录](./releases/2026-10-03-sync.md#证据来源与原件缺口)。
 
@@ -537,7 +539,9 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 <a id="应用外框与独立启动状态2026-10-06隔离-worktree未合并未部署"></a>
 
-## 应用外框与独立启动状态（2026-10-06，隔离 worktree；未合并、未部署）
+## 应用外框与独立启动状态（2026-10-06，隔离 worktree；已合并、已部署）
+
+**状态更新（2026-10-08）**：本切片已由 PR #22 合并，并随[UI/UX 发布](./releases/2026-10-08-ui-ux.md)进入 production。以下保留实施时的状态与验证范围，不把本地合成会话检查记为生产登录验收。
 
 用户确认“应用外框 + 独立启动状态”并由 Evelyn Role 在隔离 worktree 实施；产品规则（各呈现的状态与地址/标题语义）由[重新设计记录](./specs/redesign.md#功能首页与页面切换)统一维护，本节只记录实现范围、证据与未验边界。代码与文档保持未提交、未推送、未部署；主检出与旧分支未改动。基线为 `ced68cf8`（tree `1418f46c`，PR #21 文档合并后的 main），任务分支 `feat/startup-session-state`。
 
@@ -560,7 +564,11 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界与合成边界：烟测的会话响应、`online`/`pageshow` 事件与静态服务均为本地合成，未点击登录按钮、未访问 eruoo 或生产、未使用真实账号，`/api/auth/login` 未被调用；真实 bfcache 跨进程恢复、真实 OIDC 登录/退出与真机 PWA、生产部署与真实 Worker/DO/R2、Service Worker 更新与离线重开交互、其他浏览器与视口、屏幕阅读器实际播报均未验证。组件测试不替代真实浏览器，浏览器烟测也不替代真机与生产验收；应用发布与真机结果仍由各发布记录维护。
 
-## 已确认 UI/UX 重设计实施（2026-10-07，隔离 worktree；未合并、未部署）
+<a id="已确认-uiux-重设计实施2026-10-07隔离-worktree未合并未部署"></a>
+
+## 已确认 UI/UX 重设计实施（2026-10-07，隔离 worktree；已合并、已部署）
+
+**状态更新（2026-10-08）**：本节候选及后续修复已随 PR #23 合并、部署，当前发布与验收状态见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。以下为该轮实施与验证的历史快照，保留当时状态。
 
 用户确认已定设计（`@ayingott/theme` Paper/Ink、首页工具卡仅图标 + 完整名称、Lucide 普通图标、全尺寸六件完整版品牌、记录为根页的三入口、有限 hash 地址与编辑保活等）并授权本地实施；设计取舍与来源见项目外设计包 `ui-ux-design-current-r4-confirmed-20261007-a9e673l1`，页面与导航规则已并入[重新设计记录](./specs/redesign.md#功能首页与页面切换)。本节记录实现范围、验证证据与未验边界；代码与文档保持未提交、未推送、未部署，主检出与旧分支未改动。基线为 `c600f19c`（tree `6f05dae`，PR #22 合并后的 main），任务分支 `feat/ui-ux-redesign`（Lody 独立 worktree）。
 
@@ -588,7 +596,11 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 证据入口：项目外证据目录 `/Users/caoyujie/.agents/task-artifacts/hako/ui-ux-redesign-implementation-20261007-anby-impl/`（`browser-checks.json`、`screenshots/` 20 张、验证脚本副本与审核回执）。
 
-### 已确认 UI/UX 重设计修复（第一轮父审，2026-10-08，同一隔离 worktree；未合并、未部署）
+<a id="已确认-uiux-重设计修复第一轮父审2026-10-08同一隔离-worktree未合并未部署"></a>
+
+### 已确认 UI/UX 重设计修复（第一轮父审，2026-10-08，同一隔离 worktree；已合并、已部署）
+
+**状态更新（2026-10-08）**：本节候选及后续修复已随 PR #23 合并、部署，当前发布与验收状态见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。以下为该轮实施与验证的历史快照，保留当时状态。
 
 父审对第一轮实施给出 CHANGES_REQUIRED（UI-R01–R13 可靠性缺陷、UI-C01/C02 已确认设计补全、UI-V01 文本缩放、UI-D01 文档更正）；修复继续在同一 worktree/分支（`feat/ui-ux-redesign`，基线 `c600f19c`）完成，代码与文档保持未提交。同时更正第一轮完成通知中的计数口径：新增测试为 19 项（app-route 解析 6、appearance 纯逻辑 4、组件接线 9），主配置“新增 10 项”与最终 474+56=530 的总数无误；有限页面地址按统一口径为 14 种（home/login/settings 与 11 种加油子路由）。
 
@@ -609,7 +621,11 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 修复轮证据入口：项目外证据目录 `/Users/caoyujie/.agents/task-artifacts/hako/ui-ux-redesign-fix1-20261008-anby/`（`browser-verify-fix1.json`、`screenshots/`、验证脚本副本）。
 
-### 已确认 UI/UX 重设计修复（第二轮父审，2026-10-08，同一隔离 worktree；未合并、未部署）
+<a id="已确认-uiux-重设计修复第二轮父审2026-10-08同一隔离-worktree未合并未部署"></a>
+
+### 已确认 UI/UX 重设计修复（第二轮父审，2026-10-08，同一隔离 worktree；已合并、已部署）
+
+**状态更新（2026-10-08）**：本节候选及后续修复已随 PR #23 合并、部署，当前发布与验收状态见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。以下为该轮实施与验证的历史快照，保留当时状态。
 
 父侧第二轮内容复审（CHANGES_REQUIRED）针对修复第一轮候选的 10 个剩余项（UI-R01/R03/R04/R05/R06/R07 剩余边界、UI-C01/C02 剩余、UI-R13 真实触发点、UI-V01 手机排版、UI-D01 证据精度）；修复继续在同一 worktree/分支完成，代码与文档保持未提交。路径集合相对第一轮 49 路径为 49+8（6 个新文件 + `backup-restore.test.ts`、`retained-copy.test.ts` 两个既有测试首次纳入变更），总 57；第一轮回执写"49+6"为误，以本节为准。`RefuelingRecords.vue` 为基线中存在、未纳入任何变更路径的未改动文件（与基线字节一致，SHA-256 `7433856bb8d3d538f0b5949d1c927fc3e5c034e623a01e787582e5770e1291c9`）；第一轮修复中途误删后恢复不构成内容变更，不做清理。
 
@@ -626,7 +642,11 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界（第二轮）：同前——浏览器验证全部基于合成响应；真实 bfcache、真机/PWA、读屏播报、对比度实测、浏览器整页缩放、Service Worker 更新流程仍未验证；R01 retained-only 的数据库到组件完整启动链为源码推导 + 组件实测，非端到端实跑；统计计算（油耗/趋势）仍未实施。
 
-### 已确认 UI/UX 重设计修复（第三轮父审，2026-10-08，同一隔离 worktree；未合并、未部署）
+<a id="已确认-uiux-重设计修复第三轮父审2026-10-08同一隔离-worktree未合并未部署"></a>
+
+### 已确认 UI/UX 重设计修复（第三轮父审，2026-10-08，同一隔离 worktree；已合并、已部署）
+
+**状态更新（2026-10-08）**：本节候选及后续修复已随 PR #23 合并、部署，当前发布与验收状态见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。以下为该轮实施与验证的历史快照，保留当时状态。
 
 父侧第三轮内容复审（CHANGES_REQUIRED）针对 fix2 候选的 6 个 P2（R03/R04 异步收尾归属、R06 卸载取消生命周期）与 1 个 P3（C01 时间判同）；修复继续在同一 worktree/分支完成，未提交。上轮回执两处计数在此更正：相对 round2 的内容更新文件为 **17**（回执开头误写 12，后文清单正确）；测试净增为 **+22**（回执摘要的「面板7、modal净增1」分组与实际不符，实际为组件 +19、主配置 +3）。
 
@@ -649,7 +669,11 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界（第三轮）：同前——真实多设备/生产、bfcache、真机/PWA、读屏、对比度、浏览器整页缩放、SW 更新流程；R06.1 的服务端 not_committed 后果仍为源码推导（父审同口径）；统计计算仍未实施。
 
-### 已确认 UI/UX 重设计修复（第四轮父审，2026-10-08，同一隔离 worktree；未合并、未部署）
+<a id="已确认-uiux-重设计修复第四轮父审2026-10-08同一隔离-worktree未合并未部署"></a>
+
+### 已确认 UI/UX 重设计修复（第四轮父审，2026-10-08，同一隔离 worktree；已合并、已部署）
+
+**状态更新（2026-10-08）**：本节候选及后续修复已随 PR #23 合并、部署，当前发布与验收状态见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。以下为该轮实施与验证的历史快照，保留当时状态。
 
 父侧第四轮内容复审（CHANGES_REQUIRED）仅剩 2 个 P2：旧保存完成结束同记录重开的新编辑（R03.3）、旧面板卸载取消失败写到新预览/新请求（R06.2 剩余）。修复要点：编辑收尾按**编辑实例身份**（pendingEditor 对象引用——每个编辑入口新建、暂离/继续/同 ID 再进入不换）复核，同记录先后两次编辑互不干扰；离开取消的跨面板归属由工作区承接层的**投递代次**核对（`backupCancelEpoch`——新预览/新确认递增，旧取消结果携带发起时代次，被作废的不再写呈现；无新流程时照常可读）。更正前两处表述：fix3 回执的父报告相对链接应为 `../`（原件不追改）；`normalizeOccurredAtLocal` 位于领域层（`src/domain/refueling/form.ts`），非 Worker/数据层。
 
@@ -659,7 +683,11 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界与合成边界：浏览器验证的会话/引导/快照/同步回声/备份状态与列表响应均为 Playwright 路由拦截注入的合成数据，无真实 eruoo 登录、生产访问或真实 R2；D2 预览比较与 D3 原请求结果流、代次保护面板与多窗口草稿占用未在浏览器逐一走查（由既有组件/单元回归覆盖，见上表）；真实 bfcache、真机/PWA 安装、系统图标裁切、读屏播报、对比度实测、整页缩放（非根字号）、真实主题字体下的长名极限与 Service Worker 更新流程未验证。统计计算（含记录覆盖里程与趋势）、AI 识图与登录完成码后备交互仍未实现，本实施不伪造其结果。应用未提交、未合并、未部署；发布事实仍由发布记录维护。
 
-## 标题焦点、字体角色与主按钮状态配色（2026-10-09，隔离 worktree；未提交、未合并、未部署）
+<a id="标题焦点字体角色与主按钮状态配色2026-10-09隔离-worktree未提交未合并未部署"></a>
+
+## 标题焦点、字体角色与主按钮状态配色（2026-10-09，隔离 worktree；已合并、未部署）
+
+**状态更新（2026-10-11）**：本切片已由 PR #24 合并，未部署，合并与验证归属见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md#验证归因)。以下保留 2026-10-09 实施时的状态、480 + 114 测试数字及验证边界；390px 是 Chromium 窄视口，标题/字体/对比度结果属于本地构建检查，不是生产或真机验收。
 
 范围：2026-10-09 诊断（`/Users/caoyujie/.agents/task-artifacts/hako/hako-local-login-theme-diagnosis-20261009-pms0wxs6/MODIFICATION_PLAN.md` 第 2/3/4 项）的界面修正；第 1 项「本地开发登录」按独立 PR 另行实施，本切片不包含。基线为已部署 `main` = `9dea7ebda44381de164aab11e007c541c453c11b`（tree `596717cf7a29749d51763b3f3d70de5f82dd0bca`），在独立 worktree 的 `fix/theme-focus-typography` 分支上实施；本轮不 commit、不 push、不部署。
 
@@ -675,7 +703,11 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界：登录后的页面与记录详情由 Playwright 路由拦截的合成会话（合成账号 + 合成初始代次与空快照）驱动，本机写入只发生在临时浏览器上下文；无真实 eruoo 登录（本地开发登录属另一 PR）、无生产访问、无读屏播报、无真机/PWA 与整页缩放验证。`src/components/refueling/RefuelingRecords.vue` 为基线中未被任何入口引用的旧文件，本轮未改动；共享原语 `.eyebrow`（拉丁文本，仅该旧文件使用）保留 600。逐项回执与原始浏览器证据（脚本、36 张截图、逐状态样式与对比度）：`/Users/caoyujie/.agents/task-artifacts/hako/ui-polish-pr1-focus-font-primary-20261009-a44932f6/`。
 
-## 隔离的本地开发登录（dev:local，2026-10-09，隔离 worktree；未提交、未合并、未部署）
+<a id="隔离的本地开发登录devlocal2026-10-09隔离-worktree未提交未合并未部署"></a>
+
+## 隔离的本地开发登录（dev:local，2026-10-09，隔离 worktree；已合并、未部署）
+
+**状态更新（2026-10-11）**：本切片已由 PR #25 合并，未部署，合并与验证归属见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md#验证归因)。以下保留实施时的状态与 497 + 119 测试数字；真实本地 Worker/DO/模拟 R2 使用合成身份，不等于真实 OIDC 或生产验收。本地登录模块被生产构建排除。
 
 范围：2026-10-09 诊断（`/Users/caoyujie/.agents/task-artifacts/hako/hako-local-login-theme-diagnosis-20261009-pms0wxs6/MODIFICATION_PLAN.md` 第 1 项）的本地开发登录，按独立 PR 实施并可登录进入现有 UI。基线为本轮最新 `main` = `ffac9012ed313ccdf86e2d35bc486be0f5e1c77b`（tree `32f77111e95d102daa31f90c526df2f536cc4ee9`，即 PR #24 合并提交），在独立 worktree 的 `feat/local-development-login` 分支上实施；本轮不 commit、不 push、不部署。启动方式、地址、测试身份、数据位置与清理说明的权威来源是上文[本地查看](#带登录的本地开发pnpm-devlocal)，本节只维护实现范围与验证结果。
 
@@ -693,7 +725,11 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界：本轮为隔离的本地开发登录，不是真实 eruoo OIDC 联调——无真实登录、无生产访问、无远端 R2、无部署；本地测试身份、数据与浏览器状态均为合成。真实设备/PWA、读屏播报、整页缩放与 Service Worker 更新流程未验证（沿用既有边界）；本地会话的长期期限、Cookie 保存行为与真机一致性与生产同类项一样未经真机实测。逐项回执与原始证据（脚本、截图、逐文件 SHA-256、构建与运行日志）：`/Users/caoyujie/.agents/task-artifacts/hako/local-dev-login-pr2-20261009-q7k2m4x9/`；首轮父审 LD-R1（异步门禁页标题聚焦）修复的增量回执、差异与复验证据：`/Users/caoyujie/.agents/task-artifacts/hako/local-dev-login-pr2-fix-20261009-t5m8w2q4/`。
 
-## 首页桌面宽度与设置层背景路由修复（2026-10-09，隔离 worktree；未提交、未合并、未部署）
+<a id="首页桌面宽度与设置层背景路由修复2026-10-09隔离-worktree未提交未合并未部署"></a>
+
+## 首页桌面宽度与设置层背景路由修复（2026-10-09，隔离 worktree；已合并、未部署）
+
+**状态更新（2026-10-11）**：本切片已由 PR #26 合并，未部署；合并时间为 UTC 2026-10-09 16:30:02，即北京时间 2026-10-10 00:30:02。以下保留两轮实施时的状态、497 + 127 测试数字及合成浏览器范围；后续父审和合并后 10/10 本地验收另见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md#验证归因)，不计为生产或真机验收。
 
 范围：父侧诊断（`/Users/caoyujie/.agents/task-artifacts/hako/home-settings-diagnosis-20261009-xvhcbjqb/`）确认的两项实现缺陷——H-1 桌面首页被缩成窄栏（.home-page 作为 .app-root 纵向 flex 子项仅有 max-width 与水平 auto margin，不占满可用宽度，1440/1920 实测 372px）；S-1 从数据/统计/编辑/备份等加油子页打开设置层时背景回退到记录根页（refuelingRoute 在 targetRoute=settings 时一律回 records，可见工作区被整体切走）。基线 `main` = `66727727694e743431cb02630aa4bc7844d495d8`（PR #25 合并提交），在独立 worktree 的 `fix/home-width-settings-background` 分支实施；本轮不 commit、不 push、不部署。
 
@@ -793,4 +829,4 @@ pnpm exec cf deploy --prebuilt --dry-run --mode production
 
 1,000/10,000 条含历史的容量与延迟、Cloudflare Free CPU 和其他平台仍按[后续验证安排](./specs/architecture-validation-research.md#5-下一步最小验证)执行。会话与事务的时钟边界已有本地可控时钟证据，真机长期 Cookie 保存行为尚未验证；本次文档收尾没有追加这些检查。
 
-已确认 UI/UX 重设计的应用实施（主题/品牌/图标/三入口导航/有限 hash 地址/编辑保活/数据页与统计接线）已在隔离 worktree 完成并通过本地验证，但尚未提交、合并或部署，见[UI/UX 重设计实施](#已确认-uiux-重设计实施2026-10-07隔离-worktree未合并未部署)一节；完整统计计算（含平均油耗、每公里油费、趋势与记录覆盖里程）、AI 识图与完成码后备交互仍为后续项。
+UI/UX 重设计已随 PR #23 合并、部署，后续 PR #24、#25、#26 已合并、未部署，状态与验收边界见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。费用汇总已实现；平均油耗、每公里油费、趋势与记录覆盖里程的统计计算、AI 识图与完成码后备交互仍为后续项。
