@@ -25,6 +25,7 @@
 import { LoroDoc, VersionVector } from "loro-crdt/web";
 import { openDB, type DBSchema, type IDBPTransaction } from "idb";
 import { readRecords, refuelingRecordFields, writeRecord } from "./refueling-document";
+import { assertRefuelingSavePrecondition, type RefuelingSavePrecondition } from "../domain/refueling/form";
 import { importSyncSnapshot, validateSyncDocument } from "./sync-document";
 import { initializeLoro } from "./loro-runtime";
 import { accountStorageNames, accountStorageNamesV2 } from "./account-storage";
@@ -427,7 +428,7 @@ export async function openLocalRefuelingV2(options: OpenLocalRefuelingV2Options)
    * 工作区；已失活但该代次副本存在时，写入仍归属原代次的保留副本（依合同保留
    * 在原代次，不上传），并返回 inactive 供调用方进入保护流程；副本不存在时拒绝。
    */
-  async function save(generation: string, id: string, patch: Partial<RefuelingRecord>, creating: boolean): Promise<GenerationWriteResult> {
+  async function save(generation: string, id: string, patch: Partial<RefuelingRecord>, creating: boolean, precondition?: RefuelingSavePrecondition): Promise<GenerationWriteResult> {
     return await withControl(async (tx) => {
       const control = await readControlWithin(tx);
       const documentsStore = tx.objectStore("documents");
@@ -438,6 +439,7 @@ export async function openLocalRefuelingV2(options: OpenLocalRefuelingV2Options)
       const loaded = await loadDocumentWithin(tx, generation);
       if (loaded === null) throw new Error("本机没有活动代次，无法保存。");
       try {
+        if (precondition !== undefined) assertRefuelingSavePrecondition(readRecords(loaded.doc), id, patch, creating, precondition);
         writeRecord(loaded.doc, id, patch, creating);
         persistWithin(tx, loaded.doc, loaded.stored);
         return await generationReadResultWithin(tx, control, generation);

@@ -45,7 +45,7 @@ vi.mock("../../src/components/refueling/RefuelingForm.vue", async () => {
   const { defineComponent, h, onMounted, onUnmounted } = await import("vue");
   const { createDraft } = await import("../../src/domain/refueling/form");
   return { default: defineComponent({
-    props: ["initial", "initialDraft", "busy", "locked", "available", "records", "editingRecordId"], emits: ["dirty", "draft", "save", "continueLater"],
+    props: ["recordId", "formInstanceKey", "initial", "initialDraft", "busy", "locked", "available", "records", "editingRecordId"], emits: ["dirty", "draft", "save", "continueLater"],
     setup(props, { emit }) {
       onMounted(() => { observed.formMounts += 1; emit("draft", props.initialDraft ?? createDraft(props.initial)); });
       onUnmounted(() => { observed.formUnmounts += 1; });
@@ -162,12 +162,13 @@ it("保留草稿逐字段带回：只带入勾选字段并绑定当前记录与�
 });
 
 it("带回后普通保存：按带回后的目标记录提交（编辑同 ID，不误建新增）", async () => {
-  const { state, local } = mountWorkspace();
+  const { state, local, routeRef } = mountWorkspaceWithRouteRef();
   await nextTick(); await nextTick();
   state.bringBackFromRetained({ recordId: "one", exists: true, patch: { stationName: "retained input" } });
+  routeRef.value = { name: "record-edit", recordId: "one" };
   await nextTick();
-  await state.submit({ ...syntheticRecord, stationName: "retained input" });
-  expect(local.save).toHaveBeenCalledWith("one", expect.objectContaining({ stationName: "retained input" }), false);
+  await state.submit({ record: { ...syntheticRecord, stationName: "retained input" }, recordId: state.formId, formInstanceKey: state.formKey });
+  expect(local.save).toHaveBeenCalledWith("one", expect.objectContaining({ stationName: "retained input" }), false, expect.objectContaining({ recordId: "one" }));
 });
 
 it("打开恢复后数据前草稿 flush 失败：不切换工作区、不调用接收", async () => {
@@ -243,11 +244,13 @@ it("已有挂起编辑时编辑其他记录：不更换编辑器，路由回到�
 });
 
 it("保存成功：结束编辑并按一次性来源返回记录根页", async () => {
-  const { state, local, backTo } = mountWorkspaceWithRouteRef();
+  const { state, local, backTo, routeRef } = mountWorkspaceWithRouteRef();
   await nextTick(); await nextTick();
   state.startNew();
   await nextTick();
-  await state.submit({ ...syntheticRecord });
+  routeRef.value = { name: "record-new" };
+  await nextTick();
+  await state.submit({ record: { ...syntheticRecord, occurredAtLocal: "2026-10-03T08:00:00", odometerTenths: syntheticRecord.odometerTenths + 1000 }, recordId: state.formId, formInstanceKey: state.formKey });
   await nextTick();
   expect(local.save).toHaveBeenCalledTimes(1);
   expect(state.pendingEditor).toBeNull();
@@ -467,7 +470,7 @@ it("UI-C01 二轮：草稿带回保留所选原始字符串（解析失败值交
 // ---------------------------------------------------------------------------
 
 it("UI-R03.3：同记录保存清理在途时放弃并重开新编辑——旧完成不清理新实例、不重置输入", async () => {
-  const { state } = mountWorkspaceWithRouteRef();
+  const { state, routeRef } = mountWorkspaceWithRouteRef();
   await nextTick(); await nextTick();
   const record = { ...syntheticRecord, id: "one" } as import("../../src/domain/refueling/form").SavedRefuelingRecord;
   state.startEdit(record);
@@ -476,7 +479,9 @@ it("UI-R03.3：同记录保存清理在途时放弃并重开新编辑——旧�
   // 保存成功，草稿清理在途（真实会话在首个 await 前已清 currentDraftId）。
   let releaseClearAfterSave!: (value: { ok: boolean; message: string }) => void;
   observed.pendingClearAfterSave = new Promise((resolve) => { releaseClearAfterSave = resolve; });
-  const submitDone = (state as unknown as { submit: (record: unknown) => Promise<void> }).submit(record);
+  routeRef.value = { name: "record-edit", recordId: "one" };
+  await nextTick();
+  const submitDone = (state as unknown as { submit: (record: unknown) => Promise<void> }).submit({ record, recordId: state.formId, formInstanceKey: state.formKey });
   await nextTick(); await nextTick();
   // 本人确认放弃旧编辑，再从详情重开同一记录的新编辑并输入。
   await (state as unknown as { discardActiveDraft: () => Promise<void> }).discardActiveDraft();

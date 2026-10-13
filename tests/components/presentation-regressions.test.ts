@@ -151,6 +151,7 @@ it("UI-R09 UTC 环境下北京月初边界记录归入北京当前月（设备�
 it("UI-R10 折叠组内的可选字段校验失败：错误清单列出字段与原因，aria-invalid 与首项跳转可用", async () => {
   // 站名超长（折叠在「更多信息」内）是唯一的校验错误。
   const state = mountComponent(RefuelingForm, {
+    recordId: "synthetic-form", formInstanceKey: 1,
     initial: { ...syntheticRecord, stationName: "超".repeat(101) },
     records: [], busy: false, locked: false, available: true,
   });

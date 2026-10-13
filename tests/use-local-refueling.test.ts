@@ -12,6 +12,8 @@ import { accountA, initializeTestLoro, syntheticRecord } from "./helpers/sync-fi
 import { openLocalRefuelingV2 } from "../src/data/local-refueling-v2";
 import { accountStorageNamesV2 } from "../src/data/account-storage";
 import { useLocalRefueling } from "../src/composables/useLocalRefueling";
+import { inspectRefuelingSave, createDraft, updateDraft, validateDraft, type SavedRefuelingRecord } from "../src/domain/refueling/form";
+import { RefuelingSyncClient } from "../src/data/refueling-sync";
 import { writeRecord } from "../src/data/refueling-document";
 import {
   BOOTSTRAP_PATH,
@@ -1307,5 +1309,115 @@ describe("恢复提交编排（B）：先持久、原 ID 重试、终态落盘�
       release?.();
       repo.close();
     }
+  });
+});
+
+// 正式表单入口的瞬时确认依据：真实 v2 仓库、控制锁与 fake-indexeddb 事务。
+describe("保存二次确认", () => {
+  const P = { ...syntheticRecord, id: "P", occurredAtLocal: "2026-03-01T08:00:00", odometerTenths: 10000 };
+  const X = { ...syntheticRecord, id: "X", occurredAtLocal: "2026-03-02T08:00:00", odometerTenths: 12000 };
+  const N = { ...syntheticRecord, id: "N", occurredAtLocal: "2026-03-03T08:00:00", odometerTenths: 14000 };
+  async function prepare(records: SavedRefuelingRecord[]) {
+    const repo = await openLocalRefuelingV2({ accountId: accountA, legacyGeneration: G0 });
+    const doc = new LoroDoc();
+    try {
+      for (const { id, ...fields } of records) writeRecord(doc, id, fields, true);
+      await repo.receiveGeneration(G0, doc.export({ mode: "snapshot" }), null);
+    } finally { doc.free(); }
+    const server = createServerMock(); server.state.offline = true;
+    const local = mountLocal(server.fetch); await local.initialize();
+    expect(local.ready.value).toBe(true);
+    return { repo, local };
+  }
+  function inspection(records: readonly SavedRefuelingRecord[], submitted: SavedRefuelingRecord, baseline: SavedRefuelingRecord | null = null) {
+    const result = inspectRefuelingSave({ records, recordId: submitted.id, mode: baseline ? "edit" : "create", baseline, submittedRecord: submitted });
+    if (result.state !== "ready") throw new Error(result.message);
+    return result;
+  }
+
+  it.each([false, true])("M16：%s 带警告/无警告保存等待控制事务时出现更近邻项，写前拒绝且不请求成功同步", async withWarning => {
+    const { repo, local } = await prepare([P, N]);
+    try {
+      const result = inspection(local.records.value, { ...X, odometerTenths: withWarning ? 9000 : 12000 });
+      expect(result.conflicts.length > 0).toBe(withWarning);
+      let release!: () => void;
+      const held = navigator.locks.request(accountStorageNamesV2(accountA).controlLock, () => new Promise<void>(resolve => { release = resolve; }));
+      await vi.waitFor(() => expect(release).toBeDefined());
+      // 合法的其他窗口写入先排队，但本次检查已完成。两者真正进入同一个 IDB 控制事务路径。
+      const otherWrite = repo.save(G0, "near", { ...syntheticRecord, occurredAtLocal: "2026-03-02T07:00:00", odometerTenths: 13000 }, true);
+      const request = vi.spyOn(RefuelingSyncClient.prototype, "request"); request.mockClear();
+      const saving = local.save("X", result.patch, true, result.precondition);
+      expect(local.saving.value).toBe(true);
+      release(); await held; await otherWrite;
+      expect(await saving).toBe(false);
+      expect(local.error.value).toContain("记录或相邻里程已变化");
+      expect(request).not.toHaveBeenCalled();
+      const persisted = await repo.readGenerationState(G0);
+      expect(persisted?.records.map(record => record.id)).not.toContain("X");
+      expect(persisted?.records.map(record => record.id)).toContain("near");
+      await local.refresh();
+      expect(local.records.value.map(record => record.id)).toContain("near");
+      const retry = inspection(local.records.value, X);
+      expect(retry.conflicts).toMatchObject([{ position: "previous", start: { id: "near" } }]);
+      expect(await local.save("X", retry.patch, true, retry.precondition)).toBe(true);
+      expect((await repo.readGenerationState(G0))?.records.find(record => record.id === "X")?.odometerTenths).toBe(12000);
+    } finally { repo.close(); }
+  });
+
+  it("M11/M16：无关更新与邻项账单字段不使排队保存误拒绝", async () => {
+    const { repo, local } = await prepare([P, N]);
+    try {
+      const result = inspection(local.records.value, X);
+      let release!: () => void;
+      const held = navigator.locks.request(accountStorageNamesV2(accountA).controlLock, () => new Promise<void>(resolve => { release = resolve; }));
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const otherWrite = repo.save(G0, "P", { stationName: "another window", amountPaidCents: 0 }, false);
+      const saving = local.save("X", result.patch, true, result.precondition);
+      release(); await held; await otherWrite;
+      expect(await saving).toBe(true);
+      expect((await repo.readGenerationState(G0))?.records.find(record => record.id === "P")).toMatchObject({ stationName: "another window", amountPaidCents: 0 });
+      expect((await repo.readGenerationState(G0))?.records.find(record => record.id === "X")?.odometerTenths).toBe(12000);
+    } finally { repo.close(); }
+  });
+
+  it.each([null, "2026-03-02T08:01", "2026-03-02T08:00:01"])("M21/M22：时间 %s 的同一补丁经 local.save 和事务写后读回", async time => {
+    const baseline = { ...X, occurredAtLocal: "2026-03-02T08:00" };
+    const previous = { ...P, occurredAtLocal: "2026-03-02T08:30:00", odometerTenths: 11000 };
+    const { repo, local } = await prepare([baseline, previous]);
+    try {
+      let draft = updateDraft(createDraft(baseline), "stationName", "SYN edited");
+      if (time !== null) {
+        draft = updateDraft(draft, "occurredAtLocal", time);
+        draft = updateDraft(draft, "odometerTenths", "1250");
+        draft = updateDraft(draft, "amountPaidCents", "159");
+      }
+      const submitted = validateDraft(draft).record!;
+      await repo.save(G0, "X", { occurredAtLocal: "2026-03-02T09:00:00" }, false);
+      await local.refresh();
+      const result = inspection(local.records.value, { ...submitted, id: "X" }, baseline);
+      const expectedTime = time === null ? "2026-03-02T09:00:00" : time.length === 16 ? `${time}:00` : time;
+      expect(result.effectiveRecord.occurredAtLocal).toBe(expectedTime);
+      if (time === null) { expect(result.patch).toEqual({ stationName: "SYN edited" }); expect(result.conflicts).toEqual([]); }
+      else {
+        expect(result.patch).toEqual({ stationName: "SYN edited", occurredAtLocal: expectedTime, odometerTenths: 12500, amountPaidCents: 15900 });
+        expect(result.conflicts).toMatchObject([{ position: "next", deltaTenths: -1500n }]);
+        expect(result.amountWarnings[0]).toContain("1.00");
+      }
+      expect(await local.save("X", result.patch, false, result.precondition)).toBe(true);
+      expect((await repo.readGenerationState(G0))?.records.find(record => record.id === "X")).toMatchObject({
+        stationName: "SYN edited", occurredAtLocal: expectedTime, odometerTenths: time === null ? 12000 : 12500,
+        amountPaidCents: time === null ? 16000 : 15900,
+      });
+    } finally { repo.close(); }
+  });
+
+  it("M10：确认后的当前编辑目标任意字段变更，事务拒绝且保留远端值", async () => {
+    const { repo, local } = await prepare([P, X, N]);
+    try {
+      const result = inspection(local.records.value, { ...X, stationName: "local input" }, X);
+      await repo.save(G0, "X", { orderNumber: "remote value" }, false);
+      expect(await local.save("X", result.patch, false, result.precondition)).toBe(false);
+      expect((await repo.readGenerationState(G0))?.records.find(record => record.id === "X")).toMatchObject({ stationName: X.stationName, orderNumber: "remote value" });
+    } finally { repo.close(); }
   });
 });

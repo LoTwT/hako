@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, shallowRef, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, shallowRef, watch } from "vue";
 import { ChartLine, Database, FileClock, List, LoaderCircle, Settings as SettingsIcon, ShieldAlert } from "@lucide/vue";
 import { useLocalRefueling } from "../../composables/useLocalRefueling";
 import { listRetainedDraftSources } from "../../data/retained-content";
@@ -9,13 +9,18 @@ import type {
   StoredRefuelingDraft,
 } from "../../domain/refueling/draft-recovery";
 import {
-  changedFields,
+  assertRefuelingSavePrecondition,
   createDraft,
+  describeOdometerConflict,
+  inspectRefuelingSave,
+  normalizeOccurredAtLocal,
   numberFields,
   recordWarnings,
   unscale,
   type RefuelingDraft,
   type RefuelingRecord,
+  type RefuelingSaveIntent,
+  type ReadyRefuelingSave,
   type SavedRefuelingRecord,
 } from "../../domain/refueling/form";
 import {
@@ -305,6 +310,8 @@ function edit(record: SavedRefuelingRecord) {
 }
 
 function onFormDraft(draft: RefuelingDraft) {
+  draftRevision.value += 1;
+  invalidateSaveReview();
   drafts.updateDraft(draft);
 }
 
@@ -346,16 +353,141 @@ function returnFromEditor(context: { mode: "create" | "edit"; recordId: string }
   else refuelingNavigate({ name: "records" });
 }
 
-async function submit(record: RefuelingRecord) {
-  if (formLocked.value) return;
-  // 发起时固定本次编辑归属与当时的编辑地址：保存/清理的异步边界后据此复核（UI-R03）。
-  const context = pendingEditor.value;
-  const originRoute: AppRoute = { name: "refueling", refueling: props.route };
-  const patch = selected.value ? changedFields(selected.value, record) : record;
-  if (!(await save(formId.value, patch, !selected.value))) return;
-  const cleared = await drafts.clearAfterSave();
-  localNotice.value = cleared.ok ? "" : cleared.message;
-  returnFromEditor(context, originRoute);
+type SaveOwner = {
+  accountId: string; generation: string | null; formKey: number; formId: string;
+  editor: NonNullable<typeof pendingEditor.value>; draftRevision: number;
+};
+type SaveReview = {
+  reviewId: number; owner: SaveOwner; inspection: ReadyRefuelingSave;
+  focus: ReturnType<typeof createModalFocus>;
+  setLayerRoot: (element: unknown) => void;
+};
+const draftRevision = shallowRef(0);
+const committingSave = shallowRef(false);
+const pendingSaveReview = shallowRef<SaveReview | null>(null);
+const refuelingForm = shallowRef<InstanceType<typeof RefuelingForm> | null>(null);
+const saveReturnButton = shallowRef<HTMLButtonElement | null>(null);
+let saveReviewSequence = 0;
+let workspaceAlive = true;
+
+const saveAllowed = computed(() => {
+  const flow = generationFlow.value;
+  const editorRoute = editorRouteFor(selected.value ? "edit" : "create", formId.value);
+  return workspaceAlive && !formLocked.value && !committingSave.value && !props.navigatingForLogin
+    && ready.value && flow.phase === "active" && generation !== null && flow.generation === generation
+    && workspaceGeneration.value === generation && !showDraftPicker.value && !showDiscardConfirm.value
+    && props.appRoute.name === "refueling" && routeKey(props.appRoute) === routeKey(editorRoute)
+    && routeKey({ name: "refueling", refueling: props.route }) === routeKey(editorRoute);
+});
+
+function ownsSaveEditor(owner: SaveOwner): boolean {
+  return workspaceAlive && props.accountId === owner.accountId && generation === owner.generation
+    && workspaceGeneration.value === owner.generation && formId.value === owner.formId
+    && formKey.value === owner.formKey && pendingEditor.value === owner.editor;
+}
+function canDispatchSave(owner: SaveOwner): boolean {
+  return saveAllowed.value && ownsSaveEditor(owner) && draftRevision.value === owner.draftRevision;
+}
+function invalidateSaveReview(message = "") {
+  const review = pendingSaveReview.value;
+  if (review === null) return;
+  review.focus.layerRoot.value = null;
+  pendingSaveReview.value = null;
+  saveReviewSequence++;
+  if (message) localNotice.value = message;
+}
+function verifySaveInspection(inspection: ReadyRefuelingSave, id: string): boolean {
+  try {
+    assertRefuelingSavePrecondition(records.value, id, inspection.patch, inspection.creating, inspection.precondition);
+    return true;
+  } catch (failure) {
+    const message = failure instanceof Error ? failure.message : "记录已变化，请重新核对后保存。";
+    invalidateSaveReview(message);
+    localNotice.value = message;
+    return false;
+  }
+}
+watch([saveAllowed, formId, formKey, pendingEditor], () => {
+  const review = pendingSaveReview.value;
+  if (review !== null && !canDispatchSave(review.owner)) invalidateSaveReview();
+}, { flush: "sync" });
+watch(records, () => {
+  const review = pendingSaveReview.value;
+  if (review !== null) verifySaveInspection(review.inspection, review.owner.formId);
+}, { flush: "sync" });
+
+async function cancelSaveReview(review: SaveReview) {
+  if (pendingSaveReview.value !== review) return;
+  const canRestoreFocus = canDispatchSave(review.owner);
+  invalidateSaveReview();
+  const sequence = saveReviewSequence;
+  if (!canRestoreFocus) return;
+  await nextTick();
+  if (sequence !== saveReviewSequence || pendingSaveReview.value !== null || !canDispatchSave(review.owner)) return;
+  refuelingForm.value?.focusField(review.inspection.conflicts.length ? "odometerTenths" : "amountPaidCents");
+}
+
+async function commitInspectedSave(owner: SaveOwner, inspection: ReadyRefuelingSave) {
+  if (!canDispatchSave(owner) || !verifySaveInspection(inspection, owner.formId)) return;
+  invalidateSaveReview();
+  committingSave.value = true;
+  const originRoute: AppRoute = { name: "refueling", refueling: { ...props.route } };
+  try {
+    if (!(await save(owner.formId, inspection.patch, inspection.creating, inspection.precondition))) return;
+    // clearAfterSave 在调用时取得当前草稿；旧保存不得清理后来重开的同 ID 编辑。
+    if (!ownsSaveEditor(owner)) return;
+    const cleared = await drafts.clearAfterSave();
+    if (!ownsSaveEditor(owner)) return;
+    localNotice.value = cleared.ok ? "" : cleared.message;
+    returnFromEditor(owner.editor, originRoute);
+  } finally {
+    committingSave.value = false;
+  }
+}
+
+function confirmSaveReview(review: SaveReview) {
+  if (pendingSaveReview.value !== review || review.reviewId !== saveReviewSequence) return;
+  if (!canDispatchSave(review.owner)) { invalidateSaveReview(); return; }
+  return commitInspectedSave(review.owner, review.inspection);
+}
+
+function submit(intent: RefuelingSaveIntent) {
+  if (!saveAllowed.value || pendingSaveReview.value !== null || intent.recordId !== formId.value
+    || intent.formInstanceKey !== formKey.value || (selected.value && selected.value.id !== intent.recordId)) return;
+  const inspection = inspectRefuelingSave({ records: records.value, recordId: intent.recordId,
+    mode: selected.value ? "edit" : "create", baseline: selected.value ?? null, submittedRecord: intent.record });
+  if (inspection.state === "blocked") { localNotice.value = inspection.message; return; }
+  if (pendingEditor.value === null) pendingEditor.value = { mode: selected.value ? "edit" : "create", recordId: formId.value };
+  const owner: SaveOwner = { accountId: props.accountId, generation, formKey: formKey.value,
+    formId: formId.value, editor: pendingEditor.value, draftRevision: draftRevision.value };
+  localNotice.value = "";
+  if (!inspection.conflicts.length && !inspection.amountWarnings.length) return commitInspectedSave(owner, inspection);
+  const reviewId = ++saveReviewSequence;
+  const focus = createModalFocus({
+    close: () => { void cancelSaveReview(review); }, restoreOnClose: false,
+    initialFocus: () => {
+      if (pendingSaveReview.value !== review || !canDispatchSave(owner)) return null;
+      const button = saveReturnButton.value;
+      button?.scrollIntoView?.({ block: "nearest" });
+      return button;
+    },
+  });
+  const review: SaveReview = { reviewId, owner, inspection, focus,
+    setLayerRoot: element => { focus.layerRoot.value = pendingSaveReview.value === review ? element as HTMLElement | null : null; } };
+  pendingSaveReview.value = review;
+  focus.focusOnOpen();
+}
+
+function summaryField(record: RefuelingRecord, field: keyof RefuelingRecord): string {
+  if (field in numberFields) {
+    const key = field as keyof typeof numberFields;
+    return `${numberFields[key].label}：${record[key] === null ? "未填写" : `${unscale(record[key], numberFields[key].decimals)} ${numberFields[key].unit}`}`;
+  }
+  if (field === "occurredAtLocal") return `北京时间：${normalizeOccurredAtLocal(record[field]).replace("T", " ")}`;
+  if (field === "fullTank") return `是否加满：${record[field] ? "加满" : "未加满"}`;
+  if (field === "lowFuelLight") return `加油前油灯：${record[field] === null ? "未填写" : record[field] ? "油灯亮" : "没有亮"}`;
+  const labels = { stationName: "加油站", fuelGrade: "油品", orderNumber: "订单号" };
+  return `${labels[field as keyof typeof labels]}：${record[field] || "未填写"}`;
 }
 
 /** 稍后继续：保存草稿后暂离；实例、占用与来源上下文保留（App 导航前统一 flush）。 */
@@ -896,6 +1028,8 @@ onMounted(() => {
   }
 });
 onUnmounted(() => {
+  workspaceAlive = false;
+  invalidateSaveReview();
   window.removeEventListener("beforeunload", warnBeforeLeaving);
   if (typeof window.matchMedia === "function") {
     window.matchMedia("(min-width: 880px)").removeEventListener("change", onShellMediaChange);
@@ -906,7 +1040,7 @@ onUnmounted(() => {
 <template>
   <div class="refueling-workspace" :class="{ 'generation-locked': generationLocked, 'is-wide': wideShell }">
     <!-- Web 侧栏：首页、非交互「加油」分组、三项导航与设置；保护下禁用普通导航。 -->
-    <aside class="side-nav" aria-label="加油导航">
+    <aside class="side-nav" aria-label="加油导航" :inert="pendingSaveReview !== null">
       <a class="side-brand" href="/" aria-label="返回 Hako 首页" :aria-disabled="locked || navigatingForLogin"
         @click.prevent="navigate({ name: 'home' })">
         <img class="side-brand-mark" :src="'/hako-mark-32.png'" :srcset="'/hako-mark-48.png 1.5x, /hako-mark-64.png 2x'" width="32" height="32" alt="" decoding="async" />
@@ -943,7 +1077,7 @@ onUnmounted(() => {
       </button>
     </aside>
 
-    <div class="workspace-main">
+    <div class="workspace-main" :inert="pendingSaveReview !== null">
       <!-- 顶栏：手机根页「‹ Hako + 页名」、子页来源返回；Web 面包屑。 -->
       <header class="workspace-topbar">
         <div class="topbar-leading">
@@ -1085,10 +1219,13 @@ onUnmounted(() => {
             {{ draftWriteError }} 登录跳转会被阻止，请重试或释放本机空间。
           </p>
           <RefuelingForm
+            ref="refuelingForm"
             :key="formKey"
+            :record-id="formId"
+            :form-instance-key="formKey"
             :initial="selected"
             :initial-draft="initialDraft"
-            :busy="saving"
+            :busy="saving || committingSave"
             :locked="formLocked"
             :available="ready"
             :records="records"
@@ -1164,6 +1301,35 @@ onUnmounted(() => {
       :draft-time="draftTime" :draft-summary="draftSummary"
       @continue="continueDraftFromPicker" @discard="discardDraft" @alternate="alternateFromPicker" @close="showDraftPicker = false" />
 
+    <div v-for="review in pendingSaveReview ? [pendingSaveReview] : []" :key="review.reviewId" :ref="review.setLayerRoot"
+      class="dialog-layer" role="dialog" aria-modal="true" aria-labelledby="save-review-title"
+      @keydown="review.focus.onLayerKeydown($event)">
+      <div class="dialog-backdrop" @click="cancelSaveReview(review)"></div>
+      <div class="dialog-card save-review-card" role="document">
+        <h2 id="save-review-title">保存前请核对</h2>
+        <ul class="save-summary">
+          <li v-for="field in (['occurredAtLocal', 'odometerTenths', 'fuelVolumeMillilitres', 'unitPriceTenThousandths', 'amountPayableCents', 'couponDiscountCents', 'amountPaidCents'] as const)" :key="field">
+            {{ summaryField(review.inspection.effectiveRecord, field) }}
+          </li>
+        </ul>
+        <div class="warning" role="note">
+          <p v-for="conflict of review.inspection.conflicts" :key="JSON.stringify([conflict.start.id, conflict.end.id])">
+            {{ describeOdometerConflict(conflict, review.owner.formId) }}
+          </p>
+          <p v-for="warning in review.inspection.amountWarnings" :key="warning">{{ warning }}</p>
+        </div>
+        <template v-if="review.inspection.retainedFields.length">
+          <p>最新记录保留的未修改字段：</p>
+          <ul><li v-for="field in review.inspection.retainedFields" :key="field">{{ summaryField(review.inspection.effectiveRecord, field) }}</li></ul>
+        </template>
+        <p>仍然保存会保留原始数据；里程问题仍标为待核对，相关指标按统计规则处理。</p>
+        <div class="dialog-actions">
+          <button :ref="element => { if (pendingSaveReview === review) saveReturnButton = element as HTMLButtonElement | null; }" type="button" class="primary" @click="cancelSaveReview(review)">返回修改</button>
+          <button type="button" @click="confirmSaveReview(review)">仍然保存</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 放弃草稿确认：默认焦点在「继续填写」，明确确认才放弃；关闭还原触发点。 -->
     <div v-if="showDiscardConfirm" :ref="(element) => { discardDialogFocus.layerRoot.value = element as HTMLElement | null; }" class="dialog-layer" role="dialog" aria-modal="true" aria-labelledby="discard-title" @keydown="onDiscardDialogKeydown">
       <div class="dialog-backdrop" @click="closeDiscardConfirm"></div>
@@ -1180,6 +1346,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.save-review-card { max-height: calc(100dvh - 32px); overflow-y: auto; overflow-wrap: anywhere; }
+.save-summary { padding-left: 1.25em; }
 .refueling-workspace {
   display: grid;
   grid-template-columns: 1fr;
