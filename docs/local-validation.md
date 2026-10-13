@@ -747,6 +747,26 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 未验边界：浏览器验证全部基于合成会话/快照/备份/预览响应（含 Loro 合成快照比较），无真实 eruoo 登录、生产访问、真实 R2 或真实备份预览；多工具压力布局（>1 个真实工具）未在产品中存在，也未用夹具伪造进产品数据；真实 bfcache、真机/PWA、读屏播报、**浏览器菜单整页缩放**、Service Worker 更新流程与生产计量未验证（沿用既有边界）。修复不改离开加油区的草稿落盘保护、账号/导航归属、authLifecycleEpoch、隐藏账号保活、直接打开 `#settings` 的首页兜底与登录返回两分类合同（由既有套件全绿佐证）。逐项回执与原始证据：第一轮 `/Users/caoyujie/.agents/task-artifacts/hako/home-settings-fix-20261009-tq2_cf_a/receipt/`；父审 R1 修复增量回执 `/Users/caoyujie/.agents/task-artifacts/hako/home-settings-fix-20261009-tq2_cf_a/receipt-r1/`。
 
+<a id="refueling-statistics-pr1"></a>
+
+## 加油统计 PR1：领域计算与保存确认（2026-10-13，隔离 worktree；未部署）
+
+本轮从 `e81829fc307d5b260a5ff927f7c28402338176c1` 实现统计领域模块、规范时间排序及完整保存确认，共 18 个文件（3 新建、15 修改）；精确候选与逐项验证日志绑定在本轮项目外回执中。期间投影、D1 里程异常边隔离和保存规则由[重新设计记录](./specs/redesign.md#里程异常处理)维护。F4 指标、趋势、来源说明和记录筛选的页面接线留给 PR2，现有统计页仍显示费用汇总与待接入说明。没有新增依赖、持久统计字段、数据库迁移或同步/恢复协议变更。
+
+验证入口与范围：
+
+- `tests/refueling-statistics.test.ts`：人工算例覆盖相邻行程、两类阶段来源、来源优先级、精确价量分摊、北京时间期间投影、异常边与最终舍入。
+- `tests/refueling-form.test.ts`、`tests/refueling-document.test.ts`：规范时间及 ID 排序、零秒等价、最新字段补丁、双侧/旧位置桥接冲突、损坏输入和前置条件。
+- `tests/components/refueling-save-confirmation.test.ts`：真实 App → AccountWorkspace → Workspace → Form 接线，覆盖 M01–M23 中的提交、统一确认、失效、账号保活及实际代次 key 重建；存储和认证受控，不把组件宿主当作浏览器焦点或真实恢复验收。
+- `tests/use-local-refueling.test.ts`：真实 v2 仓库与 fake-indexeddb，验证有警告/无警告保存等待控制锁期间的邻项变化、事务内拒绝且不触发成功同步，以及最新时间/金额补丁。
+- `pnpm run test`、`pnpm run build` 与 `git diff --check` 为合并门禁。组件宿主之外，独立 Chromium 153.0.8010.12 上使用 `dev:local` 合成身份与临时浏览器上下文，完成 M02/M03/M08/M12；核对首次 Enter 零写入、默认返回修改、Tab 环、ESC/遮罩取消、输入和焦点保留、真实第二仓库更新邻项后的确认失效，以及保存后警告保留。浏览器时区设为 America/Los_Angeles，记录仍按北京时间处理；检查了 390/320 px 窄窗口与 200% 字体下的弹层滚动。
+
+实际门禁：`pnpm run test` 退出码 0，领域/集成 32 文件 555 项、组件 14 文件 167 项通过；修复旧确认回调并增加 2 项回归后，全部组件重新运行 169 项通过，`pnpm run build`（含类型检查）退出码 0，`git diff --check` 退出码 0。最终候选继承未改变的领域/集成结果，共覆盖 724 项；类型契约修复另做定向回归和类型检查，不把旧失败或跳过用例计作通过。
+
+计算性能在 Apple M1 Pro、32 GiB、Node 24.21.0 下使用项目外临时脚本测量，每组预热 1 次、采样 5 次。100/1,000/10,000 条分别覆盖频繁加满、长阶段和回溯大量历史价量；10,000 条的完整历史计算中位数为 34–55 ms，期间投影为 6–13 ms，紧凑分配保留范围引用，不预展开批次。额外互质分母数据的 10,000 条历史计算约 55 ms、投影约 802 ms（结果分母约 15.2 万 bit）；这是精确分数增长的实测代价，不能外推为手机帧预算。中途不按显示精度舍入，最终展示才做 HALF_UP。
+
+这些结果来自本轮合成环境。尚未验证真机、读屏软件、生产业务数据或 PR2 页面渲染性能；未部署，未启动真实恢复专项演练。全套中原有恢复自动回归正常执行，不代表真实恢复已验。容量/同步端到端和 Cloudflare Free CPU 验证仍按原计划进行。原始日志、截图、性能样本及审阅回执保存在本轮项目外任务目录。
+
 ## 代码入口
 
 | 位置 | 职责 |
@@ -763,6 +783,7 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 | [RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue)、[RecordsRoot.vue](../src/components/refueling/RecordsRoot.vue)、[RecordDetailPanel.vue](../src/components/refueling/RecordDetailPanel.vue)、[RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[StatisticsPage.vue](../src/components/refueling/StatisticsPage.vue)、[DataPage.vue](../src/components/refueling/DataPage.vue)、[DraftSelectionLayer.vue](../src/components/refueling/DraftSelectionLayer.vue) | 加油工作区路由化（记录/统计/数据三入口、底部导航与 Web 侧栏、编辑器保活与一次性来源返回、代次保护面板）、记录列表与主从/键盘选择、详情、表单（分组/默认值/来源标签/参考里程）、统计页（真实费用汇总 + 未实施标注）、数据页分区与草稿选择层。 |
 | [useRefuelingDrafts.ts](../src/composables/useRefuelingDrafts.ts)、[refueling-draft-session.ts](../src/data/refueling-draft-session.ts)、[refueling-draft-store.ts](../src/data/refueling-draft-store.ts)、[draft-environment.ts](../src/data/draft-environment.ts)、[draft-recovery.ts](../src/domain/refueling/draft-recovery.ts) | 草稿会话（绑定表单、flush、采用/放弃、保存后清理）、独立草稿库（严格持久性）、sessionStorage 线索与 Web Locks 页面占用、恢复决策（线索恢复/选择/幽灵清理/孤儿保留）。 |
 | [RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[form.ts](../src/domain/refueling/form.ts) | 录入、校验与核对确认；确定性表单规则、十进制计算、定点金额与按确认口径的展示格式。 |
+| [statistics.ts](../src/domain/refueling/statistics.ts) | 完整历史相邻行程及来源、精确分数计算、紧凑价量分摊、期间投影与最终格式化；PR1 提供领域接口，页面接入留给 PR2。 |
 | [refueling-document.ts](../src/data/refueling-document.ts) | Loro 文档读写、字段级变更与完整历史快照。 |
 | [local-refueling-v2.ts](../src/data/local-refueling-v2.ts) | v2 账号控制锁与 IndexedDB 严格事务（documents/control）、v1→G0 迁移合并、代次切换接收与保留副本、待确认恢复结构。 |
 | [useLocalRefueling.ts](../src/composables/useLocalRefueling.ts) | 页面状态、保存结果、窗口通知与聚焦刷新；对外只读暴露文档级 `syncStatus` 供顶栏摘要。 |
@@ -829,4 +850,4 @@ pnpm exec cf deploy --prebuilt --dry-run --mode production
 
 1,000/10,000 条含历史的容量与延迟、Cloudflare Free CPU 和其他平台仍按[后续验证安排](./specs/architecture-validation-research.md#5-下一步最小验证)执行。会话与事务的时钟边界已有本地可控时钟证据，真机长期 Cookie 保存行为尚未验证；本次文档收尾没有追加这些检查。
 
-UI/UX 重设计已随 PR #23 合并、部署，后续 PR #24、#25、#26 已合并、未部署，状态与验收边界见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。费用汇总已实现；平均油耗、每公里油费、趋势与记录覆盖里程的统计计算、AI 识图与完成码后备交互仍为后续项。
+UI/UX 重设计已随 PR #23 合并、部署，后续 PR #24、#25、#26 已合并、未部署，状态与验收边界见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。费用汇总已接入页面；平均油耗、每公里油费、趋势与记录覆盖里程的领域计算见上方加油统计 PR1，页面接线留给 PR2。AI 识图与完成码后备交互仍为后续项。

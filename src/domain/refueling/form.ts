@@ -70,6 +70,16 @@ export type FormValues = Record<NumberField, string> & {
   orderNumber: string;
 };
 export type FormField = keyof FormValues;
+export const refuelingRecordFields: ReadonlySet<keyof RefuelingRecord> = new Set([
+  ...Object.keys(numberFields) as NumberField[], "occurredAtLocal", "fullTank", "lowFuelLight",
+  "stationName", "fuelGrade", "orderNumber",
+]);
+
+export type RefuelingSaveIntent = {
+  record: RefuelingRecord;
+  recordId: string;
+  formInstanceKey: number;
+};
 export type RefuelingDraft = {
   values: FormValues;
   sources: Partial<
@@ -307,26 +317,208 @@ export function changedFields(
   after: RefuelingRecord,
 ): Partial<RefuelingRecord> {
   return Object.fromEntries(
-    Object.entries(after).filter(
-      ([key, value]) => before[key as keyof RefuelingRecord] !== value,
-    ),
+    [...refuelingRecordFields].filter((key) => key === "occurredAtLocal"
+      ? normalizeOccurredAtLocal(before[key]) !== normalizeOccurredAtLocal(after[key])
+      : before[key] !== after[key])
+      .map((key) => [key, key === "occurredAtLocal" ? normalizeOccurredAtLocal(after[key]) : after[key]]),
   );
 }
 
+export function compareOccurredAtLocal(a: string, b: string): number {
+  const left = normalizeOccurredAtLocal(a);
+  const right = normalizeOccurredAtLocal(b);
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function compareRefuelingRecords(
+  a: Pick<SavedRefuelingRecord, "id" | "occurredAtLocal">,
+  b: Pick<SavedRefuelingRecord, "id" | "occurredAtLocal">,
+): number {
+  return compareOccurredAtLocal(a.occurredAtLocal, b.occurredAtLocal)
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/** 与表单硬规则相同的记录边界；不把合法金额差异当作损坏。 */
+export function isValidRefuelingRecord(value: unknown): value is RefuelingRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as RefuelingRecord;
+  for (const key of Object.keys(numberFields) as NumberField[]) {
+    const number = record[key];
+    if (key === "invoiceableAmountCents" && number === null) continue;
+    if (typeof number !== "number" || !Number.isSafeInteger(number)
+      || (numberFields[key].positive ? number <= 0 : number < 0)) return false;
+  }
+  return typeof record.occurredAtLocal === "string" && validDateTime(record.occurredAtLocal)
+    && typeof record.fullTank === "boolean" && [true, false, null].includes(record.lowFuelLight)
+    && ([['stationName', 100], ['fuelGrade', 80], ['orderNumber', 128]] as const)
+      .every(([key, limit]) => typeof record[key] === "string" && [...record[key]].length <= limit);
+}
+
+export type OdometerEndpoint = Readonly<Pick<SavedRefuelingRecord, "id" | "occurredAtLocal" | "odometerTenths">>;
+export type OdometerConflict = Readonly<{
+  start: OdometerEndpoint;
+  end: OdometerEndpoint;
+  deltaTenths: bigint;
+  kind: "backward" | "equal";
+}>;
+export type ProposedOdometerConflict = OdometerConflict & Readonly<{
+  position: "previous" | "next" | "old-position-bridge";
+}>;
+
+function odometerEndpoint(record: SavedRefuelingRecord | undefined): OdometerEndpoint | null {
+  return record === undefined ? null : {
+    id: record.id, occurredAtLocal: normalizeOccurredAtLocal(record.occurredAtLocal), odometerTenths: record.odometerTenths,
+  };
+}
+
+export function inspectOdometerRelationship(start: OdometerEndpoint, end: OdometerEndpoint): OdometerConflict | null {
+  const deltaTenths = BigInt(end.odometerTenths) - BigInt(start.odometerTenths);
+  return deltaTenths > 0n ? null : {
+    start: { ...start, occurredAtLocal: normalizeOccurredAtLocal(start.occurredAtLocal) },
+    end: { ...end, occurredAtLocal: normalizeOccurredAtLocal(end.occurredAtLocal) },
+    deltaTenths, kind: deltaTenths === 0n ? "equal" : "backward",
+  };
+}
+
+export function refuelingNeighbours(records: readonly SavedRefuelingRecord[], candidate: Pick<SavedRefuelingRecord, "id" | "occurredAtLocal">) {
+  const ordered = records.filter(record => record.id !== candidate.id).sort(compareRefuelingRecords);
+  const insertion = ordered.findIndex(record => compareRefuelingRecords(record, candidate) > 0);
+  const index = insertion < 0 ? ordered.length : insertion;
+  return { previous: ordered[index - 1] ?? null, next: ordered[index] ?? null };
+}
+
+export function describeOdometerConflict(conflict: ProposedOdometerConflict, recordId: string): string {
+  const describe = (endpoint: OdometerEndpoint, side: "start" | "end") => {
+    const label = conflict.position === "old-position-bridge"
+      ? (side === "start" ? "原位置前一条" : "原位置后一条")
+      : endpoint.id === recordId ? "本次" : side === "start" ? "前一条" : "后一条";
+    return `${label} ${endpoint.occurredAtLocal.replace("T", " ")} · ${new Money(endpoint.odometerTenths).div(10).toFixed(1)} km`;
+  };
+  return `${describe(conflict.start, "start")} → ${describe(conflict.end, "end")}：${conflict.kind === "equal" ? "里程相同" : `里程倒退 ${new Money((-conflict.deltaTenths).toString()).div(10).toFixed(1)} km`}，请核对。`;
+}
+
+export type RefuelingSavePrecondition = Readonly<{
+  recordId: string;
+  creating: boolean;
+  patch: Readonly<Partial<RefuelingRecord>>;
+  effectiveRecord: Readonly<RefuelingRecord>;
+  target: Readonly<RefuelingRecord> | null;
+  previous: OdometerEndpoint | null;
+  next: OdometerEndpoint | null;
+  oldPositionPrevious: OdometerEndpoint | null;
+  oldPositionNext: OdometerEndpoint | null;
+}>;
+
+export type ReadyRefuelingSave = Readonly<{
+  state: "ready";
+  creating: boolean;
+  patch: Readonly<Partial<RefuelingRecord>>;
+  effectiveRecord: Readonly<RefuelingRecord>;
+  conflicts: readonly ProposedOdometerConflict[];
+  amountWarnings: readonly string[];
+  retainedFields: readonly (keyof RefuelingRecord)[];
+  precondition: RefuelingSavePrecondition;
+}>;
+export type RefuelingSaveInspection = ReadyRefuelingSave | { state: "blocked"; message: string };
+
+function copyRecord(record: RefuelingRecord): RefuelingRecord {
+  return Object.fromEntries([...refuelingRecordFields].map(key => [key, record[key]])) as RefuelingRecord;
+}
+
+function validRecordSnapshot(records: readonly SavedRefuelingRecord[]): boolean {
+  const ids = new Set<string>();
+  return records.every(record => {
+    if (!isValidRefuelingRecord(record) || typeof record.id !== "string" || ids.has(record.id)) return false;
+    ids.add(record.id);
+    return true;
+  });
+}
+
+function savePrecondition(records: readonly SavedRefuelingRecord[], recordId: string, patch: Partial<RefuelingRecord>, creating: boolean): RefuelingSavePrecondition | null {
+  const target = records.find(record => record.id === recordId);
+  if (creating ? target !== undefined : target === undefined) return null;
+  const effectiveRecord = { ...(target === undefined ? {} : copyRecord(target)), ...patch } as RefuelingRecord;
+  if (!isValidRefuelingRecord(effectiveRecord)) return null;
+  const neighbours = refuelingNeighbours(records, { ...effectiveRecord, id: recordId });
+  const oldNeighbours = target === undefined ? null : refuelingNeighbours(records, target);
+  const moved = oldNeighbours !== null && (oldNeighbours.previous?.id !== neighbours.previous?.id || oldNeighbours.next?.id !== neighbours.next?.id);
+  return {
+    recordId, creating, patch: { ...patch }, effectiveRecord,
+    target: target === undefined ? null : copyRecord(target),
+    previous: odometerEndpoint(neighbours.previous ?? undefined), next: odometerEndpoint(neighbours.next ?? undefined),
+    oldPositionPrevious: moved ? odometerEndpoint(oldNeighbours?.previous ?? undefined) : null,
+    oldPositionNext: moved ? odometerEndpoint(oldNeighbours?.next ?? undefined) : null,
+  };
+}
+
+export function inspectRefuelingSave(options: {
+  records: readonly SavedRefuelingRecord[];
+  recordId: string;
+  mode: "create" | "edit";
+  baseline: RefuelingRecord | null;
+  submittedRecord: RefuelingRecord;
+}): RefuelingSaveInspection {
+  const { records, recordId, mode, baseline, submittedRecord } = options;
+  if (!validRecordSnapshot(records) || !isValidRefuelingRecord(submittedRecord)
+    || (mode === "edit" && !isValidRefuelingRecord(baseline)))
+    return { state: "blocked", message: "记录字段无效，请保留输入并重新核对。" };
+  const patch = mode === "create" ? copyRecord(submittedRecord) : changedFields(baseline!, submittedRecord);
+  const precondition = savePrecondition(records, recordId, patch, mode === "create");
+  if (precondition === null) return { state: "blocked", message: "记录已变化或保存身份冲突，请保留输入并重新核对。" };
+  const conflicts: ProposedOdometerConflict[] = [];
+  const candidate = { ...precondition.effectiveRecord, id: recordId };
+  function add(start: OdometerEndpoint | null, end: OdometerEndpoint | null, position: ProposedOdometerConflict["position"]) {
+    if (start === null || end === null || conflicts.some(conflict => conflict.start.id === start.id && conflict.end.id === end.id)) return;
+    const conflict = inspectOdometerRelationship(start, end);
+    if (conflict !== null) conflicts.push({ ...conflict, position });
+  }
+  add(precondition.previous, candidate, "previous");
+  add(candidate, precondition.next, "next");
+  add(precondition.oldPositionPrevious, precondition.oldPositionNext, "old-position-bridge");
+  return {
+    state: "ready", creating: precondition.creating, patch: precondition.patch,
+    effectiveRecord: precondition.effectiveRecord, conflicts,
+    amountWarnings: amountWarnings(precondition.effectiveRecord), precondition,
+    retainedFields: [...refuelingRecordFields].filter(key => !(key in patch)
+      && (key === "occurredAtLocal"
+        ? compareOccurredAtLocal(submittedRecord[key], precondition.effectiveRecord[key]) !== 0
+        : submittedRecord[key] !== precondition.effectiveRecord[key])),
+  };
+}
+
+export class RefuelingSavePreconditionError extends Error {
+  constructor() {
+    super("记录或相邻里程已变化，请重新核对后保存。");
+    this.name = "RefuelingSavePreconditionError";
+  }
+}
+
+function sameFields(left: object | null, right: object | null): boolean {
+  if (left === null || right === null) return left === right;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every(key => (left as Record<string, unknown>)[key] === (right as Record<string, unknown>)[key]);
+}
+
+export function assertRefuelingSavePrecondition(records: readonly SavedRefuelingRecord[], recordId: string, patch: Partial<RefuelingRecord>, creating: boolean, expected: RefuelingSavePrecondition): void {
+  if (recordId !== expected.recordId || creating !== expected.creating || !sameFields(patch, expected.patch)
+    || Object.keys(patch).some(key => !refuelingRecordFields.has(key as keyof RefuelingRecord))
+    || !validRecordSnapshot(records)) throw new RefuelingSavePreconditionError();
+  const current = savePrecondition(records, recordId, patch, creating);
+  if (current === null || !(["target", "effectiveRecord", "previous", "next", "oldPositionPrevious", "oldPositionNext"] as const)
+    .every(key => sameFields(current[key], expected[key]))) throw new RefuelingSavePreconditionError();
+}
+
 export function recordWarnings(
-  records: SavedRefuelingRecord[],
+  records: readonly SavedRefuelingRecord[],
 ): Map<string, string[]> {
-  const ordered = [...records].sort(
-    (a, b) =>
-      a.occurredAtLocal.localeCompare(b.occurredAtLocal) ||
-      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-  );
+  const ordered = [...records].sort(compareRefuelingRecords);
   return new Map(
     ordered.map((record, index) => {
       const warnings = amountWarnings(record);
       if (
         index > 0 &&
-        record.odometerTenths <= ordered[index - 1].odometerTenths
+        inspectOdometerRelationship(ordered[index - 1], record) !== null
       )
         warnings.push("总里程没有递增，请核对相邻记录。");
       return [record.id, warnings];

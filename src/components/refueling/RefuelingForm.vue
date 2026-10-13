@@ -3,17 +3,25 @@ import { computed, nextTick, shallowRef } from "vue";
 import { ChevronDown, Clock } from "@lucide/vue";
 import {
   createDraft,
+  describeOdometerConflict,
+  inspectRefuelingSave,
+  normalizeOccurredAtLocal,
   numberFields,
+  refuelingNeighbours,
   updateDraft,
   validateDraft,
   type FormField,
   type NumberField,
   type RefuelingDraft,
   type RefuelingRecord,
+  type RefuelingSaveIntent,
+  type OdometerEndpoint,
   type SavedRefuelingRecord,
 } from "../../domain/refueling/form";
 
 const props = defineProps<{
+  recordId: string;
+  formInstanceKey: number;
   initial?: RefuelingRecord;
   /** 恢复或延用的初始草稿；未提供时按初始记录（或空表单）生成。 */
   initialDraft?: RefuelingDraft;
@@ -22,20 +30,20 @@ const props = defineProps<{
   locked?: boolean;
   available: boolean;
   /** 当前代次已知记录：用于参考里程（表单时间前后相邻记录）。 */
-  records?: readonly SavedRefuelingRecord[];
+  records: readonly SavedRefuelingRecord[];
   /** 正在编辑的记录 ID：参考里程排除自身。 */
   editingRecordId?: string | null;
 }>();
 const emit = defineEmits<{
-  save: [record: RefuelingRecord];
+  save: [intent: RefuelingSaveIntent];
   dirty: [value: boolean];
   /** 每次编辑后的完整原始草稿，交由页面持久保存。 */
   draft: [draft: RefuelingDraft];
   continueLater: [];
 }>();
 const draft = shallowRef(props.initialDraft ?? createDraft(props.initial));
+const mountedIdentity = { recordId: props.recordId, formInstanceKey: props.formInstanceKey };
 const submitted = shallowRef(false);
-const confirmed = shallowRef(false);
 const showMore = shallowRef(false);
 const validation = computed(() => validateDraft(draft.value));
 const formRoot = shallowRef<HTMLFormElement | null>(null);
@@ -88,23 +96,25 @@ function sourceTag(field: FormField): string | null {
 
 /** 参考里程：按表单当前时间选前后相邻记录，编辑时排除自身；有哪条显示哪条。 */
 const referenceRecords = computed(() => {
-  if (props.records === undefined) return { before: null as SavedRefuelingRecord | null, after: null as SavedRefuelingRecord | null };
-  const time = draft.value.values.occurredAtLocal;
-  const ordered = [...props.records]
-    .filter((record) => record.id !== props.editingRecordId)
-    .sort((a, b) => a.occurredAtLocal.localeCompare(b.occurredAtLocal));
-  let before: SavedRefuelingRecord | null = null;
-  let after: SavedRefuelingRecord | null = null;
-  for (const record of ordered) {
-    if (record.occurredAtLocal < time) before = record;
-    else if (after === null && record.occurredAtLocal > time) after = record;
-  }
-  return { before, after };
+  if (!props.available) return { before: null, after: null };
+  if (saveInspection.value?.state === "ready") return {
+    before: saveInspection.value.precondition.previous, after: saveInspection.value.precondition.next,
+  };
+  const neighbours = refuelingNeighbours(props.records, { id: mountedIdentity.recordId, occurredAtLocal: draft.value.values.occurredAtLocal });
+  return { before: neighbours.previous, after: neighbours.next };
 });
 
-function referenceLine(record: SavedRefuelingRecord | null, label: string): string | null {
+const saveInspection = computed(() => !props.available || validation.value.record === null ? null : inspectRefuelingSave({
+  records: props.records, recordId: mountedIdentity.recordId,
+  mode: props.editingRecordId == null ? "create" : "edit", baseline: props.initial ?? null,
+  submittedRecord: validation.value.record,
+}));
+const mileageConflicts = computed(() => saveInspection.value?.state === "ready" ? saveInspection.value.conflicts : []);
+const billWarnings = computed(() => saveInspection.value?.state === "ready" ? saveInspection.value.amountWarnings : validation.value.warnings);
+
+function referenceLine(record: OdometerEndpoint | null, label: string): string | null {
   if (record === null) return null;
-  return `${label} ${record.occurredAtLocal.replace("T", " ").slice(5, 16)} · ${new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(record.odometerTenths / 10)} km`;
+  return `${label} ${normalizeOccurredAtLocal(record.occurredAtLocal).replace("T", " ")} · ${new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(record.odometerTenths / 10)} km`;
 }
 
 function edit(field: FormField, event: Event) {
@@ -113,7 +123,6 @@ function edit(field: FormField, event: Event) {
     field,
     (event.target as HTMLInputElement).value,
   );
-  confirmed.value = false;
   emit("dirty", true);
   emit("draft", draft.value);
 }
@@ -132,12 +141,15 @@ function submit() {
     void focusFirstError();
     return;
   }
-  if (validation.value.warnings.length && !confirmed.value) {
-    void focusFirstError();
-    return;
-  }
-  emit("save", validation.value.record);
+  if (props.editingRecordId != null && props.editingRecordId !== mountedIdentity.recordId) return;
+  emit("save", { ...mountedIdentity, record: validation.value.record });
 }
+
+function focusField(field: "odometerTenths" | "amountPaidCents") {
+  if (props.locked || props.busy || !props.available) return;
+  formRoot.value?.querySelector?.<HTMLElement>(`[name="${field}"]`)?.focus();
+}
+defineExpose({ focusField });
 </script>
 
 <template>
@@ -178,6 +190,10 @@ function submit() {
         </label>
       </section>
 
+      <div v-if="billWarnings.length" class="warning" role="note">
+        <p v-for="warning of billWarnings" :key="warning">{{ warning }}</p>
+      </div>
+
       <section class="field-group" aria-label="车辆">
         <h3 class="group-title">车辆</h3>
         <label class="field">
@@ -198,6 +214,9 @@ function submit() {
           <span v-if="referenceRecords.after" class="reference-odometer">
             <Clock aria-hidden="true" :size="13" :stroke-width="2" />
             {{ referenceLine(referenceRecords.after, "后一条") }}
+          </span>
+          <span v-for="conflict of mileageConflicts" :key="JSON.stringify([conflict.start.id, conflict.end.id])" class="warning" role="note">
+            {{ describeOdometerConflict(conflict, recordId) }}
           </span>
         </label>
         <fieldset class="field radio-field">
@@ -268,20 +287,11 @@ function submit() {
       <button type="button" class="text-button" @click="focusFirstError">查看第一项</button>
     </div>
 
-    <div v-if="validation.warnings.length" class="warning" role="note">
-      <p v-for="warning of validation.warnings" :key="warning">
-        {{ warning }}
-      </p>
-      <label class="confirmation">
-        <input v-model="confirmed" type="checkbox" :disabled="busy || locked" />我已核对，按当前账单数据保存
-      </label>
-    </div>
-
     <div class="form-actions">
       <button type="button" :disabled="busy || locked" @click="emit('continueLater')">稍后继续</button>
       <button
         class="primary save-button"
-        :disabled="busy || locked || !available || (!!validation.warnings.length && !confirmed)"
+        :disabled="busy || locked || !available"
         type="submit"
       >
         {{ busy ? "保存中…" : "保存记录" }}
@@ -433,19 +443,6 @@ function submit() {
 }
 .error-summary-list li {
   line-height: 1.8;
-}
-.confirmation {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.8125rem;
-  font-weight: 400;
-}
-.confirmation input {
-  width: 18px;
-  min-height: 18px;
-  height: 18px;
-  padding: 0;
 }
 .form-actions {
   display: flex;

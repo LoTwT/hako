@@ -72,7 +72,7 @@ vi.mock("../../src/composables/useRefuelingDrafts", async () => {
 });
 vi.mock("../../src/components/refueling/RefuelingForm.vue", async () => {
   const { defineComponent, h } = await import("vue");
-  return { default: defineComponent({ props: ["initial", "initialDraft", "busy", "locked", "available", "records", "editingRecordId"], setup: () => () => h("div", "synthetic-form") }) };
+  return { default: defineComponent({ props: ["recordId", "formInstanceKey", "initial", "initialDraft", "busy", "locked", "available", "records", "editingRecordId"], setup: () => () => h("div", "synthetic-form") }) };
 });
 vi.mock("../../src/components/refueling/RecordsRoot.vue", async () => {
   const { defineComponent, h } = await import("vue");
@@ -257,7 +257,7 @@ it("UI-R03 二轮：A 保存成功但 clearAfterSave 阻塞期间切到 B——A
   // 会话切换之后才返回。
   let releaseClearAfterSave!: (value: { ok: boolean; message: string }) => void;
   observed.pendingClearAfterSave = new Promise((resolve) => { releaseClearAfterSave = resolve; });
-  const submitDone = workspaceA.submit({ ...syntheticRecord, id: "record-a" });
+  const submitDone = workspaceA.submit({ record: { ...syntheticRecord }, recordId: "record-a", formInstanceKey: (workspaceA as unknown as { formKey: number }).formKey });
   await settle();
   // 期间会话切到 B，B 导航到统计页。
   auth(B); await settle();
@@ -284,7 +284,7 @@ it("UI-R03 二轮对照：当前账号自身的保存完成仍正常返回来源
   workspaceA.startEdit(localA.records.value[0]!);
   await settle();
   history.back.mockClear();
-  await workspaceA.submit({ ...syntheticRecord, id: "record-a" });
+  await workspaceA.submit({ record: { ...syntheticRecord }, recordId: "record-a", formInstanceKey: (workspaceA as unknown as { formKey: number }).formKey });
   await settle();
   // 未切换账号：保存结束经历史返回来源（本 harness 的 history 桩不派发 popstate，
   // 路由落位由导航归属套件单独覆盖）。
@@ -306,7 +306,7 @@ it("UI-R03.1：保存清理在途时同账号已去统计——迟到完成不�
   await settle();
   let releaseClearAfterSave!: (value: { ok: boolean; message: string }) => void;
   observed.pendingClearAfterSave = new Promise((resolve) => { releaseClearAfterSave = resolve; });
-  const submitDone = workspaceA.submit({ ...syntheticRecord, id: "record-a" });
+  const submitDone = workspaceA.submit({ record: { ...syntheticRecord }, recordId: "record-a", formInstanceKey: (workspaceA as unknown as { formKey: number }).formKey });
   await settle();
   // 同账号较新的导航：用户去统计（保存忙状态已解除，导航可达）。
   await (mounted.state.navigate as (route: unknown) => Promise<void>)({ name: "refueling", refueling: { name: "statistics" } });
@@ -335,7 +335,7 @@ it("UI-R03.2：隐藏账号的已保存编辑在清理完成时结束（切回�
   await settle();
   let releaseClearAfterSave!: (value: { ok: boolean; message: string }) => void;
   observed.pendingClearAfterSave = new Promise((resolve) => { releaseClearAfterSave = resolve; });
-  const submitDone = workspaceA.submit({ ...syntheticRecord, id: "record-a" });
+  const submitDone = workspaceA.submit({ record: { ...syntheticRecord }, recordId: "record-a", formInstanceKey: (workspaceA as unknown as { formKey: number }).formKey });
   await settle();
   // 清理在途时切到 B（A 隐藏）：A 自身的编辑收尾仍应完成。
   auth(B); await settle();

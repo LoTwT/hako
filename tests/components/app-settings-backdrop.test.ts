@@ -75,7 +75,7 @@ vi.mock("../../src/composables/useRefuelingDrafts", async () => {
 vi.mock("../../src/components/refueling/RefuelingForm.vue", async () => {
   const { defineComponent, h, onMounted, onUnmounted } = await import("vue");
   return { default: defineComponent({
-    props: ["initial", "initialDraft", "busy", "locked", "available", "records", "editingRecordId"],
+    props: ["recordId", "formInstanceKey", "initial", "initialDraft", "busy", "locked", "available", "records", "editingRecordId"],
     setup: () => {
       onMounted(() => { observed.formMounts += 1; });
       onUnmounted(() => { observed.formUnmounts += 1; });
@@ -304,7 +304,7 @@ it("S-1 编辑器打开设置：保留编辑地址与表单实例；迟到的保
   // 保存清理在途时打开设置：编辑地址与表单实例保持，不退回记录根页。
   let releaseSave!: (result: { ok: boolean; message: string }) => void;
   observed.pendingClearAfterSave = new Promise((resolve) => { releaseSave = resolve; });
-  const submitting = (workspace.submit as (record: unknown) => Promise<void>)({ ...syntheticRecord, id: "record-a" });
+  const submitting = (workspace.submit as (record: unknown) => Promise<void>)({ record: { ...syntheticRecord }, recordId: "record-a", formInstanceKey: (workspace as unknown as { formKey: number }).formKey });
   await settle();
   await openSettings();
   expect(mounted!.state.targetRoute).toEqual({ name: "settings" });

@@ -19,7 +19,7 @@ import {
   queryRestoreReceipt,
   submitRestoreRequest,
 } from "../data/refueling-restore";
-import type { RefuelingRecord, SavedRefuelingRecord } from "../domain/refueling/form";
+import type { RefuelingRecord, RefuelingSavePrecondition, SavedRefuelingRecord } from "../domain/refueling/form";
 import type { PendingRestoreRequest, RestoreOutcomeRecord, RestoreRequestBody } from "../data/refueling-restore";
 
 /**
@@ -813,7 +813,7 @@ export function useLocalRefueling(options: { accountId: string; active: () => bo
     generationFlow: readonly(generationFlow), workspaceGeneration: readonly(workspaceGeneration),
     pendingRestore: readonly(pendingRestore), importConflicts: readonly(importConflicts),
     migrationPending: readonly(migrationPending), restoreWritesAvailable,
-    save: (id: string, patch: Partial<RefuelingRecord>, creating: boolean) => mutate((repo, generation) => repo.save(generation, id, patch, creating)),
+    save: (id: string, patch: Partial<RefuelingRecord>, creating: boolean, precondition?: RefuelingSavePrecondition) => mutate((repo, generation) => repo.save(generation, id, patch, creating, precondition)),
     importLegacy: (selected: SavedRefuelingRecord[]) => mutate((repo, generation) => repo.importLegacy(generation, selected)),
     listRetainedGenerations: (exclude: string | null): Promise<RetainedGenerationSummary[]> => repository?.listRetainedGenerations(exclude) ?? Promise.resolve([]),
     readRetainedGeneration: (generation: string): Promise<RetainedGenerationView | null> => repository?.readRetainedGeneration(generation) ?? Promise.resolve(null),

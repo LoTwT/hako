@@ -105,6 +105,20 @@ describe("real Loro replicas", () => {
         .sort(),
     ).toEqual(["a", "b"]);
   });
+  it("规范分钟/秒同时间：不同副本来序一致，日期降序但 ID 升序，存量时间不回写", () => {
+    const a = document();
+    const b = document();
+    writeRecord(a, "z", { ...base, occurredAtLocal: "2026-03-02T08:00:00" }, true);
+    writeRecord(a, "a", { ...base, occurredAtLocal: "2026-03-02T08:00:00" }, true);
+    writeRecord(b, "m", { ...base, occurredAtLocal: "2026-03-02T08:00" }, true);
+    writeRecord(b, "latest", { ...base, occurredAtLocal: "2026-03-03T08:00" }, true);
+    const left = document(); const right = document();
+    left.import(a.export({ mode: "update" })); left.import(b.export({ mode: "update" }));
+    right.import(b.export({ mode: "update" })); right.import(a.export({ mode: "update" }));
+    expect(readRecords(left)).toEqual(readRecords(right));
+    expect(readRecords(left).map(record => record.id)).toEqual(["latest", "a", "m", "z"]);
+    expect(readRecords(left).find(record => record.id === "m")?.occurredAtLocal).toBe("2026-03-02T08:00");
+  });
   it("rejects a corrupted snapshot and invalid field types", () => {
     const doc = document();
     expect(() => doc.import(new Uint8Array([1, 2, 3]))).toThrow();

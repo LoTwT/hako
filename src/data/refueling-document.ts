@@ -1,16 +1,15 @@
 import { LoroDoc, LoroMap } from "loro-crdt/web";
 import {
   createDraft,
+  compareOccurredAtLocal,
+  refuelingRecordFields as domainRecordFields,
   numberFields,
   validateDraft,
   type RefuelingRecord,
   type SavedRefuelingRecord,
 } from "../domain/refueling/form";
 
-export const refuelingRecordFields: ReadonlySet<string> = new Set([
-  ...Object.keys(numberFields), "occurredAtLocal", "fullTank", "lowFuelLight",
-  "stationName", "fuelGrade", "orderNumber",
-]);
+export const refuelingRecordFields: ReadonlySet<string> = domainRecordFields;
 
 export function readRecords(doc: LoroDoc): SavedRefuelingRecord[] {
   return doc.getMap("records").entries()
@@ -42,7 +41,7 @@ export function readRecords(doc: LoroDoc): SavedRefuelingRecord[] {
     })
     .sort(
       (a, b) =>
-        b.occurredAtLocal.localeCompare(a.occurredAtLocal) ||
+        compareOccurredAtLocal(b.occurredAtLocal, a.occurredAtLocal) ||
         (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
     );
 }
