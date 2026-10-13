@@ -767,6 +767,25 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 
 这些结果来自本轮合成环境。尚未验证真机、读屏软件、生产业务数据或 PR2 页面渲染性能；未部署，未启动真实恢复专项演练。全套中原有恢复自动回归正常执行，不代表真实恢复已验。容量/同步端到端和 Cloudflare Free CPU 验证仍按原计划进行。原始日志、截图、性能样本及审阅回执保存在本轮项目外任务目录。
 
+<a id="refueling-statistics-pr2"></a>
+
+## 加油统计 PR2：F4、趋势与来源接线（2026-10-13，隔离 worktree；未部署）
+
+本轮基于已合并的 PR #28（`98dbaca52e7edbbd92d1ac3a3bba46b25f4ed004`）接入 F4。业务规则继续由[重新设计记录](./specs/redesign.md#平均油耗与每公里油费)维护；全历史计算缓存位于所属账号/代次的工作区，月度、年度与累计只投影完整历史。页面分别呈现两项指标覆盖、交易支出、记录覆盖，以及可组合的有效、待计算和待核对状态。来源数量沿用精确领域格式化，新增升数显示分支，不改变计算算法。没有新增依赖、统计存储、协议或配置。
+
+原生 SVG 使用真实时间横轴，阶段参考以空心点/虚线区分，待计算或待核对区间实际断开。逐段文本按需展开，每页 50 段；一次仅展开选中行程的价格分摊，并对批次另行分页。期间、待核对、相关记录筛选可分别移除；查看期外依据使用完整来源记录集合，原统计期间仍留在工作区。真实 App 的账号保活、表单和草稿保护顺序不变。
+
+验证归属：
+
+- `tests/components/statistics.test.ts` 使用真实 App / AccountWorkspace / Workspace / F4 / 趋势 / 表单，认证、记录快照和草稿底层受控。L1 验证两个账号实例共存、私有期间/来源、隐藏实例拒绝导航、同 ID 编辑后 6.67/0.394 更新为 7.22/0.426；L2 先验证 flush 失败保留编辑器和 key，再验证受控接收成功后的真实 G→G1 内层卸载/重建、期间复位和来源清空。
+- 真实 Chromium 153 的隔离 `dev:local` 环境使用本地合成登录、临时浏览器上下文、合成 Loro bootstrap 快照与同步回声。C07 新增闭合记录、C08 补历史、C15 修正里程通过真实表单和 IndexedDB 保存；核对旧月补算、三个覆盖值、期外记录可达、来源实付、期间与设置往返。
+- 浏览器覆盖完整、部分、全等待、全核对、有效零、真实趋势缺口和 C12 大金额；Paper/Ink × 1440/390/320px × 100%/200% 根字号，无页面横向溢出。实际查看关键截图；键盘检查期间、依据展开、来源跳转、移除筛选、设置 Esc 与焦点还原。
+- 行程与价格依据均以 101 项实走键盘分页，三页分别为 50/50/1；折叠后明细卸载，可访问树含趋势标题与状态摘要。同步更新把已展开行程移出期间后关闭价格明细，仍入选的同 ID 更新保留最新分摊。
+- Apple M1 Pro / 32 GiB、Node 24.21.0、Chromium 153、本地开发构建，连续满箱、满箱/亮灯阶段、长价格历史三类各测 100/1,000/10,000 条；每项预热 1 次、采样 5 次。10,000 条历史计算中位数 27.9–34.2 ms，期间投影 5.1–7.5 ms，进入 F4 66.7 ms，切期间 33.3–50.1 ms；交互计时包含 Vue 更新及两帧等待。SVG 保留全部点但仅 15 个子节点，明细最多 50 行，切期间复用同一历史对象。
+- 性能追踪发现组件上的显隐指令让期间切换重复格式化隐藏记录列表；移到 DOM 容器后仍保活原列表，万条场景进入 F4 从约 580 ms 降至 67 ms、切期间从约 270–283 ms 降至 33–50 ms。新增回归验证期间变化不重格式化列表、快照变化仍更新原实例。原有记录列表整体 DOM 与同步载入成本不属于该测量改善。
+
+未验边界：桌面窄视口和根字号放大不代表真机或浏览器菜单整页缩放；未验证真机/PWA、读屏播报、生产数据、真实 eruoo 登录、远端 R2、真实恢复专项或部署。既有全量恢复自动测试仍属于本地门禁。来源、截图、原始命令日志、性能样本和独立审阅闭环保存在项目外任务交付目录。
+
 ## 代码入口
 
 | 位置 | 职责 |
@@ -780,10 +799,10 @@ B → A → B 真实回退门禁（项目外驱动 + git archive 精确 A 源码
 | [src/worker/auth/account-rpc.ts](../src/worker/auth/account-rpc.ts)、[cookies.ts](../src/worker/auth/cookies.ts)、[secrets.ts](../src/worker/auth/secrets.ts)、[session-policy.ts](../src/worker/auth/session-policy.ts) | DO RPC 合同、Cookie 读写与属性、随机凭据与哈希、会话与事务时间参数（集中定义）。 |
 | [App.vue](../src/App.vue)、[src/ui/app-route.ts](../src/ui/app-route.ts)、[src/ui/appearance.ts](../src/ui/appearance.ts) | 会话门禁与呈现、有限 hash 地址解析/守卫（离开加油区先等待草稿落盘）、设置层与外观偏好接线、单一账号/PWA 与登录双次落盘编排。 |
 | [HomePage.vue](../src/components/home/HomePage.vue)、[SettingsPanel.vue](../src/components/settings/SettingsPanel.vue)、[LoginPage.vue](../src/components/auth/LoginPage.vue)、[StartupPage.vue](../src/components/auth/StartupPage.vue)、[SessionUnavailablePage.vue](../src/components/auth/SessionUnavailablePage.vue)、[useAuthSession.ts](../src/composables/useAuthSession.ts)、[session-client.ts](../src/domain/auth/session-client.ts) | 工具首页（图标 + 完整名称工具卡）、账号与外观设置（跟随系统/浅色/深色，仅本机记住）、登录入口、启动等待与暂不可确认（含重试）、状态读取和可读错误；发起地址只接受 https（本机 http 例外），网络失败不谎报成功。 |
-| [RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue)、[RecordsRoot.vue](../src/components/refueling/RecordsRoot.vue)、[RecordDetailPanel.vue](../src/components/refueling/RecordDetailPanel.vue)、[RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[StatisticsPage.vue](../src/components/refueling/StatisticsPage.vue)、[DataPage.vue](../src/components/refueling/DataPage.vue)、[DraftSelectionLayer.vue](../src/components/refueling/DraftSelectionLayer.vue) | 加油工作区路由化（记录/统计/数据三入口、底部导航与 Web 侧栏、编辑器保活与一次性来源返回、代次保护面板）、记录列表与主从/键盘选择、详情、表单（分组/默认值/来源标签/参考里程）、统计页（真实费用汇总 + 未实施标注）、数据页分区与草稿选择层。 |
+| [RefuelingWorkspace.vue](../src/components/refueling/RefuelingWorkspace.vue)、[RecordsRoot.vue](../src/components/refueling/RecordsRoot.vue)、[RecordDetailPanel.vue](../src/components/refueling/RecordDetailPanel.vue)、[RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[StatisticsPage.vue](../src/components/refueling/StatisticsPage.vue)、[DataPage.vue](../src/components/refueling/DataPage.vue)、[DraftSelectionLayer.vue](../src/components/refueling/DraftSelectionLayer.vue) | 加油工作区路由化（记录/统计/数据三入口、底部导航与 Web 侧栏、编辑器保活与一次性来源返回、代次保护面板）、记录列表与主从/键盘选择、详情、表单（分组/默认值/来源标签/参考里程）、统计页（平均油耗、每公里油费、独立覆盖、交易支出与来源）、数据页分区与草稿选择层。 |
 | [useRefuelingDrafts.ts](../src/composables/useRefuelingDrafts.ts)、[refueling-draft-session.ts](../src/data/refueling-draft-session.ts)、[refueling-draft-store.ts](../src/data/refueling-draft-store.ts)、[draft-environment.ts](../src/data/draft-environment.ts)、[draft-recovery.ts](../src/domain/refueling/draft-recovery.ts) | 草稿会话（绑定表单、flush、采用/放弃、保存后清理）、独立草稿库（严格持久性）、sessionStorage 线索与 Web Locks 页面占用、恢复决策（线索恢复/选择/幽灵清理/孤儿保留）。 |
 | [RefuelingForm.vue](../src/components/refueling/RefuelingForm.vue)、[form.ts](../src/domain/refueling/form.ts) | 录入、校验与核对确认；确定性表单规则、十进制计算、定点金额与按确认口径的展示格式。 |
-| [statistics.ts](../src/domain/refueling/statistics.ts) | 完整历史相邻行程及来源、精确分数计算、紧凑价量分摊、期间投影与最终格式化；PR1 提供领域接口，页面接入留给 PR2。 |
+| [statistics.ts](../src/domain/refueling/statistics.ts) | 完整历史相邻行程及来源、精确分数计算、紧凑价量分摊、期间投影与最终格式化；PR1 提供领域接口，PR2 接入页面与原生 SVG 趋势。 |
 | [refueling-document.ts](../src/data/refueling-document.ts) | Loro 文档读写、字段级变更与完整历史快照。 |
 | [local-refueling-v2.ts](../src/data/local-refueling-v2.ts) | v2 账号控制锁与 IndexedDB 严格事务（documents/control）、v1→G0 迁移合并、代次切换接收与保留副本、待确认恢复结构。 |
 | [useLocalRefueling.ts](../src/composables/useLocalRefueling.ts) | 页面状态、保存结果、窗口通知与聚焦刷新；对外只读暴露文档级 `syncStatus` 供顶栏摘要。 |
@@ -846,8 +865,8 @@ pnpm exec cf deploy --prebuilt --dry-run --mode production
 
 账号同步已发布，首轮核心真实协作验收已通过；剩余未验场景、手机版本和认证路径未知项由[发布记录](./releases/2026-10-03-sync.md#未验与待补)维护。普通 Chrome 关闭重开、真实旧库导入、长期会话周期等不能由已完成的 PWA 联网重开或短时退出重登替代。
 
-加油业务文档的整文档恢复与「备份与恢复」面板已由交付 B 实现、合并（PR #19 + #20）并部署（2026-10-05，见[恢复操作](#恢复操作b2026-10-05隔离-worktree未合并未部署)与[恢复发布记录](./releases/2026-10-05-restore.md)）；生产真实恢复、有差异预览与保护门禁未执行，等待用户实际恢复需求。完整统计、AI 识图，以及[完成码后备交互](./specs/eruoo-login-integration.md#62-浏览器--pwa-发起环境绑定)仍未实现。已有旧验证记录选择导入入口不等于真实导入已验。服务端副本与本机未上传修改、草稿的边界见账号同步规格；恢复能力与未验边界以[恢复设计](./specs/restore.md)和[恢复发布记录](./releases/2026-10-05-restore.md)为准。
+加油业务文档的整文档恢复与「备份与恢复」面板已由交付 B 实现、合并（PR #19 + #20）并部署（2026-10-05，见[恢复操作](#恢复操作b2026-10-05隔离-worktree未合并未部署)与[恢复发布记录](./releases/2026-10-05-restore.md)）；生产真实恢复、有差异预览与保护门禁未执行，等待用户实际恢复需求。完整统计已在本地实现、未部署（见[PR2 验证](#refueling-statistics-pr2)）；AI 识图，以及[完成码后备交互](./specs/eruoo-login-integration.md#62-浏览器--pwa-发起环境绑定)仍未实现。已有旧验证记录选择导入入口不等于真实导入已验。服务端副本与本机未上传修改、草稿的边界见账号同步规格；恢复能力与未验边界以[恢复设计](./specs/restore.md)和[恢复发布记录](./releases/2026-10-05-restore.md)为准。
 
 1,000/10,000 条含历史的容量与延迟、Cloudflare Free CPU 和其他平台仍按[后续验证安排](./specs/architecture-validation-research.md#5-下一步最小验证)执行。会话与事务的时钟边界已有本地可控时钟证据，真机长期 Cookie 保存行为尚未验证；本次文档收尾没有追加这些检查。
 
-UI/UX 重设计已随 PR #23 合并、部署，后续 PR #24、#25、#26 已合并、未部署，状态与验收边界见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。费用汇总已接入页面；平均油耗、每公里油费、趋势与记录覆盖里程的领域计算见上方加油统计 PR1，页面接线留给 PR2。AI 识图与完成码后备交互仍为后续项。
+UI/UX 重设计已随 PR #23 合并、部署，后续 PR #24、#25、#26 已合并、未部署，状态与验收边界见[UI/UX 发布记录](./releases/2026-10-08-ui-ux.md)。完整统计页面的本地实现与未验边界见[PR2 验证](#refueling-statistics-pr2)。AI 识图与完成码后备交互仍为后续项。

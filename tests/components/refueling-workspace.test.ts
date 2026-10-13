@@ -21,6 +21,7 @@ const observed = vi.hoisted(() => ({
   flushCalls: 0 as number,
   formMounts: 0 as number,
   formUnmounts: 0 as number,
+  statisticsProps: [] as Array<Record<string, unknown>>,
   pendingClearAfterSave: null as Promise<{ ok: boolean; message: string }> | null,
 }));
 vi.mock("../../src/composables/useRefuelingDrafts", async () => {
@@ -56,7 +57,12 @@ vi.mock("../../src/components/refueling/RefuelingForm.vue", async () => {
 // 路由子视图以最小桩替代：本组测试只观测草稿上下文与保护流程接线。
 vi.mock("../../src/components/refueling/RecordsRoot.vue", () => ({ default: { render: () => null } }));
 vi.mock("../../src/components/refueling/RecordDetailPanel.vue", () => ({ default: { render: () => null } }));
-vi.mock("../../src/components/refueling/StatisticsPage.vue", () => ({ default: { render: () => null } }));
+vi.mock("../../src/components/refueling/StatisticsPage.vue", async () => {
+  const { defineComponent } = await import("vue");
+  return { default: defineComponent({ props: ["history", "result", "period", "ready", "error"], setup: props => () => {
+    observed.statisticsProps.push({ ...props }); return null;
+  } }) };
+});
 vi.mock("../../src/components/refueling/DataPage.vue", () => ({ default: { render: () => null } }));
 vi.mock("../../src/components/refueling/BackupRestore.vue", () => ({ default: { render: () => null } }));
 vi.mock("../../src/components/refueling/LegacyImport.vue", () => ({ default: { render: () => null } }));
@@ -102,6 +108,7 @@ beforeEach(() => {
   observed.flushCalls = 0;
   observed.formMounts = 0;
   observed.formUnmounts = 0;
+  observed.statisticsProps.length = 0;
   observed.pendingClearAfterSave = null;
   vi.stubGlobal("window", {
     addEventListener() {}, removeEventListener() {},
@@ -525,4 +532,19 @@ it("UI-R06.2 四轮：承接层按投递代次核对——新流程作废旧取�
   // 新一代次的取消失败照常可读。
   delivery.onBackupCancelDelivery("未能确认预览已关闭；返回后请重新预览。", 1);
   expect(delivery.backupCancelNotice).toBe("未能确认预览已关闭；返回后请重新预览。");
+});
+
+it("PR2 F4 只在 ready 且当前代次提供统计；离开再返回期间保留", async () => {
+  const { state, local, routeRef } = mountWorkspaceWithRouteRef({ name: "statistics" });
+  await nextTick(); await nextTick();
+  expect(observed.statisticsProps.at(-1)).toMatchObject({ ready: true, result: { selectedRecordCount: 1 } });
+  state.updateStatisticsPeriod({ kind: "monthly", year: 2026, month: 9 }); await nextTick();
+  routeRef.value = { name: "records" }; await nextTick();
+  routeRef.value = { name: "statistics" }; await nextTick();
+  expect(observed.statisticsProps.at(-1)?.period).toEqual({ kind: "monthly", year: 2026, month: 9 });
+  (local.ready as { value: boolean }).value = false; await nextTick();
+  expect(observed.statisticsProps.at(-1)).toMatchObject({ ready: false, history: null, result: null });
+  (local.ready as { value: boolean }).value = true;
+  (local.workspaceGeneration as { value: string }).value = G2; await nextTick();
+  expect(observed.statisticsProps.at(-1)).toMatchObject({ ready: false, history: null, result: null });
 });

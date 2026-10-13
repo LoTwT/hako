@@ -7,12 +7,7 @@ import {
   type SavedRefuelingRecord,
 } from "../../domain/refueling/form";
 
-/** 统计筛选上下文：携带明确期间/条件（与统计页同源定义）。 */
-type StatisticsFilterContext = {
-  period: { kind: "total" } | { kind: "yearly"; year: number } | { kind: "monthly"; year: number; month: number };
-  periodLabel: string;
-  pendingOnly: boolean;
-};
+import type { StatisticsRecordsContext } from "../../domain/refueling/statistics";
 
 /**
  * 记录根页（F1/F2）：手机按月份分组列表；Web（≥880px）表格与右栏详情并排，
@@ -32,7 +27,8 @@ const props = defineProps<{
   pendingEditorLabel: string | null;
   draftCount: number;
   draftPickerNotice: string;
-  filterContext: StatisticsFilterContext | null;
+  filterContext: StatisticsRecordsContext | null;
+  filterContextRevision?: number;
 }>();
 const emit = defineEmits<{
   selectRecord: [recordId: string, options: { push: boolean }];
@@ -42,18 +38,20 @@ const emit = defineEmits<{
   editRecord: [record: SavedRefuelingRecord];
   retryLoad: [];
   openLegacyImport: [];
-  removeFilter: [kind: "period" | "pending"];
+  removeFilter: [kind: "period" | "pending" | "related"];
 }>();
 
 const pendingReviewIds = computed(() => new Set(
   [...props.warnings.entries()].filter(([, list]) => list.length > 0).map(([id]) => id)));
 const filter = shallowRef<"all" | "review">("all");
+const allFilterButton = shallowRef<HTMLButtonElement | null>(null);
+watch(() => props.filterContextRevision, () => { filter.value = "all"; });
 /** 选中项：内存状态；详情地址（record-detail）到达时与其保持一致。 */
 const selectedId = shallowRef<string | null>(null);
 const detailHeading = shallowRef<HTMLHeadingElement | null>(null);
 
 /** 统计筛选前缀（北京时间 occurredAtLocal）：月度精确到月，年度到年，累计不限。 */
-function statisticsPeriodPrefix(period: StatisticsFilterContext["period"]): string | null {
+function statisticsPeriodPrefix(period: StatisticsRecordsContext["period"]): string | null {
   if (period.kind === "total") return null;
   if (period.kind === "yearly") return `${String(period.year).padStart(4, "0")}-`;
   return `${String(period.year).padStart(4, "0")}-${String(period.month).padStart(2, "0")}-`;
@@ -67,6 +65,10 @@ const visibleRecords = computed(() => {
     const prefix = statisticsPeriodPrefix(context.period);
     if (prefix !== null) result = result.filter((record) => record.occurredAtLocal.startsWith(prefix));
     if (context.pendingOnly) result = result.filter((record) => pendingReviewIds.value.has(record.id));
+    if (context.related !== undefined) {
+      const ids = new Set(context.related.recordIds);
+      result = result.filter(record => ids.has(record.id));
+    }
   }
   if (filter.value === "review") return result.filter((record) => pendingReviewIds.value.has(record.id));
   return [...result];
@@ -102,6 +104,12 @@ watch(() => props.detailRecordId, (recordId) => {
 
 function toggleFilter(next: "all" | "review") {
   filter.value = next;
+}
+
+async function removeFilter(kind: "period" | "pending" | "related") {
+  emit("removeFilter", kind);
+  await nextTick();
+  allFilterButton.value?.focus();
 }
 
 function select(record: SavedRefuelingRecord, options: { push: boolean }) {
@@ -164,7 +172,7 @@ function jumpToMonth(event: Event) {
         <span class="records-count muted num">{{ records.length }} 笔</span>
       </div>
       <div class="records-filters" role="group" aria-label="筛选记录">
-        <button type="button" class="filter-option" :class="{ active: filter === 'all' }" :aria-pressed="filter === 'all'"
+        <button ref="allFilterButton" type="button" class="filter-option" :class="{ active: filter === 'all' }" :aria-pressed="filter === 'all'"
           @click="toggleFilter('all')">全部</button>
         <button type="button" class="filter-option" :class="{ active: filter === 'review' }" :aria-pressed="filter === 'review'"
           @click="toggleFilter('review')">待核对 ({{ pendingReviewIds.size }})</button>
@@ -179,11 +187,15 @@ function jumpToMonth(event: Event) {
       <div v-if="filterContext" class="filter-chips">
         <span v-if="filterContext.period.kind !== 'total'" class="filter-chip">
           {{ filterContext.periodLabel }}
-          <button type="button" aria-label="移除期间筛选" @click="emit('removeFilter', 'period')">✕</button>
+          <button type="button" aria-label="移除期间筛选" @click="removeFilter('period')">✕</button>
         </span>
         <span v-if="filterContext.pendingOnly" class="filter-chip">
           待核对
-          <button type="button" aria-label="移除待核对筛选" @click="emit('removeFilter', 'pending')">✕</button>
+          <button type="button" aria-label="移除待核对筛选" @click="removeFilter('pending')">✕</button>
+        </span>
+        <span v-if="filterContext.related" class="filter-chip">
+          相关记录 · {{ filterContext.related.label }}
+          <button type="button" aria-label="移除相关记录筛选" @click="removeFilter('related')">✕</button>
         </span>
       </div>
     </div>
@@ -205,7 +217,7 @@ function jumpToMonth(event: Event) {
     </p>
 
     <!-- 空状态：记一次加油 + 低权重旧验证导入入口。 -->
-    <div v-if="ready && records.length === 0" class="empty-records">
+    <div v-if="ready && records.length === 0 && !filterContext?.related" class="empty-records">
       <h3>还没有加油记录</h3>
       <p>把每次加油记清楚；记录与草稿保存在此浏览器。</p>
       <button type="button" class="primary empty-new" @click="emit('startNew')">
@@ -239,7 +251,10 @@ function jumpToMonth(event: Event) {
             <ChevronRight v-if="!wide" class="row-chevron" aria-hidden="true" :size="18" :stroke-width="2" />
           </button>
         </section>
-        <p v-if="visibleRecords.length === 0" class="muted empty-filter">当前筛选下没有记录。</p>
+        <p v-if="visibleRecords.length === 0" class="muted empty-filter">
+          {{ filterContext?.related && !records.some(record => filterContext?.related?.recordIds.includes(record.id))
+            ? "相关记录已变化，可清除筛选。" : "当前筛选下没有记录。" }}
+        </p>
       </div>
 
       <!-- Web 右栏详情（F2）：未选中时提示，编辑只经明确按钮进入。 -->

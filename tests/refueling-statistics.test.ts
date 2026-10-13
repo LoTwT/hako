@@ -353,3 +353,10 @@ describe("完整历史统计：人工算例 C00–C16", () => {
     expect(calculateRefuelingHistory(records).trips.map(trip => trip.id)).toEqual([["a/b", "c"], ["c", "b/c"]]);
   });
 });
+
+it("来源用升显示：精确半毫升最终舍入、大数末位和零保持", () => {
+  expect(formatStatisticsValue({ numerator: 40000n, denominator: 3n }, "volume")).toBe("13.333");
+  expect(formatStatisticsValue({ numerator: 1n, denominator: 2n }, "volume")).toBe("0.001");
+  expect(formatStatisticsValue(9007199254740991n, "volume")).toBe("9,007,199,254,740.991");
+  expect(formatStatisticsValue(0n, "volume")).toBe("0.000");
+});
