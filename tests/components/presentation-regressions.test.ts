@@ -15,6 +15,7 @@ import RefuelingForm from "../../src/components/refueling/RefuelingForm.vue";
 import LegacyImport from "../../src/components/refueling/LegacyImport.vue";
 import { createMinimalHostRenderer, createMinimalHostRoot, type MinimalHostNode } from "../helpers/minimal-host";
 import { syntheticRecord } from "../helpers/sync-fixtures";
+import { calculateRefuelingHistory, projectRefuelingStatistics } from "../../src/domain/refueling/statistics";
 
 const legacyRecords = vi.hoisted(() => ({ records: [] as unknown[] }));
 vi.mock("../../src/data/legacy-refueling", () => ({
@@ -123,22 +124,21 @@ it("UI-R08 待核对筛选只列出有跨记录警告的记录", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// UI-R09 统计当前期按北京时间计算
+// UI-R09 展示北京时间投影；Workspace 的当前期间默认值由 statistics.test.ts 覆盖。
 // ---------------------------------------------------------------------------
 
-it("UI-R09 UTC 环境下北京月初边界记录归入北京当前月（设备时区不影响分期）", async () => {
-  // 2026-10-01T01:00 北京 = 2026-09-30T17:00 UTC：把「现在」固定在北京 10 月 1 日
-  // 凌晨；若按设备时区（UTC）计算当前期会得到 2026 年 9 月，正确行为按北京时间
-  // 得到 2026 年 10 月。
+it("UI-R09 UTC 环境下展示北京月份的期间投影与记录", async () => {
+  // 页面消费 Workspace 传入的期间，月初记录按北京时间投影到 10 月。
   vi.useFakeTimers({ now: new Date("2026-09-30T17:00:00Z"), toFake: ["Date"] });
   try {
-    mountComponent(StatisticsPage, {
-      records: [{ ...syntheticRecord, id: "edge", occurredAtLocal: "2026-10-01T00:30", stationName: "北京月初记录" }],
-    });
+    const history = calculateRefuelingHistory([{ ...syntheticRecord, id: "edge", occurredAtLocal: "2026-10-01T00:30", stationName: "北京月初记录" }]);
+    const period = { kind: "monthly", year: 2026, month: 10 } as const;
+    mountComponent(StatisticsPage, { history, period, result: projectRefuelingStatistics(history, period), ready: true, error: "" });
     await nextTick(); await nextTick();
     expect(visibleText(lastRoot!)).toContain("2026 年 10 月");
     expect(visibleText(lastRoot!)).not.toContain("2026 年 9 月");
     expect(findButton(lastRoot!, "查看本期记录")).toBeDefined();
+    expect(visibleText(lastRoot!)).toContain("本期 1 条记录");
   } finally {
     vi.useRealTimers();
   }

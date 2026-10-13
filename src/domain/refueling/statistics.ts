@@ -131,13 +131,13 @@ function sum(values: readonly ExactRatio[]): ExactRatio {
   return level[0];
 }
 
-export function formatStatisticsValue(value: bigint | ExactRatio, kind: "amount"): string;
+export function formatStatisticsValue(value: bigint | ExactRatio, kind: "amount" | "volume"): string;
 export function formatStatisticsValue(value: bigint, kind: "distance"): string;
 export function formatStatisticsValue(value: ExactRatio, kind: "fuelConsumption" | "costPerKilometre"): string;
-export function formatStatisticsValue(value: bigint | ExactRatio, kind: "fuelConsumption" | "costPerKilometre" | "distance" | "amount"): string {
-  const digits = kind === "distance" ? 1 : kind === "costPerKilometre" ? 3 : 2;
+export function formatStatisticsValue(value: bigint | ExactRatio, kind: "fuelConsumption" | "costPerKilometre" | "distance" | "amount" | "volume"): string {
+  const digits = kind === "distance" ? 1 : kind === "costPerKilometre" || kind === "volume" ? 3 : 2;
   const input = typeof value === "bigint" ? ratio(value) : ratio(value.numerator, value.denominator);
-  const divisor = kind === "amount" ? 100n : kind === "distance" ? 10n : 1n;
+  const divisor = kind === "amount" ? 100n : kind === "distance" ? 10n : kind === "volume" ? 1000n : 1n;
   const denominator = input.denominator * divisor;
   const scaled = input.numerator * 10n ** BigInt(digits);
   const rounded = scaled / denominator + (2n * (scaled % denominator) >= denominator ? 1n : 0n);

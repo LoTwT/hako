@@ -30,6 +30,12 @@ import {
   type RefuelingRoute,
 } from "../../ui/app-route";
 import { createModalFocus } from "../../ui/modal-focus";
+import {
+  calculateRefuelingHistory,
+  projectRefuelingStatistics,
+  type StatisticsPeriod,
+  type StatisticsRecordsContext,
+} from "../../domain/refueling/statistics";
 import RefuelingForm from "./RefuelingForm.vue";
 import RecordsRoot from "./RecordsRoot.vue";
 import RecordDetailPanel from "./RecordDetailPanel.vue";
@@ -106,7 +112,16 @@ const showDiscardConfirm = shallowRef(false);
 const openingCurrent = shallowRef(false);
 const openCurrentNotice = shallowRef("");
 /** 从统计进入记录时可移除的筛选上下文（仅本窗口内存，不写地址）。 */
-const statsFilterContext = shallowRef<{ period: { kind: "total" } | { kind: "yearly"; year: number } | { kind: "monthly"; year: number; month: number }; periodLabel: string; pendingOnly: boolean } | null>(null);
+const statsFilterContext = shallowRef<StatisticsRecordsContext | null>(null);
+const statsFilterRevision = shallowRef(0);
+const beijingToday = new Date(Date.now() + 8 * 60 * 60 * 1000);
+const statisticsPeriod = shallowRef<StatisticsPeriod>({
+  kind: "monthly", year: beijingToday.getUTCFullYear(), month: beijingToday.getUTCMonth() + 1,
+});
+const statisticsHistory = computed(() => calculateRefuelingHistory(records.value));
+const statisticsResult = computed(() => projectRefuelingStatistics(statisticsHistory.value, statisticsPeriod.value));
+const statisticsReady = computed(() => ready.value && generationFlow.value.phase === "active"
+  && generationFlow.value.generation === generation && workspaceGeneration.value === generation);
 /**
  * 备份面板离开取消的未确认陈述（UI-R06.2）：面板可能随返回导航卸载（D2→D0），
  * 由本工作区（同账号、仍存活）承接，在数据页/备份区可读；新预览或新确认
@@ -671,30 +686,33 @@ function selectRecord(recordId: string, options: { push: boolean }) {
   else refuelingReplace({ name: "record-detail", recordId });
 }
 
-/** 统计筛选上下文：携带明确的期间/条件（不解析本地化 label 作为业务条件）。 */
-type StatisticsFilterContext = {
-  period: { kind: "total" } | { kind: "yearly"; year: number } | { kind: "monthly"; year: number; month: number };
-  periodLabel: string;
-  pendingOnly: boolean;
-};
+function statisticsActionsAllowed(): boolean {
+  return workspaceAlive && !props.locked && statisticsReady.value
+    && props.route.name === "statistics" && props.appRoute.name === "refueling";
+}
 
-function viewRecordsFromStatistics(context: StatisticsFilterContext) {
+function updateStatisticsPeriod(period: StatisticsPeriod) {
+  if (statisticsActionsAllowed()) statisticsPeriod.value = period;
+}
+
+function viewRecordsFromStatistics(context: StatisticsRecordsContext) {
+  if (!statisticsActionsAllowed()) return;
   statsFilterContext.value = context;
+  statsFilterRevision.value += 1;
   refuelingNavigate({ name: "records" });
 }
 
-function removeStatsFilter(kind: "period" | "pending") {
+function removeStatsFilter(kind: "period" | "pending" | "related") {
+  if (!workspaceAlive || props.locked || props.appRoute.name !== "refueling" || generationLocked.value) return;
   const context = statsFilterContext.value;
   if (context === null) return;
-  if (kind === "period") {
-    statsFilterContext.value = context.pendingOnly
-      ? { period: { kind: "total" }, periodLabel: "", pendingOnly: true }
-      : null;
-  } else {
-    statsFilterContext.value = context.period.kind === "total"
-      ? null
-      : { period: context.period, periodLabel: context.periodLabel, pendingOnly: false };
-  }
+  const next: StatisticsRecordsContext = {
+    ...context,
+    ...(kind === "period" ? { period: { kind: "total" }, periodLabel: "累计" } : {}),
+    ...(kind === "pending" ? { pendingOnly: false } : {}),
+    ...(kind === "related" ? { related: undefined } : {}),
+  };
+  statsFilterContext.value = next.period.kind === "total" && !next.pendingOnly && next.related === undefined ? null : next;
 }
 
 /**
@@ -1183,18 +1201,21 @@ onUnmounted(() => {
 
       <div v-show="normalViewportVisible" class="route-viewport">
         <!-- F1/F2：记录根页（宽屏主从；筛选与选中状态随实例保存在本窗口内存）。 -->
-        <RecordsRoot v-show="isRecordsView" :records="records" :busy="formLocked" :ready="ready" :error="error"
-          :wide="wideShell" :detail-record-id="detailRecordId" :warnings="recordWarningsMap"
-          :pending-editor-label="pendingEditorLabel" :draft-count="recoveryCandidates.length"
-          :draft-picker-notice="recoveryNotice" :filter-context="statsFilterContext"
-          @select-record="selectRecord" @start-new="startNew" @continue-editing="continueEditing"
-          @open-drafts="showDraftPicker = true" @edit-record="startEdit" @retry-load="initialize"
-          @open-legacy-import="refuelingNavigate({ name: 'data-legacy-import' })"
-          @remove-filter="removeStatsFilter">
-          <template #detail="{ record }">
-            <RecordDetailPanel :record="record" :busy="formLocked" :warnings="recordWarningsMap.get(record.id) ?? []" @edit="startEdit(record)" />
-          </template>
-        </RecordsRoot>
+        <!-- 显隐指令放在 DOM 容器，避免统计期间更新强制重渲染整个保活列表。 -->
+        <div v-show="isRecordsView">
+          <RecordsRoot :records="records" :busy="formLocked" :ready="ready" :error="error"
+            :wide="wideShell" :detail-record-id="detailRecordId" :warnings="recordWarningsMap"
+            :pending-editor-label="pendingEditorLabel" :draft-count="recoveryCandidates.length"
+            :draft-picker-notice="recoveryNotice" :filter-context="statsFilterContext" :filter-context-revision="statsFilterRevision"
+            @select-record="selectRecord" @start-new="startNew" @continue-editing="continueEditing"
+            @open-drafts="showDraftPicker = true" @edit-record="startEdit" @retry-load="initialize"
+            @open-legacy-import="refuelingNavigate({ name: 'data-legacy-import' })"
+            @remove-filter="removeStatsFilter">
+            <template #detail="{ record }">
+              <RecordDetailPanel :record="record" :busy="formLocked" :warnings="recordWarningsMap.get(record.id) ?? []" @edit="startEdit(record)" />
+            </template>
+          </RecordsRoot>
+        </div>
 
         <!-- F2 独立详情页（窄屏）：来源返回 + 完整业务字段。 -->
         <section v-if="route.name === 'record-detail' && !wideShell && detailRecord" class="subpage">
@@ -1237,8 +1258,11 @@ onUnmounted(() => {
           />
         </section>
 
-        <!-- F4：统计（入口与布局接线；尚未实施的统计能力明确标注，不放合成数字）。 -->
-        <StatisticsPage v-if="route.name === 'statistics'" :records="records" @view-records="viewRecordsFromStatistics" />
+        <!-- F4：当前账号/代次的完整历史与期间投影。 -->
+        <StatisticsPage v-if="route.name === 'statistics' && !locked && (generationFlow.phase === 'active' || generationFlow.phase === 'opening')"
+          :history="statisticsReady ? statisticsHistory : null" :result="statisticsReady ? statisticsResult : null"
+          :period="statisticsPeriod" :ready="statisticsReady" :error="error"
+          @update-period="updateStatisticsPeriod" @view-records="viewRecordsFromStatistics" @retry-load="initialize" />
 
         <!-- D0：数据页（本机 / 账号同步 / 独立备份 / 保留内容 / 旧验证导入 分区事实）。 -->
         <DataPage v-if="route.name === 'data'" :account-id="accountId" :local="local" :busy="formLocked"
